@@ -102,7 +102,7 @@ groq==0.9.0
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
-openai==1.30.1
+openai==3.29.0
 
 # ---- TESTING ---------------------------------------------------------
 # Needed only to RUN the test suite, never by the application itself.
