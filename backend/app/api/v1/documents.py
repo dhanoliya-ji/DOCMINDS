@@ -48,7 +48,16 @@ import os
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +67,8 @@ from app.models.document import Document
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.document import DocumentOut
-from app.tasks.ingestion import process_document_task
+from app.core.config import settings
+from app.tasks.ingestion import async_process_document, process_document_task
 
 router = APIRouter()
 
@@ -80,6 +90,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def upload_documents(
+    # Injected by FastAPI. Used only when INGESTION_MODE is "inline".
+    background_tasks: BackgroundTasks,
     # `Form(...)` and `File(...)` rather than a JSON body, because file uploads
     # use multipart/form-data -- JSON cannot carry binary data.
     project_id: uuid.UUID = Form(...),
@@ -209,7 +221,11 @@ async def upload_documents(
         # `.delay()` does NOT run the function. It serialises the argument,
         # pushes a message onto Redis and returns instantly. A worker process
         # picks it up and runs the real pipeline there.
-        process_document_task.delay(str(document.id))
+        #
+        # INGESTION_MODE=inline has no worker: the job is scheduled further
+        # down, once the commit has made the row visible to its own session.
+        if settings.INGESTION_MODE == "celery":
+            process_document_task.delay(str(document.id))
 
         processed_docs.append(document)
 
@@ -226,6 +242,12 @@ async def upload_documents(
     await db.commit()
     for document in processed_docs:
         await db.refresh(document)
+
+    if settings.INGESTION_MODE == "inline":
+        # Runs after the response is sent, so the upload still returns at once
+        # with status "pending" and the frontend's polling works unchanged.
+        for document in processed_docs:
+            background_tasks.add_task(async_process_document, str(document.id))
 
     return processed_docs
 

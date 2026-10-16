@@ -479,3 +479,53 @@ class TestOpenApi:
             f"{API}/chat/sessions",
         ):
             assert expected in paths, f"{expected} is not in the OpenAPI schema"
+
+
+class TestInlineIngestion:
+    """
+    INGESTION_MODE=inline: the API processes uploads itself, with no Celery
+    worker and no Redis. This is what the free live demo runs on, so the whole
+    path -- upload, extract, chunk, embed, mark completed -- is exercised here
+    against the real database.
+    """
+
+    async def test_an_upload_is_fully_processed_without_a_worker(
+        self, client, account, use_mock_providers, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "INGESTION_MODE", "inline")
+        created = await client.post(
+            f"{API}/projects/", headers=account["headers"], json={"name": "Inline demo"}
+        )
+        assert created.status_code == 201, created.text
+        project_id = created.json()["id"]
+
+        text = "Refunds are available within thirty days of purchase. " * 40
+        response = await client.post(
+            f"{API}/documents/upload",
+            headers=account["headers"],
+            data={"project_id": project_id},
+            files={"files": ("policy.txt", text.encode(), "text/plain")},
+        )
+
+        # The reply still comes back at once, as with a worker...
+        assert response.status_code == 202, response.text
+        assert response.json()[0]["status"] == "pending"
+
+        # ...and the in-process transport waits for background tasks, so by
+        # now the document has been processed end to end.
+        listed = await client.get(
+            f"{API}/documents/", headers=account["headers"], params={"project_id": project_id}
+        )
+        document = listed.json()[0]
+        assert document["status"] == "completed", document
+
+    async def test_the_worker_diagnostics_say_there_is_no_worker(
+        self, client, account, monkeypatch
+    ):
+        """Instead of hanging on a Redis that is not there."""
+        monkeypatch.setattr(settings, "INGESTION_MODE", "inline")
+        response = await client.post(
+            f"{API}/tasks/trigger-add", headers=account["headers"], json={"x": 2, "y": 3}
+        )
+        assert response.status_code == 503
+        assert "INGESTION_MODE=inline" in response.json()["detail"]

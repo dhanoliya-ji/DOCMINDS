@@ -58,6 +58,12 @@ WORKDIR /app
 # than the dependency list, this ordering means editing a Python file
 # rebuilds in seconds, whereas copying everything first would reinstall
 # every dependency on every single build.
+# Which embedding provider the image is built for. Render passes service
+# environment variables in as build args, so setting EMBEDDING_PROVIDER=gemini
+# there is enough. A hosted provider skips sentence-transformers -- and with
+# it PyTorch, gigabytes the API would never load. Locally, nothing changes.
+ARG EMBEDDING_PROVIDER=local
+
 COPY requirements.txt .
 
 # `--no-cache-dir` stops pip keeping its download cache inside the image,
@@ -65,15 +71,22 @@ COPY requirements.txt .
 # setuptools and wheel too, not just pip: the base image's copies carry known
 # CVEs (setuptools vendors jaraco.context and wheel), and Trivy flags them.
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+    if [ "$EMBEDDING_PROVIDER" = "local" ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        grep -v "^sentence-transformers" requirements.txt > /tmp/requirements.txt && \
+        pip install --no-cache-dir -r /tmp/requirements.txt; \
+    fi
 
 # ---- Pre-download the embedding model -------------------------------
 # Without this, the model is fetched on the first upload -- meaning the very
 # first user waits ~30 extra seconds, and the app breaks entirely if the
 # host has no outbound internet. Baking it into the image makes container
 # start-up predictable.
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('all-MiniLM-L6-v2')"
+# Only the local provider needs the model; a hosted provider has nothing to bake.
+RUN if [ "$EMBEDDING_PROVIDER" = "local" ]; then \
+        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; \
+    fi
 
 # ---- Application code -----------------------------------------------
 COPY . .

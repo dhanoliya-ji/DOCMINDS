@@ -134,8 +134,13 @@ async def async_process_document(document_id: str) -> None:
                 f"[Ingestion] 1/5 Extracting text "
                 f"(type: {document.file_type})..."
             )
-            extraction = DocumentExtractor.extract(
-                document.file_path, document.file_type
+            # The three heavy steps (extraction/OCR, chunking, embedding) are
+            # plain blocking code, so each runs on a thread. In the worker that
+            # changes nothing; with INGESTION_MODE=inline this job runs inside
+            # the API's event loop, and without the threads one large PDF would
+            # freeze every other request until it finished.
+            extraction = await asyncio.to_thread(
+                DocumentExtractor.extract, document.file_path, document.file_type
             )
 
             if not extraction.text or not extraction.text.strip():
@@ -170,7 +175,8 @@ async def async_process_document(document_id: str) -> None:
                 f"[Ingestion] 2/5 Chunking (strategy: {chunk_strategy}, "
                 f"size: {chunk_size} tokens, overlap: {chunk_overlap})..."
             )
-            chunks_data = ChunkerService.chunk_document(
+            chunks_data = await asyncio.to_thread(
+                ChunkerService.chunk_document,
                 text=extraction.text,
                 strategy=chunk_strategy,
                 chunk_size=chunk_size,
@@ -243,7 +249,7 @@ async def async_process_document(document_id: str) -> None:
             chunk_texts = [chunk.content for chunk in chunk_objects]
             # One batched call rather than a loop: dramatically faster, because
             # the model processes many texts in parallel.
-            vectors = EmbeddingService.get_embeddings(chunk_texts)
+            vectors = await asyncio.to_thread(EmbeddingService.get_embeddings, chunk_texts)
 
             # Record WHICH model produced these vectors. Vectors from different
             # models are not comparable, so this column is what identifies

@@ -37,12 +37,27 @@ WHAT THE STATUS VALUES MEAN
 """
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.celery_app import celery_app
+from app.core.config import settings
 from app.tasks.test import add_numbers_task, dummy_process_document_task
 
-router = APIRouter()
+
+def _require_worker() -> None:
+    """These endpoints exercise the Celery queue, which inline mode does not run.
+
+    Without this, a `.delay()` would wait on a Redis that is not there and the
+    request would hang; a clear 503 says what is going on instead.
+    """
+    if settings.INGESTION_MODE != "celery":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No background worker in this deployment (INGESTION_MODE=inline).",
+        )
+
+
+router = APIRouter(dependencies=[Depends(_require_worker)])
 
 
 @router.post("/trigger-add", status_code=status.HTTP_202_ACCEPTED)
