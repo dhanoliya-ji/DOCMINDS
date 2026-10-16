@@ -26,6 +26,9 @@ python-multipart==0.0.32
 # pydantic-settings : reads settings from environment variables and .env.
 # python-dotenv     : the underlying .env file parser.
 pydantic==2.14.1
+# EmailStr (app/schemas/user.py) needs this. FastAPI 0.111 happened to install
+# it; from 0.112 it does not, so it has to be listed directly.
+email-validator==2.3.0
 pydantic-settings==2.15.0
 python-dotenv==1.2.4
 
