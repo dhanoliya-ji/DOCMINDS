@@ -139,7 +139,7 @@ characters, and OCR would be slower *and* less accurate than reading them.
 ## Models and providers
 
 ### LLM
-*Large Language Model* — the thing that writes the answer. Llama 3.3 via Groq
+*Large Language Model* — the thing that writes the answer. GPT-OSS 120B via Groq
 here.
 
 ### Temperature

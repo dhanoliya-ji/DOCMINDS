@@ -11,7 +11,7 @@
  *
  * and the backend performs the entire pipeline before replying: embed the
  * question, search pgvector for the closest chunks, paste them into a prompt,
- * ask Llama 3.3 to answer using only those excerpts, build the citations, and
+ * ask the language model to answer using only those excerpts, build the citations, and
  * save both messages.
  *
  * What comes back is the answer plus the list of sources that produced it,

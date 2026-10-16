@@ -257,7 +257,7 @@ class Settings(BaseSettings):
     # ==================================================================
     # 8. LLM -- the AI that writes the final answer (the "G" in RAG)
     # ==================================================================
-    # Groq is a free and extremely fast host for open models such as Llama 3.3.
+    # Groq is a free and extremely fast host for open models such as OpenAI's GPT-OSS.
     # Get a key (no credit card required) at https://console.groq.com/keys
     LLM_PROVIDER: Literal["groq", "mock"] = "groq"
 
@@ -272,7 +272,10 @@ class Settings(BaseSettings):
     # The specific model Groq should run for us. 70B means 70 billion
     # parameters -- large enough to reliably obey an instruction like "answer
     # ONLY from the provided context and otherwise say you don't know".
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    # Groq retires models: llama-3.3-70b-versatile was shut down on
+    # 2026-08-16, after which every answer failed. gpt-oss-120b is the
+    # replacement Groq recommends. https://console.groq.com/docs/deprecations
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
 
     # `temperature` controls randomness: 0 always picks the most likely next
     # word (factual, repeatable), 1 is creative and varied. For answering
@@ -281,7 +284,10 @@ class Settings(BaseSettings):
 
     # A hard ceiling on the length of the generated answer, measured in tokens
     # (roughly three-quarters of a word each). Prevents runaway responses.
-    LLM_MAX_TOKENS: int = 1024
+    # 2048, not 1024: reasoning models such as gpt-oss count their hidden
+    # reasoning against this limit too, and a tight cap can cut off the
+    # answer itself.
+    LLM_MAX_TOKENS: int = 2048
 
     # ==================================================================
     # 9. RETRIEVAL -- how the "R" in RAG behaves
