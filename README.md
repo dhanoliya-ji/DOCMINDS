@@ -24,6 +24,14 @@ A production-shaped **RAG** (Retrieval-Augmented Generation) platform: multi-ten
 
 ![Landing page](docs/images/01-landing.png)
 
+### [▶ Live Demo](https://docminds-dhanoliya.vercel.app) · [API Docs](https://docminds-api.onrender.com/docs) · [Health](https://docminds-api.onrender.com/api/v1/health)
+
+Sign up with any email (it isn't verified), create a project, upload a document and ask it a question.
+
+> Runs on free tiers ([how](DEPLOY.md)): the first request after ~15 minutes idle wakes the API, which
+> takes about a minute. Uploaded files are processed and searchable right away; the original-file
+> preview may disappear after the free server restarts.
+
 ### New here? **[START-HERE.md](START-HERE.md)** says which page to read first.
 
 Unfamiliar with RAG, embeddings or vector search? The
