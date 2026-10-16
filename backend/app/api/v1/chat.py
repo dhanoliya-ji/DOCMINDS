@@ -17,7 +17,7 @@ When a user types "How many leave days do I get?" and presses enter:
    4. RETRIEVE : retrieval.py embeds the question and finds the 5 closest
                  chunks in Postgres, restricted to their organization.
    5. AUGMENT  : llm.py pastes those 5 chunks into a prompt, numbered [1]..[5].
-   6. GENERATE : Groq's Llama 3.3 writes an answer using only those excerpts.
+   6. GENERATE : GPT-OSS 120B on Groq writes an answer using only those excerpts.
    7. We build citations linking each [n] back to its file and page.
    8. We save the answer as a ChatMessage                 (role="assistant")
       along with the citations, token count and how long it took.
@@ -257,7 +257,7 @@ async def ask_question(
 
     # ---- STEP 5: AUGMENT + GENERATE ----------------------------------
     # llm.py pastes the retrieved chunks into the prompt (augment) and asks
-    # Groq's Llama 3.3 to answer using only those chunks (generate).
+    # GPT-OSS 120B on Groq to answer using only those chunks (generate).
     llm_result = LLMService.generate_answer(
         question=payload.message,
         chunks=chunks,

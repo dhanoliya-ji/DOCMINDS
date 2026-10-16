@@ -323,7 +323,7 @@ export default function LandingPage() {
               step: "05",
               name: "Generate",
               detail:
-                "Those excerpts are pasted into a prompt that forbids outside knowledge. Llama 3.3 70B writes the answer and cites each excerpt it used.",
+                "Those excerpts are pasted into a prompt that forbids outside knowledge. GPT-OSS 120B writes the answer and cites each excerpt it used.",
             },
           ].map((item, index) => (
             <motion.div
@@ -367,7 +367,7 @@ export default function LandingPage() {
         }}
       >
         Built with FastAPI · PostgreSQL + pgvector · Celery · Next.js ·
-        sentence-transformers · Llama 3.3 on Groq
+        sentence-transformers · GPT-OSS 120B on Groq
       </footer>
     </main>
   );

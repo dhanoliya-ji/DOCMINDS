@@ -218,7 +218,7 @@ expects it to mean.
 ## `llm.py` — writing the answer, with citations
 
 Given the retrieved chunks, produce prose a person can read. Groq
-(`llama-3.3-70b-versatile`) or `mock`.
+(`openai/gpt-oss-120b`) or `mock`.
 
 `build_context_prompt` numbers every excerpt and labels it with its source:
 

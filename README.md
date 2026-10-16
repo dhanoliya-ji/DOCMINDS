@@ -15,7 +15,7 @@ A production-shaped **RAG** (Retrieval-Augmented Generation) platform: multi-ten
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Celery](https://img.shields.io/badge/Celery-5.6-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Llama](https://img.shields.io/badge/Llama_3.3_70B-on_Groq-F55036)](https://console.groq.com/)
+[![GPT-OSS on Groq](https://img.shields.io/badge/GPT--OSS_120B-on_Groq-F55036)](https://console.groq.com/)
 
 [![CodeQL](https://github.com/dhanoliya-ji/DOCMINDS/actions/workflows/codeql.yml/badge.svg)](https://github.com/dhanoliya-ji/DOCMINDS/actions/workflows/codeql.yml)
 [![codecov](https://codecov.io/gh/dhanoliya-ji/DOCMINDS/branch/main/graph/badge.svg)](https://codecov.io/gh/dhanoliya-ji/DOCMINDS)
@@ -84,7 +84,7 @@ This matches **meaning**. Text is converted into 384-number vectors where simila
 - **19 Supported File Extensions**: Extracted with format-native parsers for PDF, Office formats (DOCX, PPTX, XLSX), HTML, EML, CSV, ZIP, Markdown, and automatic Tesseract OCR for scanned images and PDFs.
 - **Page-Aware Token Chunking**: Preserves exact page numbers per chunk with sliding token window overlap (`tiktoken`), allowing exact page-level citations.
 - **Fast Vector Similarity Search**: PostgreSQL + `pgvector` with HNSW cosine indexing for rapid, sub-second semantic retrieval without an external vector database.
-- **Grounded Answer Generation**: Uses Llama 3.3 70B via Groq with low temperature (`0.1`) and strict system prompts to prevent hallucination and enforce verifiable page citations.
+- **Grounded Answer Generation**: Uses GPT-OSS 120B via Groq with low temperature (`0.1`) and strict system prompts to prevent hallucination and enforce verifiable page citations.
 - **Asynchronous Ingestion Pipeline**: Decouples fast HTTP uploads from worker execution, handling multi-stage OCR, extraction, chunking, and embedding via Celery workers and Redis.
 
 ---
@@ -157,7 +157,7 @@ flowchart TD
     Q["Query: 'how much time off do I get?'"] --> EMBQ["1. EMBED QUERY<br/>Same model as ingestion (all-MiniLM-L6-v2)"]
     EMBQ --> RET["2. RETRIEVE (pgvector)<br/>SELECT ... ORDER BY embedding <=> query_vector<br/>JOIN chunks → documents → projects<br/>WHERE projects.org_id = caller's org<br/>LIMIT 5, drop below min_score"]
     RET --> AUG["3. AUGMENT<br/>EXCERPT [1] (source: handbook.pdf, page 1)<br/>EXCERPT [2] (source: policy.docx, page 3)<br/>QUESTION: how much time off do I get?"]
-    AUG --> GEN["4. GENERATE<br/>Llama 3.3 70B on Groq (temperature = 0.1)<br/>System prompt: answer ONLY from excerpts, cite as [n]"]
+    AUG --> GEN["4. GENERATE<br/>GPT-OSS 120B on Groq (temperature = 0.1)<br/>System prompt: answer ONLY from excerpts, cite as [n]"]
     GEN --> ANS["Answer + citations saved to chat_messages"]
 ```
 
@@ -196,7 +196,7 @@ flowchart TD
     end
 
     subgraph LLMProvider["LLM Engine"]
-        GROQ["GROQ Cloud<br/>Llama 3.3 70B"]
+        GROQ["GROQ Cloud<br/>GPT-OSS 120B"]
     end
 
     UI -->|"REST + JWT"| API
@@ -261,7 +261,7 @@ All three are **page-aware**: the text is split on page markers *first*, and eac
 | Database | **PostgreSQL 16 + pgvector** | One database for both relational data and vectors. No separate vector DB to keep in sync, and joins to `documents`/`projects` happen in the same query — which is what makes the tenant filter enforceable |
 | Vector index | **HNSW**, `vector_cosine_ops` | Turns search from "score every row" into a graph walk. Approximate, but orders of magnitude faster |
 | Embeddings | **all-MiniLM-L6-v2**, local | Free, no API key, works offline, and document text never leaves the server — which matters for enterprise documents |
-| Generation | **Llama 3.3 70B on Groq** | Free tier without a credit card, very fast, and large enough to reliably obey "answer only from context" |
+| Generation | **GPT-OSS 120B on Groq** | Free tier without a credit card, very fast, and large enough to reliably obey "answer only from context" |
 | Tokenisation | **tiktoken** | Chunks measured in real tokens, not characters, so they genuinely fit the model window |
 | Background jobs | **Celery + Redis** | Keeps minutes-long ingestion out of the request cycle |
 | Migrations | **Alembic** | Schema changes are versioned, ordered and reversible |
@@ -563,7 +563,7 @@ curl -X POST http://localhost:8000/api/v1/chat/sessions/$SESSION/messages \
     "score": 0.5832,
     "snippet": "SECTION 1: ANNUAL LEAVE ENTITLEMENT..."
   }],
-  "model": "llama-3.3-70b-versatile"
+  "model": "openai/gpt-oss-120b"
 }
 ```
 </details>
@@ -657,7 +657,7 @@ Set in `backend/.env`. Full annotated list in `backend/.env.example`.
 | Variable | Default | What it controls |
 |---|---|---|
 | `GROQ_API_KEY` | *(empty)* | **The one key you need.** Empty = demo mode |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Which model writes answers |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Which model writes answers |
 | `LLM_TEMPERATURE` | `0.1` | 0 = factual, 1 = creative |
 | `EMBEDDING_PROVIDER` | `local` | `local` \| `openai` \| `mock` |
 | `EMBEDDING_DIMENSION` | `384` | **Must match the model.** MiniLM 384, OpenAI 1536 |
@@ -758,6 +758,6 @@ Tesseract is a separate program, not a Python package. Install it (see prerequis
 
 <div align="center">
 
-**Built with** FastAPI · PostgreSQL + pgvector · Celery · Redis · Next.js · Tailwind · Framer Motion · sentence-transformers · tiktoken · Tesseract · Llama 3.3 on Groq
+**Built with** FastAPI · PostgreSQL + pgvector · Celery · Redis · Next.js · Tailwind · Framer Motion · sentence-transformers · tiktoken · Tesseract · GPT-OSS 120B on Groq
 
 </div>

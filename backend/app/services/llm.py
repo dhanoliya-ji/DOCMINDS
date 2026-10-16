@@ -25,7 +25,7 @@ actual documents, and every claim can be traced back to a page number.
 
 WHICH MODEL AND WHY
 -------------------
-We use Groq, which serves open models such as Llama 3.3 70B.
+We use Groq, which serves open models such as GPT-OSS 120B.
   * Free tier, no credit card required -> perfect for a portfolio project.
   * Extremely fast (hundreds of tokens per second), so the chat UI feels alive.
   * Its SDK mirrors OpenAI's, so switching providers later is a small change.

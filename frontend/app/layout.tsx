@@ -22,7 +22,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "DocMinds — Document Intelligence",
   description:
-    "Upload documents in 19 formats and ask questions answered from their contents, with page-level citations. Built with FastAPI, pgvector and Llama 3.3.",
+    "Upload documents in 19 formats and ask questions answered from their contents, with page-level citations. Built with FastAPI, pgvector and GPT-OSS on Groq.",
   keywords: [
     "RAG",
     "semantic search",

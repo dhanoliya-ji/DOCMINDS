@@ -98,7 +98,7 @@ services:
       - key: LLM_PROVIDER
         value: groq
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
 
       # Embeddings from Google's free Gemini API instead of a local model.
       # Render passes this to the Docker build too, which then leaves
