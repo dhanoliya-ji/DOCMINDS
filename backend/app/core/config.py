@@ -37,8 +37,27 @@ this file) and every other module shares it.
 
 import os
 from typing import List, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _for_asyncpg(url: str) -> str:
+    """Translate libpq connection options into what asyncpg understands.
+
+    Neon (and most managed Postgres hosts) hand out URLs ending in
+    `?sslmode=require&channel_binding=require`. Those are libpq options:
+    psycopg2 (Alembic) reads them happily, but asyncpg rejects both with
+    "unexpected keyword argument 'sslmode'". asyncpg spells TLS `ssl`, and has
+    no channel binding option at all.
+    """
+    parts = urlsplit(url)
+    pairs = [
+        ("ssl" if key == "sslmode" else key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key != "channel_binding"
+    ]
+    return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
 class Settings(BaseSettings):
@@ -311,7 +330,7 @@ class Settings(BaseSettings):
                 url = url.replace("postgres://", "postgresql://", 1)
             if url.startswith("postgresql://"):
                 url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-            return url
+            return _for_asyncpg(url)
         return (
             f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
