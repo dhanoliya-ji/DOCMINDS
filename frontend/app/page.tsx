@@ -165,7 +165,7 @@ export default function LandingPage() {
 
           <motion.h1
             variants={fadeUp}
-            className="text-gradient animate-gradient mx-auto max-w-4xl text-5xl font-bold leading-[1.1] tracking-tight md:text-7xl"
+            className="text-gradient animate-gradient mx-auto max-w-4xl text-5xl font-bold leading-[1.1] tracking-tight md:text-7xl md:leading-none"
           >
             Ask your documents
             <br />

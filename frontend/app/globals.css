@@ -6,129 +6,162 @@
  * changing a value in one place restyles the entire app consistently.
  */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind scans only the folders the v3 config listed. `source(none)` turns
+   off v4's automatic detection, which would also scan tests and docs. */
+@import "tailwindcss" source(none);
+@source "./";
+@source "../components";
 
-/* ====================================================================
-   DESIGN TOKENS
-   --------------------------------------------------------------------
-   CSS custom properties (variables). Defining the palette once means the
-   whole app can be re-themed by editing this single block.
-   ==================================================================== */
-:root {
-  /* Deep navy rather than pure black -- softer on the eyes, and it lets the
-     accent colours glow against it instead of vibrating. */
-  --bg-base: #070b18;
-  --bg-elevated: #0d1426;
-  --bg-card: rgba(19, 28, 51, 0.72);
-
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-strong: rgba(255, 255, 255, 0.14);
-
-  --text-primary: #eef2ff;
-  --text-secondary: #9aa8c7;
-  --text-muted: #64738f;
-
-  /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows. */
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-glow: rgba(99, 102, 241, 0.4);
-  --violet: #a855f7;
-  --cyan: #22d3ee;
-
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
 }
 
-/* ====================================================================
-   BASE
-   ==================================================================== */
-* {
-  /* Include padding and border in an element's stated width. Without this,
+@layer base {
+  /* v3 compatibility. v4 changed two defaults this UI relies on:
+
+     - A bare `border` is now `currentcolor`, not gray-200.
+     - Buttons now get the default arrow cursor, not a pointer. */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* ====================================================================
+     DESIGN TOKENS
+     --------------------------------------------------------------------
+     CSS custom properties (variables). Defining the palette once means the
+     whole app can be re-themed by editing this single block.
+     ==================================================================== */
+  :root {
+    /* Deep navy rather than pure black -- softer on the eyes, and it lets the
+     accent colours glow against it instead of vibrating. */
+    --bg-base: #070b18;
+    --bg-elevated: #0d1426;
+    --bg-card: rgba(19, 28, 51, 0.72);
+
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.14);
+
+    --text-primary: #eef2ff;
+    --text-secondary: #9aa8c7;
+    --text-muted: #64738f;
+
+    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows. */
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --accent-glow: rgba(99, 102, 241, 0.4);
+    --violet: #a855f7;
+    --cyan: #22d3ee;
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+  }
+
+  /* ====================================================================
+     BASE
+     ==================================================================== */
+  * {
+    /* Include padding and border in an element's stated width. Without this,
      adding padding makes boxes overflow their containers -- the single most
      common source of broken layouts. */
-  box-sizing: border-box;
-}
+    box-sizing: border-box;
+  }
 
-html,
-body {
-  padding: 0;
-  margin: 0;
-  background: var(--bg-base);
-  color: var(--text-primary);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  /* Slightly thinner glyph rendering, which reads better on dark backgrounds. */
-  -webkit-font-smoothing: antialiased;
-}
+  html,
+  body {
+    padding: 0;
+    margin: 0;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      Arial,
+      sans-serif;
+    /* Slightly thinner glyph rendering, which reads better on dark backgrounds. */
+    -webkit-font-smoothing: antialiased;
+  }
 
-/* The ambient background: two large, soft colour washes fixed behind all
-   content. `fixed` keeps them still while the page scrolls, so they read as
-   lighting rather than as objects on the page. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(
-      ellipse 80% 50% at 15% -10%,
-      rgba(99, 102, 241, 0.16),
-      transparent
-    ),
-    radial-gradient(
-      ellipse 60% 50% at 90% 10%,
-      rgba(168, 85, 247, 0.12),
-      transparent
-    );
-  /* Sits behind everything, and ignores clicks so it never blocks a button. */
-  z-index: -1;
-  pointer-events: none;
-}
+  /* The ambient background: two large, soft colour washes fixed behind all
+     content. `fixed` keeps them still while the page scrolls, so they read as
+     lighting rather than as objects on the page. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(
+        ellipse 80% 50% at 15% -10%,
+        rgba(99, 102, 241, 0.16),
+        transparent
+      ),
+      radial-gradient(
+        ellipse 60% 50% at 90% 10%,
+        rgba(168, 85, 247, 0.12),
+        transparent
+      );
+    /* Sits behind everything, and ignores clicks so it never blocks a button. */
+    z-index: -1;
+    pointer-events: none;
+  }
 
-/* ---- Scrollbars: styled so they do not break the dark theme ---- */
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 99px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  /* ---- Scrollbars: styled so they do not break the dark theme ---- */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
 }
 
 /* ====================================================================
    REUSABLE COMPONENT CLASSES
    --------------------------------------------------------------------
-   `@layer components` registers these with Tailwind so they can be freely
-   combined with utility classes and are correctly ordered in the output.
+   Declared with @utility, v4's replacement for `@layer components`
+   classes: they can be freely combined with utility classes, @apply'd into
+   each other (.btn-primary builds on .btn), and are correctly ordered in
+   the output.
    ==================================================================== */
-@layer components {
+@utility glass {
   /* ---- Glass card ---------------------------------------------------
      The frosted-glass panel used for almost every surface in the app.
      `backdrop-blur` blurs whatever sits BEHIND the element, which is what
      makes the background gradients bleed softly through it. */
-  .glass {
-    @apply rounded-2xl border backdrop-blur-xl;
-    background: var(--bg-card);
-    border-color: var(--border-subtle);
-    /* Two shadows: a soft drop shadow for depth, plus a 1px inset highlight
+  @apply rounded-2xl border backdrop-blur-xl;
+  background: var(--bg-card);
+  border-color: var(--border-subtle);
+  /* Two shadows: a soft drop shadow for depth, plus a 1px inset highlight
        along the top edge that mimics light catching a real glass surface. */
-    box-shadow:
-      0 8px 32px rgba(0, 0, 0, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  }
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 
-  .glass-hover {
-    @apply transition-all duration-300;
-  }
-  .glass-hover:hover {
+@utility glass-hover {
+  @apply transition-all duration-300;
+  &:hover {
     border-color: var(--border-strong);
     /* Lift the card 2px on hover. A small movement reads as responsive
        without being distracting. */
@@ -138,52 +171,52 @@ body::before {
       0 0 0 1px var(--accent-glow),
       inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
+}
 
+@utility btn {
   /* ---- Buttons ------------------------------------------------------ */
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
            text-sm font-medium transition-all duration-200
            disabled:opacity-40 disabled:cursor-not-allowed;
-  }
+}
 
-  .btn-primary {
-    @apply btn text-white;
-    background: linear-gradient(135deg, var(--accent), var(--violet));
-    box-shadow: 0 4px 16px var(--accent-glow);
-  }
-  .btn-primary:hover:not(:disabled) {
+@utility btn-primary {
+  @apply btn text-white;
+  background: linear-gradient(135deg, var(--accent), var(--violet));
+  box-shadow: 0 4px 16px var(--accent-glow);
+  &:hover:not(:disabled) {
     /* Scale up by 2%. Subtle enough to feel physical rather than cartoonish. */
     transform: translateY(-1px) scale(1.02);
     box-shadow: 0 6px 24px var(--accent-glow);
   }
-  .btn-primary:active:not(:disabled) {
+  &:active:not(:disabled) {
     transform: translateY(0) scale(0.99);
   }
+}
 
-  .btn-ghost {
-    @apply btn border;
-    border-color: var(--border-subtle);
-    color: var(--text-secondary);
-    background: rgba(255, 255, 255, 0.03);
-  }
-  .btn-ghost:hover:not(:disabled) {
+@utility btn-ghost {
+  @apply btn border;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+  &:hover:not(:disabled) {
     color: var(--text-primary);
     border-color: var(--border-strong);
     background: rgba(255, 255, 255, 0.07);
   }
+}
 
+@utility input {
   /* ---- Form inputs -------------------------------------------------- */
-  .input {
-    @apply w-full rounded-xl border px-4 py-3 text-sm outline-none
+  @apply w-full rounded-xl border px-4 py-3 text-sm outline-hidden
            transition-all duration-200;
-    background: rgba(255, 255, 255, 0.04);
-    border-color: var(--border-subtle);
-    color: var(--text-primary);
-  }
-  .input::placeholder {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+  &::placeholder {
     color: var(--text-muted);
   }
-  .input:focus {
+  &:focus {
     border-color: var(--accent);
     /* A glow ring instead of the browser's default outline. Crucially this is
        still a VISIBLE focus indicator, which keyboard users depend on -- we
@@ -191,52 +224,56 @@ body::before {
     box-shadow: 0 0 0 3px var(--accent-glow);
     background: rgba(255, 255, 255, 0.06);
   }
+}
 
+@utility pill {
   /* ---- Status pills ------------------------------------------------- */
-  .pill {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1
+  @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1
            text-xs font-medium;
-  }
-  .pill-success {
-    @apply pill;
-    background: rgba(52, 211, 153, 0.12);
-    color: var(--success);
-  }
-  .pill-warning {
-    @apply pill;
-    background: rgba(251, 191, 36, 0.12);
-    color: var(--warning);
-  }
-  .pill-danger {
-    @apply pill;
-    background: rgba(248, 113, 113, 0.12);
-    color: var(--danger);
-  }
-  .pill-info {
-    @apply pill;
-    background: rgba(99, 102, 241, 0.14);
-    color: var(--accent-hover);
-  }
+}
 
+@utility pill-success {
+  @apply pill;
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--success);
+}
+
+@utility pill-warning {
+  @apply pill;
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--warning);
+}
+
+@utility pill-danger {
+  @apply pill;
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--danger);
+}
+
+@utility pill-info {
+  @apply pill;
+  background: rgba(99, 102, 241, 0.14);
+  color: var(--accent-hover);
+}
+
+@utility text-gradient {
   /* ---- Gradient text, for headings ---------------------------------- */
-  .text-gradient {
-    /* The trick: paint a gradient across the element, then clip it to the
+  /* The trick: paint a gradient across the element, then clip it to the
        shape of the glyphs and make the text itself transparent so the
        gradient shows through. */
-    background: linear-gradient(
-      120deg,
-      var(--text-primary),
-      var(--accent-hover) 45%,
-      var(--cyan)
-    );
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    /* `background-clip: text` clips to the LINE BOX, not to the glyphs, so the
+  background: linear-gradient(
+    120deg,
+    var(--text-primary),
+    var(--accent-hover) 45%,
+    var(--cyan)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  /* `background-clip: text` clips to the LINE BOX, not to the glyphs, so the
        descenders of letters like g, y and p get cut off whenever line-height
        is tight. This small bottom padding gives them room to render. */
-    padding-bottom: 0.14em;
-  }
+  padding-bottom: 0.14em;
 }
 
 /* ====================================================================
