@@ -16,13 +16,11 @@ TO RUN IT:
     python scripts/generate_architecture_pdf.py
 """
 
-import os
 import sys
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
 class NumberedCanvas(canvas.Canvas):
@@ -100,7 +98,6 @@ def create_architecture_pdf(output_path):
     # Color palette
     navy_blue = colors.HexColor("#1E3A8A")
     charcoal = colors.HexColor("#1F2937")
-    accent_blue = colors.HexColor("#3B82F6")
     bg_light = colors.HexColor("#F9FAFB")
     border_gray = colors.HexColor("#E5E7EB")
     
@@ -159,28 +156,7 @@ def create_architecture_pdf(output_path):
         spaceAfter=8
     )
     
-    bullet_style = ParagraphStyle(
-        'Bullet_Custom',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=9.5,
-        leading=14,
-        textColor=charcoal,
-        leftIndent=15,
-        firstLineIndent=-10,
-        spaceAfter=5
-    )
     
-    callout_style = ParagraphStyle(
-        'CalloutText',
-        parent=styles['Normal'],
-        fontName='Helvetica-Oblique',
-        fontSize=9.5,
-        leading=14,
-        textColor=colors.HexColor("#1E40AF"),
-        leftIndent=10,
-        rightIndent=10
-    )
     
     story = []
     

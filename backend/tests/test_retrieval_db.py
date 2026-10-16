@@ -123,7 +123,7 @@ async def build_corpus(db: AsyncSession, name: str, texts: list[str], status="co
     chunks = []
     vectors = EmbeddingService.get_embeddings(texts)
 
-    for index, (text, vector) in enumerate(zip(texts, vectors)):
+    for index, (text, vector) in enumerate(zip(texts, vectors, strict=True)):
         chunk = Chunk(
             document_id=document.id,
             content=text,

@@ -61,3 +61,8 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 frontend/.playwright/
+
+# Test coverage output (uploaded to Codecov by CI, never committed)
+coverage/
+.coverage
+coverage.xml

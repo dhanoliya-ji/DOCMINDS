@@ -126,7 +126,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials: signature invalid or expired.",
-        )
+        ) from None
 
     # The token is genuine, but the user may have been deleted since it was
     # issued -- a token stays valid for its full lifetime regardless.

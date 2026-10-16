@@ -91,7 +91,7 @@ class TestBatching:
         texts = ["alpha", "bravo", "charlie"]
         batched = EmbeddingService.get_embeddings(texts)
 
-        for text, vector in zip(texts, batched):
+        for text, vector in zip(texts, batched, strict=True):
             assert vector == EmbeddingService.get_embedding(text)
 
     def test_an_empty_batch_returns_an_empty_list(self):

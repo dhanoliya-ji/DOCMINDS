@@ -41,7 +41,6 @@ Create Date: 2026-08-30
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
 
 # ----------------------------------------------------------------------
