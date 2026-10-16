@@ -456,7 +456,7 @@ export default function ChatPanel({ projectId }: Props) {
         <button
           onClick={() => send()}
           disabled={!input.trim() || sending || !sessionId}
-          className="btn-primary h-[46px] w-[46px] shrink-0 !px-0"
+          className="btn-primary h-[46px] w-[46px] shrink-0 px-0!"
           title="Send"
         >
           <ArrowUp size={18} />
