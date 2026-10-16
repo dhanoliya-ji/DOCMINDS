@@ -6,11 +6,15 @@
 
 A production-shaped **RAG** (Retrieval-Augmented Generation) platform: multi-tenant FastAPI backend, PostgreSQL + pgvector for semantic search, Celery workers for background ingestion, and an animated Next.js frontend.
 
+[![CI](https://github.com/dhanoliya-ji/DocMinds/actions/workflows/ci.yml/badge.svg)](https://github.com/dhanoliya-ji/DocMinds/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16_+_pgvector-4169E1?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Celery](https://img.shields.io/badge/Celery-5.4-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
+[![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Llama](https://img.shields.io/badge/Llama_3.3_70B-on_Groq-F55036)](https://console.groq.com/)
 
 ![Landing page](docs/images/01-landing.png)
@@ -27,6 +31,7 @@ Unfamiliar with RAG, embeddings or vector search? The
 ## Table of contents
 
 - [What this actually does](#what-this-actually-does)
+- [Key features](#key-features)
 - [Screenshots](#screenshots)
 - [How RAG works here, step by step](#how-rag-works-here-step-by-step)
 - [Architecture](#architecture)
@@ -35,6 +40,7 @@ Unfamiliar with RAG, embeddings or vector search? The
 - [Quick start](#quick-start)
 - [Where to put your API keys](#where-to-put-your-api-keys)
 - [Deploying to the cloud](#deploying-to-the-cloud)
+- [Testing](#testing)
 - [API reference](#api-reference)
 - [Project structure](#project-structure)
 - [Configuration reference](#configuration-reference)
@@ -64,6 +70,17 @@ The important part is what it does **not** do. It never answers from the model's
 Ordinary keyword search matches **letters**. Search for "time off" and you miss a section headed "Annual Leave Entitlement" entirely.
 
 This matches **meaning**. Text is converted into 384-number vectors where similar meanings land in similar places, so "time off" finds "annual leave" despite sharing no words at all. That is what the screenshots below are demonstrating.
+
+---
+
+## Key features
+
+- **Multi-Tenant Security Boundaries**: Data isolation is enforced directly inside SQL queries using `org_id` joins across organizations, projects, and chunks, preventing cross-tenant information leaks.
+- **19 Supported File Extensions**: Extracted with format-native parsers for PDF, Office formats (DOCX, PPTX, XLSX), HTML, EML, CSV, ZIP, Markdown, and automatic Tesseract OCR for scanned images and PDFs.
+- **Page-Aware Token Chunking**: Preserves exact page numbers per chunk with sliding token window overlap (`tiktoken`), allowing exact page-level citations.
+- **Fast Vector Similarity Search**: PostgreSQL + `pgvector` with HNSW cosine indexing for rapid, sub-second semantic retrieval without an external vector database.
+- **Grounded Answer Generation**: Uses Llama 3.3 70B via Groq with low temperature (`0.1`) and strict system prompts to prevent hallucination and enforce verifiable page citations.
+- **Asynchronous Ingestion Pipeline**: Decouples fast HTTP uploads from worker execution, handling multi-stage OCR, extraction, chunking, and embedding via Celery workers and Redis.
 
 ---
 
@@ -114,31 +131,14 @@ A language model has never seen your company's documents. Ask it about your inte
 
 ### Stage 1 — Ingestion (happens once, when you upload)
 
-```
-   your file
-       │
-       ▼
-┌──────────────────┐   PyMuPDF / python-docx / python-pptx / openpyxl /
-│  1. EXTRACT      │   BeautifulSoup / email / csv / zipfile
-│                  │   → plain text + metadata + detected language
-└──────────────────┘
-       │            Is this a scan? A PDF page yielding under 100
-       │            characters has no text layer, so:
-       ▼            rasterise at 150 DPI → Tesseract OCR
-┌──────────────────┐
-│  2. CHUNK        │   tiktoken (cl100k_base) counts real tokens.
-│                  │   Split per page → ~400-token pieces, 60-token overlap
-└──────────────────┘   → each chunk remembers its page number
-       │
-       ▼
-┌──────────────────┐   sentence-transformers all-MiniLM-L6-v2, on this server
-│  3. EMBED        │   each chunk → 384 numbers describing its meaning
-└──────────────────┘
-       │
-       ▼
-┌──────────────────┐   chunks table       → the readable text
-│  4. STORE        │   chunk_embeddings   → vector(384) + HNSW cosine index
-└──────────────────┘
+```mermaid
+flowchart TD
+    F["Your File"] --> EXT["1. EXTRACT<br/>PyMuPDF / python-docx / python-pptx / openpyxl /<br/>BeautifulSoup / email / csv / zipfile<br/><i>→ plain text + metadata + language</i>"]
+    EXT -->|"low text density (<100 char/page)?"| OCR["Rasterise @ 150 DPI<br/>Tesseract OCR"]
+    EXT --> CHK["2. CHUNK<br/>tiktoken (cl100k_base) counts real tokens<br/>Split per page → ~400-token pieces, 60-token overlap<br/><i>→ each chunk remembers its page number</i>"]
+    OCR --> CHK
+    CHK --> EMB["3. EMBED<br/>sentence-transformers all-MiniLM-L6-v2 (local)<br/><i>each chunk → 384-number vector describing meaning</i>"]
+    EMB --> STR["4. STORE<br/>chunks table → readable text<br/>chunk_embeddings → vector(384) + HNSW cosine index"]
 ```
 
 **Why chunk at all?** Two reasons. A 300-page manual will not fit in a prompt. More importantly, precision: one vector for a whole book means "a book about many things", which matches nothing sharply. One vector per paragraph represents a single idea and matches precisely — and lets the answer say *"page 12"* instead of *"somewhere in this file"*.
@@ -147,32 +147,13 @@ A language model has never seen your company's documents. Ask it about your inte
 
 ### Stage 2 — Answering (happens on every question)
 
-```
-   "how much time off do I get?"
-       │
-       ▼
-┌──────────────────┐   The SAME embedding model as ingestion.
-│  1. EMBED QUERY  │   Using a different model here would be like
-└──────────────────┘   measuring one thing in cm and the other in pounds.
-       │
-       ▼
-┌──────────────────┐   SELECT ... ORDER BY embedding <=> query_vector
-│  2. RETRIEVE     │   JOIN chunks → documents → projects
-│     (pgvector)   │   WHERE projects.org_id = <caller's org>   ← security
-└──────────────────┘   LIMIT 5, then drop anything below min_score
-       │
-       ▼
-┌──────────────────┐   EXCERPT [1] (source: handbook.pdf, page 1): ...
-│  3. AUGMENT      │   EXCERPT [2] (source: policy.docx, page 3): ...
-└──────────────────┘   QUESTION: how much time off do I get?
-       │
-       ▼
-┌──────────────────┐   Llama 3.3 70B on Groq, temperature 0.1
-│  4. GENERATE     │   System prompt: answer ONLY from these excerpts,
-└──────────────────┘   cite each claim as [n], else say you don't know
-       │
-       ▼
-   answer + citations → saved to chat_messages with tokens & latency
+```mermaid
+flowchart TD
+    Q["Query: 'how much time off do I get?'"] --> EMBQ["1. EMBED QUERY<br/>Same model as ingestion (all-MiniLM-L6-v2)"]
+    EMBQ --> RET["2. RETRIEVE (pgvector)<br/>SELECT ... ORDER BY embedding <=> query_vector<br/>JOIN chunks → documents → projects<br/>WHERE projects.org_id = caller's org<br/>LIMIT 5, drop below min_score"]
+    RET --> AUG["3. AUGMENT<br/>EXCERPT [1] (source: handbook.pdf, page 1)<br/>EXCERPT [2] (source: policy.docx, page 3)<br/>QUESTION: how much time off do I get?"]
+    AUG --> GEN["4. GENERATE<br/>Llama 3.3 70B on Groq (temperature = 0.1)<br/>System prompt: answer ONLY from excerpts, cite as [n]"]
+    GEN --> ANS["Answer + citations saved to chat_messages"]
 ```
 
 ### Why answers can be trusted
@@ -189,39 +170,37 @@ A language model has never seen your company's documents. Ask it about your inte
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│  BROWSER                                                          │
-│  Next.js 16 · React 19 · Tailwind · Framer Motion                 │
-│  landing · auth · dashboard · upload · search · chat              │
-└───────────────────────────┬───────────────────────────────────────┘
-                            │  REST + JWT
-┌───────────────────────────▼───────────────────────────────────────┐
-│  FASTAPI                                                          │
-│  ┌─────────┬──────────┬───────────┬──────────┬─────────────────┐  │
-│  │  auth   │ projects │ documents │  search  │      chat       │  │
-│  │  JWT    │  tenancy │  upload   │ semantic │  RAG + cites    │  │
-│  └─────────┴──────────┴───────────┴──────────┴─────────────────┘  │
-│  services: extractor · ocr · chunker · embedding · retrieval · llm│
-└──────┬──────────────────────────────────┬─────────────────────────┘
-       │ enqueue job                      │ query vectors
-       ▼                                  ▼
-┌──────────────┐                 ┌────────────────────────────────┐
-│ REDIS        │                 │ POSTGRESQL 16 + pgvector       │
-│ Celery queue │                 │  organizations → users         │
-└──────┬───────┘                 │  projects → documents          │
-       │ worker picks up          │  chunks → chunk_embeddings    │
-       ▼                          │           vector(384) HNSW     │
-┌──────────────────────┐          │  chat_sessions → messages      │
-│ CELERY WORKER        │─────────▶│  api_keys · audit_logs         │
-│ extract → chunk →    │  writes  └────────────────────────────────┘
-│ embed → store        │
-└──────────┬───────────┘
-           │ generation
-           ▼
-┌────────────────────────┐
-│ GROQ · Llama 3.3 70B   │
-└────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Frontend["Browser"]
+        UI["Next.js 16 · React 19 · Tailwind · Framer Motion<br/>Landing · Auth · Dashboard · Upload · Search · Chat"]
+    end
+
+    subgraph BackendAPI["FastAPI App"]
+        API["REST API + JWT Auth<br/>Routers: auth · projects · documents · search · chat"]
+        SERVICES["Services: extractor · ocr · chunker · embedding · retrieval · llm"]
+    end
+
+    subgraph QueueSystem["Async Queue"]
+        REDIS[("REDIS<br/>Celery Broker")]
+        WORKER["CELERY WORKER<br/>extract → chunk → embed → store"]
+    end
+
+    subgraph DatabaseLayer["PostgreSQL 16 + pgvector"]
+        DB[("Database<br/>organizations → users → projects → documents<br/>chunks → chunk_embeddings (vector(384) HNSW)<br/>chat_sessions → messages · api_keys · audit_logs")]
+    end
+
+    subgraph LLMProvider["LLM Engine"]
+        GROQ["GROQ Cloud<br/>Llama 3.3 70B"]
+    end
+
+    UI -->|"REST + JWT"| API
+    API --> SERVICES
+    API -->|"1. Enqueue Job"| REDIS
+    REDIS -->|"2. Pick up job"| WORKER
+    API -->|"Query vectors / relational data"| DB
+    WORKER -->|"3. Write chunks & embeddings"| DB
+    SERVICES -->|"4. Generate answer"| GROQ
 ```
 
 ### Why the worker is a separate process
@@ -455,6 +434,42 @@ Without it the browser blocks every request with a CORS error and the app appear
 - Free web services **sleep after 15 minutes** idle; the next request takes ~50s to wake them.
 - Free Postgres instances **expire after 90 days**.
 - Uploaded files live on the container's ephemeral disk and are lost on restart. Chunks and embeddings survive in Postgres, so **search keeps working** — only the original-file download breaks. A production deployment should use S3 or a mounted volume.
+
+---
+
+## Testing
+
+The repository contains 370 tests across backend, frontend, and end-to-end suites:
+
+### Running backend tests
+
+```bash
+cd backend
+# Run unit and integration tests
+pytest
+```
+*See [`backend/tests/README.md`](backend/tests/README.md) for test breakdown and coverage details.*
+
+### Running frontend tests
+
+```bash
+cd frontend
+# Run unit and component tests once
+npm run test:run
+
+# Run unit tests in watch mode
+npm test
+```
+*See [`frontend/tests/README.md`](frontend/tests/README.md) for UI test component coverage.*
+
+### Running end-to-end (E2E) browser tests
+
+```bash
+cd frontend
+# Run Playwright E2E browser suite against running services
+npm run test:e2e
+```
+*See [`frontend/tests-e2e/README.md`](frontend/tests-e2e/README.md) for E2E environment requirements.*
 
 ---
 
