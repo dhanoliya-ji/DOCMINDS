@@ -51,8 +51,10 @@ is then a one-line change in .env, and no other file in the project notices.
 """
 
 import hashlib
+import math
 import random
 import threading
+import time
 from typing import List
 
 from app.core.config import settings
@@ -89,7 +91,7 @@ class EmbeddingService:
     # ==================================================================
 
     @classmethod
-    def get_embeddings(cls, texts: List[str]) -> List[List[float]]:
+    def get_embeddings(cls, texts: List[str], *, for_query: bool = False) -> List[List[float]]:
         """
         Convert a LIST of texts into a LIST of vectors, all in one go.
 
@@ -103,6 +105,11 @@ class EmbeddingService:
         in one call is dramatically faster than 32 separate calls -- the model
         processes them as one batch on the CPU/GPU, and for API providers it is
         one network round-trip instead of 32.
+
+        `for_query` says the text is a user's question rather than document
+        content. Only the Gemini provider uses it (it embeds questions and
+        documents slightly differently, which improves retrieval); the others
+        treat both the same.
         """
         # Guard clause: an empty input gives an empty output. Without this,
         # some providers would raise an error on a zero-length batch.
@@ -117,6 +124,8 @@ class EmbeddingService:
             return cls._get_local_embeddings(texts)
         elif provider == "openai":
             return cls._get_openai_embeddings(texts)
+        elif provider == "gemini":
+            return cls._get_gemini_embeddings(texts, for_query=for_query)
         elif provider == "mock":
             return cls._get_mock_embeddings(texts)
         else:
@@ -138,7 +147,7 @@ class EmbeddingService:
         wrapping it in a one-item list and unwrapping the result keeps the
         calling code in retrieval.py readable.
         """
-        results = cls.get_embeddings([text])
+        results = cls.get_embeddings([text], for_query=True)
         # `results[0] if results else []` guards against the (unlikely) case of
         # a provider returning nothing, so we return an empty list rather than
         # raising an IndexError.
@@ -280,6 +289,99 @@ class EmbeddingService:
             return cls._get_mock_embeddings(texts)
 
     # ==================================================================
+    # PROVIDER: GEMINI (Google's hosted API -- free tier)
+    # ==================================================================
+
+    # batchEmbedContents takes at most 100 texts per call.
+    _GEMINI_BATCH = 100
+    # Tests swap in an httpx.MockTransport here; None means the real network.
+    _gemini_transport = None
+
+    @classmethod
+    def _get_gemini_embeddings(cls, texts: List[str], *, for_query: bool = False) -> List[List[float]]:
+        """
+        Embed through Google's Gemini API, which has a free tier.
+
+        This is what lets the live demo run on a 512 MB free host: there is no
+        PyTorch model in memory, just an HTTPS call.
+
+        Unlike the other providers, a failure here RAISES instead of falling
+        back to mock vectors. Mock vectors would be stored as if they were
+        real, and search would quietly return nothing; a raised error marks
+        the document "failed" and says why.
+        """
+        import httpx
+
+        if not settings.GEMINI_API_KEY:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER is 'gemini' but GEMINI_API_KEY is empty. "
+                "Get a free key at https://aistudio.google.com/apikey"
+            )
+
+        model = settings.GEMINI_EMBEDDING_MODEL
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{model}:batchEmbedContents"
+        )
+        # Questions and passages are embedded differently on purpose: the
+        # model places a question near the passages that ANSWER it.
+        task_type = "RETRIEVAL_QUERY" if for_query else "RETRIEVAL_DOCUMENT"
+
+        vectors: List[List[float]] = []
+        with httpx.Client(timeout=60, transport=cls._gemini_transport) as client:
+            for start in range(0, len(texts), cls._GEMINI_BATCH):
+                batch = texts[start:start + cls._GEMINI_BATCH]
+                body = {
+                    "requests": [
+                        {
+                            "model": f"models/{model}",
+                            "content": {"parts": [{"text": text}]},
+                            "taskType": task_type,
+                            "outputDimensionality": settings.EMBEDDING_DIMENSION,
+                        }
+                        for text in batch
+                    ]
+                }
+                data = cls._post_gemini(client, url, body)
+                embeddings = data.get("embeddings", [])
+                if len(embeddings) != len(batch):
+                    raise RuntimeError(
+                        f"Gemini returned {len(embeddings)} embeddings for {len(batch)} texts."
+                    )
+                # Below the full 3072 numbers, Gemini's vectors are not unit
+                # length; its docs say to normalise them. Cosine distance would
+                # cope either way, but every other provider stores unit vectors.
+                vectors.extend(cls._unit(item["values"]) for item in embeddings)
+        return vectors
+
+    @classmethod
+    def _post_gemini(cls, client, url: str, body: dict) -> dict:
+        """POST, retrying the free tier's rate limits (429) and blips (5xx)."""
+        delay = 2.0
+        for attempt in range(5):
+            response = client.post(
+                url, json=body, headers={"x-goog-api-key": settings.GEMINI_API_KEY}
+            )
+            if response.status_code < 400:
+                return response.json()
+            if response.status_code != 429 and response.status_code < 500:
+                # 400/401/403: a bad key or request. Retrying cannot fix it.
+                raise RuntimeError(
+                    f"Gemini embeddings failed (HTTP {response.status_code}): {response.text[:300]}"
+                )
+            if attempt < 4:
+                time.sleep(float(response.headers.get("retry-after", delay)))
+                delay *= 2
+        raise RuntimeError(
+            f"Gemini embeddings still failing after retries (HTTP {response.status_code})."
+        )
+
+    @staticmethod
+    def _unit(values: List[float]) -> List[float]:
+        norm = math.sqrt(sum(v * v for v in values)) or 1.0
+        return [v / norm for v in values]
+
+    # ==================================================================
     # PROVIDER 3: MOCK (for tests, CI, and offline development)
     # ==================================================================
 
@@ -342,4 +444,8 @@ class EmbeddingService:
             return settings.LOCAL_EMBEDDING_MODEL
         elif provider == "openai":
             return settings.OPENAI_EMBEDDING_MODEL
+        elif provider == "gemini":
+            # The size is part of the name: the same model at a different
+            # size produces vectors that are not comparable.
+            return f"{settings.GEMINI_EMBEDDING_MODEL}@{settings.EMBEDDING_DIMENSION}"
         return f"mock-embedding-{settings.EMBEDDING_DIMENSION}"

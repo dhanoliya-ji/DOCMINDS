@@ -211,7 +211,9 @@ class Settings(BaseSettings):
     #   openai  -> OpenAI's paid API. Higher quality, requires a paid key.
     #   mock    -> fake but deterministic vectors, used by tests and CI so the
     #              test suite never needs a network connection or a key.
-    EMBEDDING_PROVIDER: Literal["local", "openai", "mock"] = "local"
+    #   gemini  -> Google's hosted API. Free tier, no PyTorch in memory, so the
+    #              API fits a 512 MB free host. Used by the free live demo.
+    EMBEDDING_PROVIDER: Literal["local", "openai", "gemini", "mock"] = "local"
 
     # The local model. all-MiniLM-L6-v2 is small (~90 MB), fast on a plain CPU,
     # and produces 384-number vectors. It downloads automatically on first use
@@ -220,6 +222,12 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # Free key: https://aistudio.google.com/apikey. gemini-embedding-001 can
+    # shorten its vectors to any size from 128 to 3072, so it is asked for
+    # EMBEDDING_DIMENSION numbers and the database column stays the same.
+    GEMINI_API_KEY: str = ""
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
     # >>> IMPORTANT <<<
     # Every vector stored in the database MUST contain exactly this many
@@ -230,6 +238,17 @@ class Settings(BaseSettings):
     # existing document, otherwise Postgres rejects the insert with a
     # "expected N dimensions, not M" error.
     EMBEDDING_DIMENSION: int = 384
+
+    # ------------------------------------------------------------------
+    # WHERE UPLOADED DOCUMENTS ARE PROCESSED
+    # ------------------------------------------------------------------
+    #   celery  -> a separate worker process picks the job up from Redis.
+    #              The normal setup: heavy OCR never slows the API down.
+    #   inline  -> the API processes each upload itself, right after
+    #              replying. No worker and no Redis needed -- which is what
+    #              lets the live demo run on free hosting, where background
+    #              workers are not free.
+    INGESTION_MODE: Literal["celery", "inline"] = "celery"
 
     # How many chunks to hand the embedding model in one call. Batching is far
     # faster than one-at-a-time, but too large a batch exhausts memory.
