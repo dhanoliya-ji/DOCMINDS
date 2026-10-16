@@ -89,7 +89,7 @@ tiktoken==0.7.0
 #            This is our default provider: free, no API key, works offline, and
 #            document text never leaves the machine.
 #            It pulls in PyTorch, which is why installation is a large download.
-sentence-transformers==3.0.1
+sentence-transformers==6.1.0
 
 # groq : client for Groq's API, which serves Llama 3.3 70B and writes the final
 #            answers. Free tier, no credit card.
