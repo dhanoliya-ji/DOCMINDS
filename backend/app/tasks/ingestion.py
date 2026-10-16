@@ -270,7 +270,7 @@ async def async_process_document(document_id: str) -> None:
                     embedding=vector,
                     model_name=model_name,
                 )
-                for chunk, vector in zip(chunk_objects, vectors)
+                for chunk, vector in zip(chunk_objects, vectors, strict=True)
             ]
 
             db.add_all(embedding_objects)

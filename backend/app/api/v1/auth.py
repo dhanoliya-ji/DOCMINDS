@@ -223,7 +223,7 @@ async def refresh_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token.",
-        )
+        ) from None
 
     # Re-read the user from the database rather than trusting anything cached
     # in the token. In the days since it was issued they may have been
