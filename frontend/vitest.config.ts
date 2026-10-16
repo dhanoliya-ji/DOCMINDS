@@ -32,7 +32,11 @@ export default defineConfig({
   // Next.js manages and rewrites without asking. Without it, every .tsx test
   // fails with "React is not defined", an error that points at the test file
   // rather than at the transform actually responsible.
-  esbuild: { jsx: "automatic" },
+  //
+  // `oxc`, not `esbuild`: Vite 8 replaced esbuild with Oxc. The old key only
+  // type-checked while a stale esbuild sat in node_modules, so `next build`
+  // (which type-checks this file) failed on a clean install -- Vercel's.
+  oxc: { jsx: { runtime: "automatic" } },
 
   resolve: {
     alias: {
