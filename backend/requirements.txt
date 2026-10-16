@@ -78,7 +78,7 @@ langdetect==1.0.9
 #               it is not a Python package. See the README for instructions.
 # pillow      : image loading and manipulation, which pytesseract needs.
 pytesseract==0.3.10
-pillow==10.3.0
+pillow==12.3.0
 
 # ---- AI: EMBEDDINGS AND TEXT GENERATION ------------------------------
 # tiktoken : counts tokens exactly the way the models do, so our chunks are
