@@ -323,11 +323,42 @@ jobs:
 
       - name: npm audit
         working-directory: frontend
-        # The frontend is currently at zero vulnerabilities, and this is what
-        # keeps it there. `--audit-level=high` means a new moderate advisory
-        # reports without failing the build, while a high or critical one
-        # stops it -- the line between "worth knowing" and "worth blocking".
-        run: npm audit --audit-level=high
+        # A new moderate advisory reports without failing the build, while a
+        # high or critical one stops it -- the line between "worth knowing" and
+        # "worth blocking".
+        #
+        # ONE advisory is excused, by exact ID, and nothing else:
+        #
+        #   GHSA-vfj7-8cjw-p6xm  braces: stack exhaustion on deeply nested
+        #   glob patterns. There is no patched release of braces at all, and
+        #   it arrives only through eslint-config-next -> fast-glob ->
+        #   micromatch, i.e. the linter matching this repo's own file globs.
+        #   No attacker-supplied pattern ever reaches it. npm's only proposed
+        #   "fix" is downgrading the lint config to Next 14.
+        #
+        # Blocking on it would keep this job red until upstream ships a fix,
+        # and a job that is always red stops being read -- which is exactly
+        # when a real advisory would slip through. Any OTHER high or critical
+        # finding still fails here. When braces ships a fix, delete ALLOWED
+        # and this goes back to plain `npm audit --audit-level=high`.
+        env:
+          ALLOWED: GHSA-vfj7-8cjw-p6xm
+        run: |
+          npm audit || true
+          npm audit --json > audit.json || true
+          jq -r --arg allow "$ALLOWED" '
+            [ .vulnerabilities // error("npm audit returned no report")
+              | .[].via[] | objects
+              | select(.severity == "high" or .severity == "critical")
+              | select(.url | endswith($allow) | not)
+              | "\(.severity): \(.name) -- \(.title) (\(.url))" ]
+            | unique | .[]' audit.json > blocking.txt
+          if [ -s blocking.txt ]; then
+            echo "::error::High or critical advisories found:"
+            cat blocking.txt
+            exit 1
+          fi
+          echo "No blocking advisories (excused by ID: $ALLOWED)."
 
       - uses: actions/setup-python@v5
         with:
