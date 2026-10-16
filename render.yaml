@@ -13,31 +13,36 @@
 #
 #  HOW TO DEPLOY
 #  -------------
-#   1. Push this repository to GitHub.
+#   1. Create a free database at https://neon.tech, open Connect, and copy
+#      the connection string. pgvector is switched on by the first migration
+#      (`CREATE EXTENSION IF NOT EXISTS vector`); Neon allows that.
 #   2. Go to  https://dashboard.render.com/blueprints  and click
 #      "New Blueprint Instance".
 #   3. Select this repository. Render finds this file automatically.
-#   4. It will prompt for GROQ_API_KEY -- paste your free key from
-#      https://console.groq.com/keys
+#   4. It will prompt for DATABASE_URL (paste the Neon string, for the API and
+#      the worker) and GROQ_API_KEY (free key from
+#      https://console.groq.com/keys).
 #   5. Click Apply. First build takes 10-15 minutes, mostly spent
 #      installing PyTorch and baking in the embedding model.
 #
 #  NOTE ON THE FREE TIER
 #  Free web services SLEEP after 15 minutes with no traffic, so the first
 #  request after an idle period takes ~50 seconds to wake the container.
-#  Free Postgres instances expire after 90 days and must be recreated.
+#
+#  THE DATABASE IS ON NEON, NOT RENDER
+#  Render's free Postgres is deleted 30 days after creation (plus a 14-day
+#  grace period), and with it every uploaded document. Neon's free plan does
+#  not expire and includes pgvector, so DATABASE_URL is a Neon connection
+#  string, pasted once (sync: false). The app adapts it for asyncpg itself.
+#
+#  WHAT RENDER'S FREE PLAN CANNOT RUN (as of 2026)
+#  - Background workers are not free: `docminds-worker` below needs a paid
+#    instance type.
+#  - Free web services get 512 MB of RAM; the local embedding model
+#    (PyTorch + sentence-transformers) needs more than that.
+#  A fully free demo therefore needs a lighter configuration (hosted
+#  embeddings, ingestion inside the API), which is not built yet.
 # ======================================================================
-
-databases:
-  # ---- PostgreSQL with the pgvector extension ----------------------
-  # Render's Postgres 16 ships pgvector, which our migration enables with
-  # `CREATE EXTENSION IF NOT EXISTS vector`. Without pgvector there is no
-  # vector column and no semantic search at all.
-  - name: docminds-db
-    databaseName: document_intelligence
-    user: docminds
-    plan: free
-    postgresMajorVersion: "16"
 
 services:
   # ==================================================================
@@ -71,13 +76,11 @@ services:
 
     envVars:
       # ---- Wiring to the other services ----
-      # `fromDatabase` and `fromService` inject the real connection strings
-      # at deploy time. Nothing is hard-coded, and no credentials are ever
+      # DATABASE_URL is your Neon string (asked for once); `fromService`
+      # injects the Redis address at deploy time. No credentials are ever
       # committed to this file.
       - key: DATABASE_URL
-        fromDatabase:
-          name: docminds-db
-          property: connectionString
+        sync: false
 
       - key: REDIS_URL_OVERRIDE
         fromService:
@@ -158,9 +161,7 @@ services:
       # The worker needs the same database and queue as the API. It writes
       # the chunks and embeddings that the API later reads.
       - key: DATABASE_URL
-        fromDatabase:
-          name: docminds-db
-          property: connectionString
+        sync: false   # the same Neon string as the API
 
       - key: REDIS_URL_OVERRIDE
         fromService:

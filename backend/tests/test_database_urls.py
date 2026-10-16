@@ -40,3 +40,15 @@ def test_the_component_settings_build_explicit_drivers():
     )
     assert settings.SQLALCHEMY_DATABASE_URI.startswith("postgresql+asyncpg://")
     assert settings.SQLALCHEMY_SYNC_DATABASE_URI == "postgresql+psycopg2://u:p@h:5432/app"
+
+
+def test_neon_tls_options_are_translated_for_asyncpg():
+    # Exactly the shape Neon hands out. asyncpg rejects `sslmode` and
+    # `channel_binding`, so the API could not connect; psycopg2 (Alembic)
+    # understands them and keeps them.
+    neon = "postgresql://u:p@ep-x.us-west-2.aws.neon.tech/db?sslmode=require&channel_binding=require"
+    settings = Settings(DATABASE_URL=neon)
+    assert settings.SQLALCHEMY_DATABASE_URI == "postgresql+asyncpg://u:p@ep-x.us-west-2.aws.neon.tech/db?ssl=require"
+    assert settings.SQLALCHEMY_SYNC_DATABASE_URI == (
+        "postgresql+psycopg2://u:p@ep-x.us-west-2.aws.neon.tech/db?sslmode=require&channel_binding=require"
+    )
