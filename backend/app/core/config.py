@@ -325,14 +325,21 @@ class Settings(BaseSettings):
         Alembic -- the tool that creates and updates our database tables -- is
         not asynchronous, so it needs this plain `psycopg2` version instead of
         the asyncpg one above.
+
+        The driver is named explicitly (`postgresql+psycopg2://`). A bare
+        `postgresql://` means "SQLAlchemy's default driver", and SQLAlchemy 2.1
+        changed that default from psycopg2 to psycopg 3 -- which is not
+        installed, so every migration failed with "No module named 'psycopg'".
         """
         if self.DATABASE_URL:
             url = self.DATABASE_URL
             if url.startswith("postgres://"):
                 url = url.replace("postgres://", "postgresql://", 1)
+            if url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
             return url
         return (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 

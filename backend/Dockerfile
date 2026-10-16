@@ -60,7 +60,9 @@ COPY requirements.txt .
 
 # `--no-cache-dir` stops pip keeping its download cache inside the image,
 # which would add several hundred wasted megabytes.
-RUN pip install --no-cache-dir --upgrade pip && \
+# setuptools and wheel too, not just pip: the base image's copies carry known
+# CVEs (setuptools vendors jaraco.context and wheel), and Trivy flags them.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
 # ---- Pre-download the embedding model -------------------------------
