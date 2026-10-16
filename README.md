@@ -8,14 +8,19 @@ A production-shaped **RAG** (Retrieval-Augmented Generation) platform: multi-ten
 
 [![CI](https://github.com/dhanoliya-ji/DocMinds/actions/workflows/ci.yml/badge.svg)](https://github.com/dhanoliya-ji/DocMinds/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16_+_pgvector-4169E1?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Celery](https://img.shields.io/badge/Celery-5.4-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![Celery](https://img.shields.io/badge/Celery-5.6-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Llama](https://img.shields.io/badge/Llama_3.3_70B-on_Groq-F55036)](https://console.groq.com/)
+
+[![CodeQL](https://github.com/dhanoliya-ji/DOCMINDS/actions/workflows/codeql.yml/badge.svg)](https://github.com/dhanoliya-ji/DOCMINDS/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/dhanoliya-ji/DOCMINDS/branch/main/graph/badge.svg)](https://codecov.io/gh/dhanoliya-ji/DOCMINDS)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/dhanoliya-ji/DOCMINDS/badge)](https://scorecard.dev/viewer/?uri=github.com/dhanoliya-ji/DOCMINDS)
+[![Release](https://img.shields.io/github/v/release/dhanoliya-ji/DOCMINDS)](https://github.com/dhanoliya-ji/DOCMINDS/releases/latest)
 
 ![Landing page](docs/images/01-landing.png)
 
