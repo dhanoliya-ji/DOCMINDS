@@ -98,7 +98,7 @@ sentence-transformers==6.1.0
 #            answers. Free tier, no credit card.
 #            >>> Get your key at https://console.groq.com/keys and put it in
 #            >>> backend/.env as   GROQ_API_KEY=gsk_...
-groq==0.9.0
+groq==1.7.0
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
