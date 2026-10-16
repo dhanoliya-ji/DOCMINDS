@@ -50,6 +50,11 @@ jobs:
   backend:
     name: Backend — 234 tests
     runs-on: ubuntu-latest
+    # id-token lets the Codecov upload authenticate with OIDC, so there is no
+    # upload token to store as a secret.
+    permissions:
+      contents: read
+      id-token: write
 
     services:
       # The real thing, with pgvector. The Tier 2 tests are written against
@@ -116,7 +121,16 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # pytest-cov is CI-only: it measures coverage for the Codecov report.
+        run: pip install -r requirements.txt pytest-cov==7.1.0
+
+      - name: Lint (Ruff)
+        # Rules live in backend/ruff.toml. The version is pinned so a new Ruff
+        # release cannot turn CI red without any change to the code.
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version: "0.16.7"
+          src: backend
 
       - name: Run migrations
         # Creates every table, enables the pgvector extension and builds the
@@ -131,16 +145,31 @@ jobs:
         # So a skip in CI is an error.
         run: |
           set -o pipefail
-          python -m pytest | tee result.txt
+          python -m pytest --cov=app --cov-report=xml | tee result.txt
           if grep -qE "[0-9]+ skipped" result.txt; then
             echo "::error::Tests were skipped in CI. The database service is probably not reachable, so Tier 2 never ran."
             exit 1
           fi
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: backend/coverage.xml
+          flags: backend
+          # Codecov being down, or this repo not yet activated on codecov.io,
+          # must never fail the build.
+          fail_ci_if_error: false
+
   # ====================================================================
   frontend:
     name: Frontend — 122 tests
     runs-on: ubuntu-latest
+    # id-token lets the Codecov upload authenticate with OIDC, so there is no
+    # upload token to store as a secret.
+    permissions:
+      contents: read
+      id-token: write
 
     defaults:
       run:
@@ -171,12 +200,22 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npm run test:run
+        run: npm run test:run -- --coverage --coverage.reporter=lcov --coverage.reporter=text-summary
 
       - name: Build
         # The check that catches what the tests cannot -- `next build`
         # type-checks config files the test run never touches.
         run: npm run build
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: frontend/coverage/lcov.info
+          flags: frontend
+          # Codecov being down, or this repo not yet activated on codecov.io,
+          # must never fail the build.
+          fail_ci_if_error: false
 
   # ====================================================================
   e2e:
