@@ -18,7 +18,9 @@
 # `slim` is a stripped-down Debian with Python pre-installed. The full image
 # is around 1 GB; slim is roughly 150 MB. We pin 3.11 rather than using
 # `latest`, so a future Python release cannot silently break the build.
-FROM python:3.11-slim
+# Pinned to a digest as well as a tag: a tag can be re-pointed, a digest
+# cannot. Dependabot (docker ecosystem) bumps the digest when the tag moves.
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 
 # ---- System packages -------------------------------------------------
 # These are NOT Python packages -- they are operating system programs that
