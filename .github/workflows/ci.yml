@@ -143,13 +143,23 @@ jobs:
         run: alembic upgrade head
 
       - name: Run tests
+        env:
+          # Lets test_embedding_gemini.py make one real call to Google's
+          # embedding API (the provider the free live demo uses). Secrets are
+          # never given to Dependabot or fork PRs; there the test skips.
+          GEMINI_API_KEY: ${{ secrets.AI_API_KEY }}
         # One run, then inspect its summary. The suite skips its 69 database
         # tests when no database is reachable -- correct on a laptop, and
         # dangerous here: a broken service container would present as a pass.
         # So a skip in CI is an error.
+        #
+        # Without a key (Dependabot and fork PRs) the one live-API test is
+        # DESELECTED rather than skipped, so it cannot trip this guard.
         run: |
           set -o pipefail
-          python -m pytest --cov=app --cov-report=xml | tee result.txt
+          live=""
+          if [ -z "$GEMINI_API_KEY" ]; then live="not gemini_live"; fi
+          python -m pytest --cov=app --cov-report=xml ${live:+-m "$live"} | tee result.txt
           if grep -qE "[0-9]+ skipped" result.txt; then
             echo "::error::Tests were skipped in CI. The database service is probably not reachable, so Tier 2 never ran."
             exit 1
@@ -349,6 +359,34 @@ jobs:
         run: |
           echo "===== API ====="; tail -80 /tmp/api.log || true
           echo "===== WORKER ====="; tail -80 /tmp/worker.log || true
+
+  # ====================================================================
+  demo-image:
+    name: Free-demo image (no PyTorch)
+    runs-on: ubuntu-latest
+    # The live demo builds the image with EMBEDDING_PROVIDER=gemini, which
+    # leaves PyTorch out so the API fits a 512 MB free host. Nothing else
+    # builds that variant, so this proves it still starts, really is
+    # PyTorch-free, and stays well inside the memory limit.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build the demo variant
+        run: docker build --build-arg EMBEDDING_PROVIDER=gemini -t docminds-demo backend
+
+      - name: It starts without PyTorch, inside the memory budget
+        run: |
+          docker run --rm -e EMBEDDING_PROVIDER=gemini -e INGESTION_MODE=inline docminds-demo             python -c "
+          import importlib.util, resource
+          import app.main  # the whole app: every router, model and service
+          for heavy in ('torch', 'sentence_transformers'):
+              assert importlib.util.find_spec(heavy) is None, heavy + ' is installed'
+          peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+          print(f'Peak memory after importing the app: {peak_mb:.0f} MB')
+          # Render's free web service has 512 MB; leave room for real requests.
+          assert peak_mb < 300, f'{peak_mb:.0f} MB is too close to the 512 MB limit'
+          "
+          docker image ls docminds-demo --format 'Image size: {{.Size}}'
 
   # ====================================================================
   audit:

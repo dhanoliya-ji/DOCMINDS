@@ -1,9 +1,9 @@
 # ======================================================================
 #  RENDER BLUEPRINT  --  Infrastructure as Code
 # ======================================================================
-#  This one file describes the ENTIRE cloud deployment: the API, the
-#  background worker, the database and the queue. Render reads it and
-#  creates everything for you.
+#  This file describes the API's cloud deployment. Render reads it and
+#  creates the service for you. The database lives on Neon and the
+#  frontend on Vercel, both free and neither expiring.
 #
 #  WHY THIS INSTEAD OF CLICKING THROUGH A DASHBOARD?
 #  The deployment becomes reproducible and reviewable. It lives in git next
@@ -11,7 +11,7 @@
 #  the whole stack can be recreated from scratch by pointing Render at this
 #  repository again.
 #
-#  HOW TO DEPLOY
+#  HOW TO DEPLOY   (the full guide, frontend included: DEPLOY.md)
 #  -------------
 #   1. Create a free database at https://neon.tech, open Connect, and copy
 #      the connection string. pgvector is switched on by the first migration
@@ -19,11 +19,12 @@
 #   2. Go to  https://dashboard.render.com/blueprints  and click
 #      "New Blueprint Instance".
 #   3. Select this repository. Render finds this file automatically.
-#   4. It will prompt for DATABASE_URL (paste the Neon string, for the API and
-#      the worker) and GROQ_API_KEY (free key from
-#      https://console.groq.com/keys).
-#   5. Click Apply. First build takes 10-15 minutes, mostly spent
-#      installing PyTorch and baking in the embedding model.
+#   4. It prompts for four values:
+#        DATABASE_URL     the Neon connection string from step 1
+#        GROQ_API_KEY     free, https://console.groq.com/keys (writes answers)
+#        GEMINI_API_KEY   free, https://aistudio.google.com/apikey (embeddings)
+#        FRONTEND_ORIGIN  the Vercel URL; leave blank until the frontend exists
+#   5. Click Apply. The first build takes a few minutes.
 #
 #  NOTE ON THE FREE TIER
 #  Free web services SLEEP after 15 minutes with no traffic, so the first
@@ -35,31 +36,23 @@
 #  not expire and includes pgvector, so DATABASE_URL is a Neon connection
 #  string, pasted once (sync: false). The app adapts it for asyncpg itself.
 #
-#  WHAT RENDER'S FREE PLAN CANNOT RUN (as of 2026)
-#  - Background workers are not free: `docminds-worker` below needs a paid
-#    instance type.
-#  - Free web services get 512 MB of RAM; the local embedding model
-#    (PyTorch + sentence-transformers) needs more than that.
-#  A fully free demo therefore needs a lighter configuration (hosted
-#  embeddings, ingestion inside the API), which is not built yet.
+#  WHY THIS IS ONE SERVICE, NOT THREE
+#  Locally (docker-compose) DocMinds runs an API, a Celery worker, Redis and
+#  a local PyTorch embedding model. Render's free plan cannot host that:
+#  background workers are not free, and a free web service has 512 MB of
+#  RAM, less than PyTorch needs. So the free demo runs a lighter build:
+#  - EMBEDDING_PROVIDER=gemini: embeddings from Google's free API. The image
+#    is built without PyTorch (see the Dockerfile's EMBEDDING_PROVIDER arg).
+#  - INGESTION_MODE=inline: the API processes each upload itself, so there
+#    is no worker and no Redis.
+#  Uploaded files live on the container's disk, which a free service loses
+#  on restart. Their text and embeddings are in Neon and stay searchable;
+#  only the original-file preview is lost.
 # ======================================================================
 
 services:
   # ==================================================================
-  # 1. REDIS  --  the queue Celery uses to hand jobs to the worker
-  # ==================================================================
-  - type: redis
-    name: docminds-redis
-    plan: free
-    # Only our own services may connect. An open Redis on the public
-    # internet is compromised within minutes.
-    ipAllowList: []
-    # When memory fills up, evict the least recently used keys rather than
-    # rejecting new writes, so the queue keeps functioning under pressure.
-    maxmemoryPolicy: allkeys-lru
-
-  # ==================================================================
-  # 2. THE API  --  what the browser talks to
+  # THE API  --  what the browser talks to
   # ==================================================================
   - type: web
     name: docminds-api
@@ -76,17 +69,14 @@ services:
 
     envVars:
       # ---- Wiring to the other services ----
-      # DATABASE_URL is your Neon string (asked for once); `fromService`
-      # injects the Redis address at deploy time. No credentials are ever
-      # committed to this file.
+      # DATABASE_URL is your Neon string, asked for once. No credentials
+      # are ever committed to this file.
       - key: DATABASE_URL
         sync: false
 
-      - key: REDIS_URL_OVERRIDE
-        fromService:
-          type: redis
-          name: docminds-redis
-          property: connectionString
+      # Process uploads inside the API: no worker, no Redis.
+      - key: INGESTION_MODE
+        value: inline
 
       # ---- Secrets ----
       # `generateValue: true` makes Render invent a strong random value and
@@ -110,16 +100,16 @@ services:
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
 
-      # Embeddings run locally in the container: no API key, no per-request
-      # cost, and document text never leaves the host.
+      # Embeddings from Google's free Gemini API instead of a local model.
+      # Render passes this to the Docker build too, which then leaves
+      # PyTorch out of the image.
       - key: EMBEDDING_PROVIDER
-        value: local
+        value: gemini
+      # Free key: https://aistudio.google.com/apikey
+      - key: GEMINI_API_KEY
+        sync: false
       - key: EMBEDDING_DIMENSION
         value: "384"
-      # A smaller batch size than the local default, because the free tier
-      # has limited RAM and a large batch can trigger an out-of-memory kill.
-      - key: EMBEDDING_BATCH_SIZE
-        value: "16"
 
       - key: RETRIEVAL_TOP_K
         value: "5"
@@ -138,48 +128,3 @@ services:
       - key: FRONTEND_ORIGIN
         sync: false
 
-  # ==================================================================
-  # 3. THE CELERY WORKER  --  processes documents in the background
-  # ==================================================================
-  # A SEPARATE service from the API, deliberately. Document processing is
-  # slow and CPU-hungry; running it in the web service would make the API
-  # unresponsive while a large PDF was being OCR'd. Splitting them also
-  # means each can be scaled independently.
-  - type: worker
-    name: docminds-worker
-    runtime: docker
-    plan: free
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-
-    # Override the Dockerfile's CMD: this service runs Celery, not uvicorn.
-    # `--concurrency=2` limits it to two documents at once, which fits the
-    # free tier's memory budget.
-    dockerCommand: celery -A app.core.celery_app.celery_app worker --loglevel=info --concurrency=2
-
-    envVars:
-      # The worker needs the same database and queue as the API. It writes
-      # the chunks and embeddings that the API later reads.
-      - key: DATABASE_URL
-        sync: false   # the same Neon string as the API
-
-      - key: REDIS_URL_OVERRIDE
-        fromService:
-          type: redis
-          name: docminds-redis
-          property: connectionString
-
-      - key: ENV
-        value: production
-      - key: DEBUG
-        value: "false"
-      - key: EMBEDDING_PROVIDER
-        value: local
-      - key: EMBEDDING_DIMENSION
-        value: "384"
-      - key: EMBEDDING_BATCH_SIZE
-        value: "16"
-      - key: OCR_PROVIDER
-        value: tesseract
-      - key: TESSERACT_CMD
-        value: tesseract
