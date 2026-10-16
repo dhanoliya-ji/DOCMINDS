@@ -58,7 +58,7 @@ bcrypt==4.3.0
 #          user gets an instant response instead of waiting 30 seconds.
 # redis  : the message queue Celery uses to pass jobs to its workers.
 celery==5.6.3
-redis==5.0.4
+redis==8.1.0
 
 # ---- DOCUMENT PARSING (one library per format family) ----------------
 # pymupdf        : PDF -- text, page count, metadata, and page rasterisation.
