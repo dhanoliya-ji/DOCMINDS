@@ -20,7 +20,7 @@
 # `latest`, so a future Python release cannot silently break the build.
 # Pinned to a digest as well as a tag: a tag can be re-pointed, a digest
 # cannot. Dependabot (docker ecosystem) bumps the digest when the tag moves.
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 
 # ---- System packages -------------------------------------------------
 # These are NOT Python packages -- they are operating system programs that
