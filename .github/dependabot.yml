@@ -17,6 +17,13 @@ updates:
     labels: [dependencies]
     commit-message:
       prefix: "deps(backend)"
+    ignore:
+      # passlib 1.7.4 hashes passwords here, and bcrypt 5 breaks it: every
+      # hash raises ValueError. That exact bump took login down in a sibling
+      # project. Minor and patch releases of bcrypt 4 still come through.
+      # Remove when passlib is replaced.
+      - dependency-name: bcrypt
+        update-types: ["version-update:semver-major"]
     groups:
       # One PR for every minor/patch bump in this directory, so a quiet week
       # is one PR to review rather than twelve. Major versions stay separate
