@@ -112,7 +112,7 @@ openai==3.29.0
 #
 #     python -m pytest                    everything
 #     SKIP_DB_TESTS=1 python -m pytest    Tier 1 only, no database needed
-pytest==9.0.3
+pytest==9.1.1
 
 # pytest-asyncio : lets `async def test_...` run at all. The Tier 2 tests await
 #            real database calls, and without this they would be collected,
