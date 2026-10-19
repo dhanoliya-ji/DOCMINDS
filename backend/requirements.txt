@@ -13,7 +13,7 @@
 # fastapi  : the framework itself -- routing, validation, auto-generated docs.
 # uvicorn  : the ASGI server that actually listens on a port and runs FastAPI.
 #            FastAPI defines WHAT happens; uvicorn is what runs it.
-fastapi==0.143.0
+fastapi==0.143.3
 uvicorn[standard]==0.54.0
 
 # `python-multipart` is required for file uploads. Without it, FastAPI cannot
@@ -29,7 +29,7 @@ pydantic==2.14.1
 # EmailStr (app/schemas/user.py) needs this. FastAPI 0.111 happened to install
 # it; from 0.112 it does not, so it has to be listed directly.
 email-validator==2.3.0
-pydantic-settings==2.15.0
+pydantic-settings==2.16.0
 python-dotenv==1.2.4
 
 # ---- DATABASE --------------------------------------------------------
@@ -102,7 +102,7 @@ groq==1.7.0
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
-openai==3.29.0
+openai==3.31.0
 
 # ---- TESTING ---------------------------------------------------------
 # Needed only to RUN the test suite, never by the application itself.
