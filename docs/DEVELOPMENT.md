@@ -277,12 +277,108 @@ Every chat answer records a row in `usage_events` (model, mode, tokens in and ou
 | `READINESS_TIMEOUT_SECONDS` | `3.0` | Per-dependency timeout of `GET /api/v1/health/ready` |
 | `HSTS_MAX_AGE_SECONDS` | `31536000` | `Strict-Transport-Security` max-age, sent only with `ENV=production`; 0 disables it |
 
+### Single sign-on (OpenID Connect)
+
+Off by default. With all of `OIDC_ENABLED`, `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` set, the login page shows **Continue with &lt;provider&gt;** (`backend/app/api/v1/sso.py`, `frontend/lib/sso.ts`). Accounts are matched by **verified** email: an existing account is signed in to; a new person joins an organization only through an invite (the invite link's SSO button carries the token), otherwise they create their own organization (when `OIDC_ALLOW_SIGNUP`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `OIDC_ENABLED` | `false` | Master switch |
+| `OIDC_DISCOVERY_URL` | *(empty)* | The provider's `/.well-known/openid-configuration` URL (Google: `https://accounts.google.com/.well-known/openid-configuration`; Microsoft: `https://login.microsoftonline.com/<tenant>/v2.0/.well-known/openid-configuration`; Okta: `https://<org>.okta.com/.well-known/openid-configuration`) |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | *(empty)* | From the application you register with the provider. The secret belongs in `.env` only |
+| `OIDC_SCOPES` | `openid email profile` | `email` is required for account matching |
+| `OIDC_PROVIDER_NAME` | `SSO` | The button label: "Continue with Google" |
+| `OIDC_REDIRECT_URI` | *(empty)* | Empty derives `<API>/api/v1/auth/sso/callback` from the request. Register exactly this URL with the provider |
+| `OIDC_ALLOW_SIGNUP` | `true` | Whether a first-time SSO user without an invite may create a new organization. Joining an existing one always needs an invite |
+| `OIDC_REQUIRE_EMAIL_VERIFIED` | `true` | Trust only emails the provider marks `email_verified`. Microsoft Entra ID omits that claim, so set `false` for Entra only |
+
+Locally, register `http://localhost:8000/api/v1/auth/sso/callback` as the redirect URI and make sure `FRONTEND_URL` (or the first `FRONTEND_ORIGIN`) is `http://localhost:3000`, which is where the callback sends the browser on to (`/login/sso`).
+
+### Multilingual embeddings
+
+The default local model, `all-MiniLM-L6-v2`, understands English only. `EMBEDDING_MULTILINGUAL=true` makes the **local** provider use `MULTILINGUAL_EMBEDDING_MODEL` (default `paraphrase-multilingual-MiniLM-L12-v2`, 50+ languages in one vector space, so a question in one language can match a passage in another). It also produces 384-dimension vectors, so the `vector(384)` column and `EMBEDDING_DIMENSION` stay as they are; no migration is needed. It is about 470 MB on disk, against about 90 MB for the default.
+
+**Switching requires re-indexing.** Vectors from two models are not comparable, and existing chunks keep the old model's vectors. The model name is stored with every vector (`chunk_embeddings.model_name`), and search only compares vectors from the current model, so documents embedded before the switch stop appearing in results until they are reprocessed. Re-upload them, or mark them pending so the recovery sweep re-runs them:
+
+```sql
+UPDATE documents SET status = 'pending', updated_at = now() - interval '1 day'
+WHERE id IN (SELECT DISTINCT c.document_id FROM chunks c
+             JOIN chunk_embeddings e ON e.chunk_id = c.id
+             WHERE e.model_name <> 'paraphrase-multilingual-MiniLM-L12-v2');
+```
+
+The same applies when switching back.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EMBEDDING_MULTILINGUAL` | `false` | Use the multilingual local model. Re-index after changing |
+| `MULTILINGUAL_EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Any sentence-transformers model with `EMBEDDING_DIMENSION` outputs |
+
+### Query-embedding cache
+
+Off by default. When on, each **question's** vector is cached (`QueryEmbeddingCache` in `services/embedding.py`), so a repeated question skips the model or the paid embedding API. Document chunks are never cached. The key is a SHA-256 of the model name plus the text, so changing model can never return an old vector, and question text is not readable in Redis. Redis errors count as cache misses and fall back to memory; Redis is retried every 30 seconds.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EMBEDDING_CACHE_ENABLED` | `false` | Master switch |
+| `EMBEDDING_CACHE_BACKEND` | `auto` | `auto`: Redis (`REDIS_URL`) when reachable, otherwise an in-process LRU. `memory`: always the LRU |
+| `EMBEDDING_CACHE_MAX_ENTRIES` | `2048` | Size of the in-memory LRU (about 3 KB per entry at 384 dimensions) |
+| `EMBEDDING_CACHE_TTL_SECONDS` | `86400` | Lifetime of an entry, in Redis and in memory |
+
+### Webhooks
+
+Off by default; with `WEBHOOKS_ENABLED=false` every `/api/v1/webhooks` route answers `404`. Admins register HTTPS URLs and the events they want; each event is POSTed as JSON, signed with HMAC-SHA256, retried with backoff and logged per attempt (`services/webhooks.py`, `tasks/webhooks.py`, `api/v1/webhooks.py`, migration `f6a8b0c2d4e7`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBHOOKS_ENABLED` | `false` | Master switch |
+| `WEBHOOK_MAX_ATTEMPTS` | `6` | Attempts per delivery before it is marked `failed` |
+| `WEBHOOK_RETRY_BACKOFF_SECONDS` | `30` | First wait; doubled per attempt, capped at one hour |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10` | How long the receiver has to answer |
+| `WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Turns off the SSRF check. Local testing against a receiver on your machine only |
+| `WEBHOOK_ALLOW_HTTP` | `false` | Allows `http://` targets. Local testing only |
+| `WEBHOOK_MAX_ENDPOINTS_PER_ORG` | `10` | Endpoints one organization may register |
+
+**Endpoints** (Admin only): `GET /webhooks/events` (the catalogue), `POST /webhooks` (returns the signing secret **once**), `GET /webhooks`, `PATCH /webhooks/{id}` (URL, events, description, `is_active`), `DELETE /webhooks/{id}`, `POST /webhooks/{id}/rotate-secret`, `POST /webhooks/{id}/test` (a `ping`), `GET /webhooks/{id}/deliveries`, `POST /webhooks/{id}/deliveries/{delivery_id}/redeliver`.
+
+**Events**: `document.uploaded`, `document.processed`, `document.failed` (final failure only), `document.deleted`, `member.joined`, `member.role_changed`, `member.deactivated`, `member.reactivated`, `member.removed`, `invite.created`, `api_key.created`, `api_key.revoked`, `ping`; subscribe to `*` for all. Most are produced by `audit.record()` (the `AUDIT_EVENT_MAP` in `services/webhooks.py`), so endpoints need no webhook code; `document.processed` and `document.failed` come from `tasks/ingestion.py`. Deliveries are written in the same transaction as the change and queued only after it commits.
+
+**Verifying a delivery** (receiver side):
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, headers, raw_body: bytes) -> bool:
+    timestamp = headers["X-DocMinds-Timestamp"]
+    if abs(time.time() - int(timestamp)) > 300:  # reject replays
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, headers["X-DocMinds-Signature"])
+```
+
+`X-DocMinds-Delivery` stays the same across retries of one delivery, so receivers can de-duplicate on it.
+
+**SSRF protection**: a target URL must be `https://`, carry no credentials, and every address its host resolves to must be public. Loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local (including the 169.254.169.254 metadata service), multicast and reserved ranges are refused, at registration and again before every attempt. Redirects are not followed. A small window remains between that check and the HTTP client's own DNS lookup.
+
+**Local testing**: run a receiver (for example `python -m http.server 9000` will answer 501, which still shows the attempt in the delivery log), set `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` and `WEBHOOK_ALLOW_HTTP=true`, and register `http://localhost:9000/`. With `INGESTION_MODE=celery` deliveries are sent by the worker, and Celery beat runs a sweep every 5 minutes for deliveries whose queue message was lost; with `INGESTION_MODE=inline` they are sent from the API process.
+
 ### Frontend
 
 | Variable | Default | Description |
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Backend base URL, set in `frontend/.env.local`. The `NEXT_PUBLIC_` prefix exposes it to browser code, so never put secrets in it. Its origin is also the only external origin in the Content-Security-Policy's `connect-src`, so it is read at build time: changing it means rebuilding |
 | `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` | `10` | Minimum length shown in the signup and reset password hints. Set it to the backend's `PASSWORD_MIN_LENGTH` if you change that; a mismatch only makes the hint less helpful, since the API still enforces its own value |
+
+### Product analytics (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_POSTHOG_KEY` | *(empty)* | PostHog project key. Empty means no analytics: no banner, the PostHog library is never loaded, and its host is not added to the CSP |
+| `NEXT_PUBLIC_POSTHOG_HOST` | `https://us.i.posthog.com` | `https://eu.i.posthog.com` for the EU cloud, or a self-hosted URL. Added to the CSP `connect-src` only when a key is set |
+
+With a key, a banner asks each visitor first; nothing loads or is sent until they choose **Allow**, and the choice is remembered in `localStorage` (`docminds_analytics_consent`). No personal data is sent: `identify` is never called, autocapture and session recording are off, IPs are not stored with events, and every URL is reduced to its path before sending, because query strings and fragments here carry invite, reset and SSO tokens (`frontend/lib/analytics.ts`). Both values are read at build time.
 
 There is no development proxy; the browser calls the API directly, so the API's CORS origins must include the frontend URL.
 

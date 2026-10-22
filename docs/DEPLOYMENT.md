@@ -12,6 +12,10 @@ This guide covers the hosted demo configuration (Neon + Render + Vercel) and the
 - [File storage](#file-storage)
 - [Malware scanning](#malware-scanning)
 - [Quotas](#quotas)
+- [Single sign-on](#single-sign-on)
+- [Webhooks](#webhooks)
+- [Multilingual search and the query cache](#multilingual-search-and-the-query-cache)
+- [Product analytics](#product-analytics)
 - [Backups](#backups)
 - [Production checklist](#production-checklist)
 - [Troubleshooting](#troubleshooting)
@@ -140,6 +144,28 @@ Set `MALWARE_SCAN=clamav` and point `CLAMAV_HOST` / `CLAMAV_PORT` (or `CLAMAV_SO
 - **Preview**: while scanning is on, the preview endpoint returns `409` for a file the scan has not cleared, meaning one still queued or processing, or one that failed before its scan finished. Documents completed before scanning was switched on are still served; they are not rescanned.
 - Set clamd's `StreamMaxLength` at least as high as `MAX_UPLOAD_SIZE_BYTES` (clamd's default is 25 MB); larger files otherwise get no verdict and fail.
 
+## Single sign-on
+
+1. Register an application (Google: "OAuth client ID", type *Web application*; Microsoft Entra: *App registration*; Okta: *OIDC Web Application*).
+2. Add the redirect URI `https://<your-api>/api/v1/auth/sso/callback` exactly. If a proxy rewrites the host, set `OIDC_REDIRECT_URI` to that URL instead of relying on derivation.
+3. Set `OIDC_ENABLED=true`, `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and `OIDC_PROVIDER_NAME` on the API (in `render.yaml` they are commented out; uncomment them and Render asks for the `sync: false` values). Make sure `FRONTEND_URL` is the deployed frontend: the callback sends the browser to `<FRONTEND_URL>/login/sso`.
+4. For Microsoft Entra ID set `OIDC_REQUIRE_EMAIL_VERIFIED=false`, because Entra does not send `email_verified`. Keep it `true` for any provider where users can enter an arbitrary email address.
+5. Decide `OIDC_ALLOW_SIGNUP`: with `false`, SSO only signs in existing accounts and invited people.
+
+The state cookie is `Secure` with `ENV=production`, so production must be served over HTTPS. An SSO-created account has a random password; its owner can set one with **Forgot password?**.
+
+## Webhooks
+
+Set `WEBHOOKS_ENABLED=true` and run `alembic upgrade head` (migration `f6a8b0c2d4e7` adds `webhook_endpoints` and `webhook_deliveries`). With `INGESTION_MODE=celery`, deliveries are sent by the worker and Celery beat must run (it re-queues deliveries whose message was lost every 5 minutes). With `INGESTION_MODE=inline` (the free demo) they are sent from the API process; deliveries interrupted by a restart stay `pending`, and an Admin can resend them from the delivery log. Never set `WEBHOOK_ALLOW_PRIVATE_TARGETS` or `WEBHOOK_ALLOW_HTTP` in production: they switch off the SSRF protection. Signing secrets are stored in the database in plain form (they are needed to sign), so treat database backups as secret. See [DEVELOPMENT.md](DEVELOPMENT.md#webhooks) for events, headers and signature verification.
+
+## Multilingual search and the query cache
+
+`EMBEDDING_MULTILINGUAL=true` switches the local model to a multilingual one with the same 384 dimensions. Every existing document must be reprocessed afterwards; see [DEVELOPMENT.md](DEVELOPMENT.md#multilingual-embeddings). The larger model needs about 500 MB more memory, more than the free 512 MB host has, which is why the demo uses Gemini embeddings (already multilingual). `EMBEDDING_CACHE_ENABLED=true` caches question vectors in Redis (or in memory without Redis); it saves embedding API calls with `EMBEDDING_PROVIDER=gemini` or `openai`.
+
+## Product analytics
+
+Set `NEXT_PUBLIC_POSTHOG_KEY` (and `NEXT_PUBLIC_POSTHOG_HOST` for the EU cloud or a self-hosted instance) in the frontend's environment on Vercel and redeploy; both are read at build time. Visitors are asked for consent before anything loads, and only anonymous page views with query strings and fragments removed are sent. See [DEVELOPMENT.md](DEVELOPMENT.md#product-analytics-optional).
+
 ## Backups
 
 Two things hold data: Postgres (every row, including the extracted text and the vectors) and the file store (the original uploads). Back both up; neither can be rebuilt from the other. Text and vectors can be regenerated from the originals, but only by re-processing every document.
@@ -171,7 +197,7 @@ Two things hold data: Postgres (every row, including the extracted text and the 
 | Set `SECRET_KEY` (for example `openssl rand -hex 32`) | The default in `config.py` is public; anyone could forge tokens. With `ENV=production` the API refuses to start on the default or on a key shorter than 32 characters |
 | Set `SMTP_HOST` (and credentials, `EMAIL_FROM`) and `FRONTEND_URL` | Without SMTP, invite, password reset and verification emails are only written to the API log. `FRONTEND_URL` is where their links point |
 | Decide on `REQUIRE_EMAIL_VERIFICATION` | Off by default; turn it on once email delivery works |
-| Run `alembic upgrade head` on deploy | Migration `c3d5e7f9a2b4` adds invites and server-side sessions; refresh tokens issued before it stop working, so users sign in once more. Migration `d4e6f8a0b2c5` adds the document storage and ingestion columns; existing rows are marked `local`. Migration `e5f7a9b1c3d6` adds `usage_events` and the per-organisation quota columns; usage is counted from the deploy onwards |
+| Run `alembic upgrade head` on deploy | Migration `c3d5e7f9a2b4` adds invites and server-side sessions; refresh tokens issued before it stop working, so users sign in once more. Migration `d4e6f8a0b2c5` adds the document storage and ingestion columns; existing rows are marked `local`. Migration `e5f7a9b1c3d6` adds `usage_events` and the per-organisation quota columns; usage is counted from the deploy onwards. Migration `f6a8b0c2d4e7` adds the two webhook tables |
 | Behind a proxy, set `TRUSTED_PROXY_COUNT` (1 on Render) or `CLIENT_IP_HEADER` | Per-IP rate limits, the audit log and the access log otherwise see every user as the proxy's address, and one person's failed sign-ins would lock everyone out. Never set them without a proxy: clients could then choose their own address |
 | Review the `RATE_LIMIT_*` and `QUOTA_*` settings | Defaults: 20 sign-ins a minute per IP, 30 questions a minute per user, 1,000,000 AI tokens a month, 1,000 documents and 5 GB per organisation. See [Quotas](#quotas) |
 | Point the platform's health check at `/api/v1/health/ready` for routing, and keep `/api/v1/health` for liveness | Readiness answers `503` while the database (or, in Celery mode, Redis or every worker) is down; liveness never touches dependencies, so an outage does not trigger restart loops |

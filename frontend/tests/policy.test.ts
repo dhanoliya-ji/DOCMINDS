@@ -95,6 +95,16 @@ describe("security headers", () => {
     expect(csp).toContain("connect-src 'self' http://localhost:8000");
   });
 
+  it("adds the PostHog host to connect-src only when analytics is configured", () => {
+    const without = header(securityHeaders({ apiUrl: "https://api.example.com" }), "Content-Security-Policy")!;
+    expect(without).not.toContain("posthog");
+    const withKey = header(
+      securityHeaders({ apiUrl: "https://api.example.com", analyticsHost: "https://eu.i.posthog.com/x" }),
+      "Content-Security-Policy"
+    )!;
+    expect(withKey).toMatch(/connect-src 'self' https:\/\/api\.example\.com https:\/\/eu\.i\.posthog\.com(;|$)/);
+  });
+
   it("forbids framing, plugins and foreign form posts", () => {
     const headers = securityHeaders({ apiUrl: "https://api.example.com" });
     const csp = header(headers, "Content-Security-Policy")!;

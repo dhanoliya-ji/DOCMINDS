@@ -22,6 +22,9 @@
  * than a copy of it. The link format is the contract; change both sides
  * together.
  *
+ * "Continue with SSO" (lib/sso.ts) appears below the form only when the
+ * backend has single sign-on switched on.
+ *
  * Signing up WITHOUT an invite always creates a brand-new organization. There
  * is deliberately no way to type in someone else's org: joining one requires
  * an invite from its Admin. That is what keeps tenants isolated.
@@ -30,7 +33,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowRight, Building2, Loader2, Lock, Mail } from "lucide-react";
+import { ArrowRight, Building2, KeyRound, Loader2, Lock, Mail } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useEffect, useState } from "react";
@@ -39,6 +42,7 @@ import { AuthCard, Notice, PasswordHints } from "@/components/AuthCard";
 import { ApiError, InvitePreview, api, getErrorMessage } from "@/lib/api";
 import { PASSWORD_MIN_LENGTH, passwordProblems } from "@/lib/password";
 import { roleLabel } from "@/lib/roles";
+import { SsoConfig, getSsoConfig, ssoLoginUrl } from "@/lib/sso";
 
 /**
  * `useSearchParams` makes a page depend on the request's query string, which
@@ -77,6 +81,20 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  // ---- Single sign-on (lib/sso.ts) ------------------------------------
+  // The "Continue with SSO" button appears only when the backend says SSO
+  // is switched on; until it answers (or if it cannot), there is no button.
+  const [sso, setSso] = useState<SsoConfig | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getSsoConfig().then((config) => {
+      if (!cancelled) setSso(config);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!inviteToken) return;
@@ -289,6 +307,18 @@ function LoginForm() {
           )}
         </button>
       </form>
+
+      {/* Single sign-on: a plain link, because the provider's login page is
+          a full-page navigation, not a fetch. An invite token rides along so
+          an invited person can accept by SSO too. */}
+      {sso?.enabled && (
+        <div className="mt-4">
+          <a href={ssoLoginUrl(joining ? inviteToken : undefined)} className="btn-ghost w-full py-3">
+            <KeyRound size={16} aria-hidden="true" />
+            Continue with {sso.provider_name}
+          </a>
+        </div>
+      )}
 
       {/* Toggle between the two modes */}
       <div className="mt-6 text-center text-sm">

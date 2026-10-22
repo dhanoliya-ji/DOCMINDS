@@ -57,6 +57,11 @@ pgvector==0.5.1
 PyJWT==2.15.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
+# cryptography: RSA/EC signature checks for single sign-on (api/v1/sso.py).
+#               An OIDC provider signs its ID tokens with RS256/ES256, and
+#               PyJWT needs this package to verify those. Pinned explicitly
+#               rather than relied on as some other package's dependency.
+cryptography==49.0.0
 
 # ---- BACKGROUND JOBS -------------------------------------------------
 # celery : runs slow work (document processing) outside the web request, so the

@@ -36,10 +36,10 @@
  */
 
 /**
- * @param {{ apiUrl?: string, isDev?: boolean }} options
+ * @param {{ apiUrl?: string, isDev?: boolean, analyticsHost?: string }} options
  * @returns {{ key: string, value: string }[]}
  */
-export function securityHeaders({ apiUrl, isDev = false } = {}) {
+export function securityHeaders({ apiUrl, isDev = false, analyticsHost = "" } = {}) {
   let apiOrigin = "";
   try {
     // An origin, not the full URL: CSP source expressions match origins, and
@@ -49,7 +49,21 @@ export function securityHeaders({ apiUrl, isDev = false } = {}) {
     apiOrigin = "";
   }
 
-  const connect = ["'self'", apiOrigin, isDev ? "ws: wss:" : ""].filter(Boolean).join(" ");
+  // Optional PostHog (lib/analytics.ts): its host is allowed ONLY when
+  // NEXT_PUBLIC_POSTHOG_KEY is set, so a deployment without analytics keeps
+  // the tighter policy.
+  let analyticsOrigin = "";
+  if (analyticsHost) {
+    try {
+      analyticsOrigin = new URL(analyticsHost).origin;
+    } catch {
+      analyticsOrigin = "";
+    }
+  }
+
+  const connect = ["'self'", apiOrigin, analyticsOrigin, isDev ? "ws: wss:" : ""]
+    .filter(Boolean)
+    .join(" ");
 
   const directives = [
     "default-src 'self'",
