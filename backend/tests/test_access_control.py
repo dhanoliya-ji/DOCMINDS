@@ -20,7 +20,7 @@ import datetime
 import uuid
 
 import pytest
-from jose import jwt
+import jwt  # PyJWT
 from pydantic import ValidationError
 
 from app.core import roles, security

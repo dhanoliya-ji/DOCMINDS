@@ -55,6 +55,24 @@ from PIL import Image
 
 from app.core.config import settings
 
+# Pillow can decode dozens of image formats, and most of its security
+# advisories are in decoders nobody uploads to a document tool: EPS (which
+# shells out to Ghostscript), MIC, MSP, XBM, Pillow's own PDF parser, and so
+# on. DocMinds only ever accepts the formats below (see extractor.py), so we
+# tell Pillow to refuse everything else. A file renamed to .png that is
+# really an EPS is then rejected before Ghostscript ever sees it.
+#
+# The multi-picture JPEGs some phone cameras write (MPO) still open: Pillow
+# decodes them through the JPEG entry, which is why MPO is not listed.
+SAFE_IMAGE_FORMATS = ("PNG", "JPEG", "TIFF", "BMP", "GIF")
+
+
+def _open_image(image_bytes: bytes) -> Image.Image:
+    """Open uploaded image bytes, allowing only the decoders listed above."""
+    # `io.BytesIO` wraps the bytes so Pillow can open them as if they were
+    # a file.
+    return Image.open(io.BytesIO(image_bytes), formats=SAFE_IMAGE_FORMATS)
+
 
 class OCRService:
     """Reads text out of images and scanned pages."""
@@ -164,9 +182,7 @@ class OCRService:
             if settings.TESSERACT_CMD != "tesseract":
                 pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
 
-            # `io.BytesIO` wraps the bytes so Pillow can open them as if they
-            # were a file.
-            image = Image.open(io.BytesIO(image_bytes))
+            image = _open_image(image_bytes)
             return pytesseract.image_to_string(image)
 
         except Exception as exc:
@@ -232,7 +248,7 @@ class OCRService:
             # the image with Pillow and convert.
             import numpy as np
 
-            image = Image.open(io.BytesIO(image_bytes))
+            image = _open_image(image_bytes)
             image_array = np.array(image)
 
             result = engine.ocr(image_array, cls=True)
@@ -275,7 +291,7 @@ class OCRService:
         simply absent.
         """
         try:
-            image = Image.open(io.BytesIO(image_bytes))
+            image = _open_image(image_bytes)
             width, height = image.size
         except Exception:
             width, height = 0, 0

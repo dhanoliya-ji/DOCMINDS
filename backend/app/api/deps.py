@@ -43,9 +43,9 @@ import logging
 import uuid
 from typing import AsyncGenerator, List, Optional
 
+import jwt  # PyJWT
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,8 +123,9 @@ def decode_access_token(token: str) -> TokenPayload:
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         token_data = TokenPayload(**payload)
-    except (JWTError, ValueError):
-        # JWTError covers a bad signature, a malformed token and expiry.
+    except (jwt.InvalidTokenError, ValueError):
+        # InvalidTokenError covers a bad signature, a malformed token and
+        # expiry (ExpiredSignatureError is a subclass of it).
         # ValueError covers a payload that does not fit TokenPayload.
         #
         # Note the message is deliberately vague. Telling an attacker WHICH

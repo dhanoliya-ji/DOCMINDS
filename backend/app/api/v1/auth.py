@@ -53,6 +53,7 @@ import datetime
 import uuid
 from typing import Optional
 
+import jwt  # PyJWT
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -63,7 +64,6 @@ from fastapi import (
     status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import JWTError, jwt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -324,7 +324,7 @@ async def refresh_token(
             payload.refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         refresh_payload = TokenPayload(**token_data)
-    except (JWTError, ValueError):
+    except (jwt.InvalidTokenError, ValueError):
         raise invalid from None
 
     # ---- CRITICAL ----

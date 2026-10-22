@@ -45,11 +45,16 @@ alembic==1.20.0
 pgvector==0.5.1
 
 # ---- AUTHENTICATION AND SECURITY -------------------------------------
-# python-jose : creates and verifies the signed JWT login tokens.
+# PyJWT       : creates and verifies the signed JWT login tokens. It replaced
+#               python-jose, which is unmaintained and has an unfixed critical
+#               advisory (PYSEC-2026-4298: algorithm confusion via DER-encoded
+#               public keys). DocMinds only signs with HS256 and a server-side
+#               secret, so the flaw was not reachable here -- but a dependency
+#               with no fix coming is a dependency to leave.
 # passlib     : the password hashing framework.
 # bcrypt      : the actual hashing algorithm. It is deliberately SLOW, which is
 #               what makes brute-forcing a stolen password database impractical.
-python-jose[cryptography]==3.5.0
+PyJWT==2.15.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 
@@ -80,8 +85,13 @@ langdetect==1.0.9
 #               NOTE: the Tesseract PROGRAM must also be installed separately --
 #               it is not a Python package. See docs/DEVELOPMENT.md for instructions.
 # pillow      : image loading and manipulation, which pytesseract needs.
+#               13.0.0 fixes 28 advisories in its image decoders, three of
+#               them critical (a JPEG heap overflow, a TIFF heap overflow and
+#               argument injection into Ghostscript). services/ocr.py also
+#               limits Pillow to the formats DocMinds accepts, so the next
+#               decoder bug in a format nobody uploads cannot be reached.
 pytesseract==0.3.13
-pillow==12.3.0
+pillow==13.0.0
 
 # ---- AI: EMBEDDINGS AND TEXT GENERATION ------------------------------
 # tiktoken : counts tokens exactly the way the models do, so our chunks are

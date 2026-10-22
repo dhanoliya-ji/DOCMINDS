@@ -342,7 +342,7 @@ class TestEmailVerification:
 
 class TestSessions:
     async def test_access_tokens_carry_a_jti(self, env):
-        from jose import jwt
+        import jwt  # PyJWT
 
         account = await env.account()
         claims = jwt.decode(

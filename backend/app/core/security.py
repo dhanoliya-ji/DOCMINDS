@@ -62,7 +62,7 @@ import secrets
 import uuid
 from typing import Any, List, Optional, Tuple, Union
 
-from jose import jwt
+import jwt  # PyJWT
 from passlib.context import CryptContext
 
 from app.core.config import settings
