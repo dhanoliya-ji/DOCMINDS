@@ -17,22 +17,25 @@
  * "tabpanel", aria-selected on the active tab, and the panel labelled by its
  * tab, so a screen reader announces "Members, tab, 1 of 4, selected". Left
  * and right arrow keys move between tabs, as the pattern expects.
+ *
+ * Wrapped in <AppShell>, which provides navigation and sign-out; destructive
+ * actions in the panels use <HoldToConfirm> rather than window.confirm().
  */
 
 "use client";
 
-import { ArrowLeft, LogOut } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 
+import AppShell from "@/components/app/AppShell";
+import LogoLoader from "@/components/app/LogoLoader";
 import { Notice } from "@/components/AuthCard";
 import ApiKeysPanel from "@/components/settings/ApiKeysPanel";
 import AuditLogPanel from "@/components/settings/AuditLogPanel";
 import MembersPanel from "@/components/settings/MembersPanel";
 import UsagePanel from "@/components/settings/UsagePanel";
 import VerifyBanner from "@/components/VerifyBanner";
-import { api, getToken } from "@/lib/api";
+import { getToken } from "@/lib/api";
 import { isAdmin, roleLabel } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
@@ -65,31 +68,12 @@ export default function SettingsPage() {
     tabRefs.current[next]?.focus();
   }
 
-  function handleLogout() {
-    api.logout();
-    router.push("/login");
-  }
-
   return (
-    <main className="mx-auto min-h-screen max-w-5xl px-6 py-10">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <Link
-            href="/dashboard"
-            className="mb-2 inline-flex items-center gap-1 text-sm"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            <ArrowLeft size={14} aria-hidden="true" /> Projects
-          </Link>
-          <h1 className="text-gradient text-3xl font-bold">Settings</h1>
-        </div>
-        <button onClick={handleLogout} className="btn-ghost" title="Sign out" aria-label="Sign out">
-          <LogOut size={16} aria-hidden="true" />
-        </button>
-      </div>
+    <AppShell>
+      <h1 className="text-gradient mb-8 text-3xl font-bold">Settings</h1>
 
       {loading ? (
-        <div className="glass shimmer h-32" aria-busy="true" />
+        <LogoLoader label="Loading your account" />
       ) : error || !user ? (
         <Notice tone="error">{error || "Could not load your account."}</Notice>
       ) : (
@@ -98,7 +82,7 @@ export default function SettingsPage() {
 
           {/* ---- Your account: shown to everyone ---- */}
           <section className="glass mb-8 p-5 text-sm" aria-label="Your account">
-            <div>
+            <div className="break-words">
               Signed in as <strong>{user.email}</strong> · {roleLabel(user.role)}
             </div>
             {!isAdmin(user.role) && (
@@ -134,7 +118,9 @@ export default function SettingsPage() {
                   </button>
                 ))}
               </div>
-              <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+              {/* overflow-x-auto: the member and key tables are wider than a
+                  phone, so they scroll inside the panel, never the page. */}
+              <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="min-w-0 overflow-x-auto">
                 {tab === "members" && <MembersPanel currentUserId={user.id} />}
                 {tab === "api-keys" && <ApiKeysPanel />}
                 {tab === "audit" && <AuditLogPanel />}
@@ -144,6 +130,6 @@ export default function SettingsPage() {
           )}
         </>
       )}
-    </main>
+    </AppShell>
   );
 }

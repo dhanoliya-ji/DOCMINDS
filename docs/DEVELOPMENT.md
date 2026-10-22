@@ -293,6 +293,9 @@ There is no development proxy; the browser calls the API directly, so the API's 
 - **Adding an endpoint:** add the TypeScript interface to `lib/api.ts`, matching the backend schema field for field; add a method to `api` that calls `apiFetch<YourType>(path, ...)`; call it from the component. Raw `fetch` opts out of `apiFetch`'s 401 handling (clear the token, redirect to login), so use it only for endpoints that do not take JSON.
 - **Loading, error and success are separate states**, each with its own render.
 - **Write Tailwind class names out in full.** Tailwind generates only classes it finds literally in source, so a runtime-built class such as `` `text-${color}-500` `` is purged from the build.
+- **Signed-in pages go inside `<AppShell>`** (`components/app/`), which supplies the sidebar/topbar, theme toggle, sign-out and the page transition. Use theme tokens (`var(--text-secondary)`, `var(--surface-1)`, ...) rather than literal colours, so both themes work; the light palette is `:root[data-theme="light"]` in `globals.css`, set before first paint by the inline script from `lib/theme.ts`.
+- **Destructive actions use `<HoldToConfirm>`**, not `window.confirm()`. Loading states use `<LogoLoader>`; first-run states use `FirstRunEmpty` / `GuidedTour` from `components/app/Onboarding.tsx`.
+- **Accessibility is tested:** `tests/Accessibility.test.tsx` runs axe (vitest-axe) over the dashboard, project and settings pages. Motion must respect `prefers-reduced-motion` (CSS block at the end of `globals.css`, `usePrefersReducedMotion` in JS).
 
 ---
 

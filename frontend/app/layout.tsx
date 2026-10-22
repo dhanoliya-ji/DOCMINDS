@@ -12,6 +12,7 @@
  */
 
 import type { Metadata } from "next";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 /**
@@ -48,7 +49,16 @@ export default function RootLayout({
   return (
     // `lang="en"` matters for screen readers, which use it to select the right
     // pronunciation rules.
-    <html lang="en">
+    //
+    // `suppressHydrationWarning` because the inline script below sets
+    // `data-theme` on <html> before React hydrates, so the server's markup and
+    // the live DOM legitimately differ on that one attribute.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* No-flash theming: runs before first paint and picks light or dark
+            from the stored choice or the OS preference. See lib/theme.ts. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       {/* `antialiased` smooths font rendering, which noticeably improves the
           look of light text on a dark background. */}
       <body className="antialiased">{children}</body>

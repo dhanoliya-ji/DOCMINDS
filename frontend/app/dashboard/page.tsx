@@ -9,29 +9,48 @@
  * A question asked inside "HR Policies" only ever retrieves chunks from
  * documents uploaded to "HR Policies". That keeps answers relevant and stops
  * an engineering runbook from being quoted at someone asking about payroll.
+ *
+ * LAYOUT AND FIRST RUN
+ * --------------------
+ * The page sits inside <AppShell> (sidebar, theme toggle, sign-out, page
+ * transition). A brand-new organization sees a first-run empty state with
+ * sample project names -- one click opens the create dialog pre-filled --
+ * and a three-step guided tour that is remembered once dismissed.
  */
 
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  AlertTriangle,
-  FolderOpen,
-  Loader2,
-  LogOut,
-  Plus,
-  Settings,
-  Sparkles,
-  X,
-} from "lucide-react";
-import Link from "next/link";
+import { AlertTriangle, FolderOpen, Loader2, Plus, Sparkles, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import AppShell from "@/components/app/AppShell";
+import LogoLoader from "@/components/app/LogoLoader";
+import { FirstRunEmpty, GuidedTour, type TourStep } from "@/components/app/Onboarding";
+import ProjectCard from "@/components/app/ProjectCard";
 import VerifyBanner from "@/components/VerifyBanner";
 import { Project, api, getErrorMessage, getToken } from "@/lib/api";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
+
+/** Sample names offered on first run; clicking one pre-fills the dialog. */
+const SAMPLE_PROJECTS = ["HR Policies", "Q3 Contracts", "Product Docs", "Research Papers"];
+
+const TOUR: TourStep[] = [
+  {
+    title: "Projects keep answers on topic",
+    body: "Each project is its own document collection. Questions asked inside one only search the files in it.",
+  },
+  {
+    title: "Upload, then wait a moment",
+    body: "Open a project and drop in PDFs, Office files, images or text. Processing runs in the background.",
+  },
+  {
+    title: "Search or Ask AI",
+    body: "Once a document shows Ready, search it semantically or ask questions and get answers with page citations.",
+  },
+];
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -116,38 +135,30 @@ export default function DashboardPage() {
     }
   }
 
-  function handleLogout() {
-    api.logout();
-    router.push("/login");
+  function openCreate(prefill = "") {
+    setNewName(prefill);
+    setShowModal(true);
   }
 
   // ------------------------------------------------------------------
   // RENDER
   // ------------------------------------------------------------------
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-6 py-10">
+    <AppShell>
       {/* ---- Header ---- */}
-      <div className="mb-8 flex items-center justify-between">
-        <div>
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-gradient text-3xl font-bold">Projects</h1>
           <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
             Each project is its own document collection and search boundary.
           </p>
         </div>
-        <div className="flex gap-2">
-          {mayCreate && (
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} aria-hidden="true" />
-              New project
-            </button>
-          )}
-          <Link href="/settings" className="btn-ghost" title="Settings" aria-label="Settings">
-            <Settings size={16} aria-hidden="true" />
-          </Link>
-          <button onClick={handleLogout} className="btn-ghost" title="Sign out" aria-label="Sign out">
-            <LogOut size={16} aria-hidden="true" />
+        {mayCreate && (
+          <button onClick={() => openCreate()} className="btn-primary">
+            <Plus size={16} aria-hidden="true" />
+            New project
           </button>
-        </div>
+        )}
       </div>
 
       {/* ---- Email confirmation banner ---- */}
@@ -165,6 +176,7 @@ export default function DashboardPage() {
           style={{ borderColor: "rgba(251,191,36,0.3)" }}
         >
           <Sparkles
+            aria-hidden="true"
             size={17}
             className="mt-0.5 shrink-0"
             style={{ color: "var(--warning)" }}
@@ -195,87 +207,59 @@ export default function DashboardPage() {
       {/* ---- Error banner ---- */}
       {error && (
         <div
+          role="alert"
           className="mb-6 flex items-center gap-2 rounded-xl px-4 py-3 text-sm"
-          style={{ background: "rgba(248,113,113,0.1)", color: "var(--danger)" }}
+          style={{
+            background: "color-mix(in srgb, var(--danger) 10%, transparent)",
+            color: "var(--danger)",
+          }}
         >
-          <AlertTriangle size={15} />
+          <AlertTriangle size={15} aria-hidden="true" />
           {error}
         </div>
       )}
 
       {/* ---- Content: loading, empty, or the grid ---- */}
       {loading ? (
-        // Skeleton placeholders rather than a spinner. They show the SHAPE of
-        // what is coming, which makes the wait feel shorter and stops the
-        // layout jumping when the real data arrives.
-        <div className="grid gap-4 md:grid-cols-3">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="glass shimmer h-32" />
-          ))}
-        </div>
+        // F18: the logo-morph loader while the first page of data arrives.
+        <LogoLoader label="Loading projects" fullscreen />
       ) : projects.length === 0 ? (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="glass flex flex-col items-center justify-center px-6 py-20 text-center"
-        >
-          <FolderOpen
-            size={40}
-            style={{ color: "var(--text-muted)" }}
-            className="mb-4"
+        <>
+          <GuidedTour id="dashboard" steps={TOUR} />
+          <FirstRunEmpty
+            icon={<FolderOpen size={26} />}
+            title="No projects yet"
+            body={
+              mayCreate
+                ? "Create your first project, then upload documents into it to start asking questions."
+                : "Your organization has no projects yet. Ask an editor or admin to create one."
+            }
+            suggestionsLabel={mayCreate ? "Start from an example" : undefined}
+            suggestions={mayCreate ? SAMPLE_PROJECTS : undefined}
+            onSuggestion={(name) => openCreate(name)}
+            action={
+              mayCreate && (
+                <button onClick={() => openCreate()} className="btn-primary">
+                  <Plus size={16} aria-hidden="true" />
+                  Create a project
+                </button>
+              )
+            }
           />
-          <h3 className="text-lg font-semibold">No projects yet</h3>
-          <p
-            className="mt-2 max-w-sm text-sm"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            {mayCreate
-              ? "Create your first project, then upload documents into it to start asking questions."
-              : "Your organization has no projects yet. Ask an editor or admin to create one."}
-          </p>
-          {mayCreate && (
-            <button
-              onClick={() => setShowModal(true)}
-              className="btn-primary mt-6"
-            >
-              <Plus size={16} aria-hidden="true" />
-              Create a project
-            </button>
-          )}
-        </motion.div>
+        </>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {projects.map((project, index) => (
-            <motion.button
+            <motion.div
               key={project.id}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               // Stagger by position so the grid cascades in.
-              transition={{ delay: index * 0.05, duration: 0.4 }}
-              onClick={() => router.push(`/project/${project.id}`)}
-              className="glass glass-hover p-5 text-left"
+              transition={{ delay: Math.min(index, 8) * 0.04, duration: 0.3 }}
+              className="min-w-0"
             >
-              <div
-                className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg"
-                style={{
-                  background: "rgba(99,102,241,0.14)",
-                  color: "var(--accent-hover)",
-                }}
-              >
-                <FolderOpen size={17} />
-              </div>
-              <h3 className="font-semibold">{project.name}</h3>
-              <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-                {/* Turn the ISO timestamp from the API into a readable local
-                    date, e.g. "30 Aug 2026". */}
-                Created{" "}
-                {new Date(project.created_at).toLocaleDateString(undefined, {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })}
-              </p>
-            </motion.button>
+              <ProjectCard project={project} index={index} />
+            </motion.div>
           ))}
         </div>
       )}
@@ -293,7 +277,7 @@ export default function DashboardPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-6"
-            style={{ background: "rgba(3,6,15,0.75)", backdropFilter: "blur(6px)" }}
+            style={{ background: "var(--overlay)", backdropFilter: "blur(6px)" }}
             // Clicking the dark backdrop closes the dialog, which users expect.
             onClick={() => setShowModal(false)}
           >
@@ -302,23 +286,28 @@ export default function DashboardPage() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.94, y: 16 }}
               transition={{ duration: 0.22 }}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="new-project-heading"
               className="glass w-full max-w-md p-6"
               // Stop the click from reaching the backdrop handler above, which
               // would otherwise close the dialog whenever you clicked inside it.
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">New project</h2>
+                <h2 id="new-project-heading" className="text-lg font-semibold">New project</h2>
                 <button
                   onClick={() => setShowModal(false)}
                   style={{ color: "var(--text-muted)" }}
+                  aria-label="Close"
                 >
-                  <X size={18} />
+                  <X size={18} aria-hidden="true" />
                 </button>
               </div>
 
               <input
                 className="input"
+                aria-label="Project name"
                 placeholder="e.g. HR Policies, Q3 Contracts"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
@@ -352,6 +341,6 @@ export default function DashboardPage() {
           </motion.div>
         )}
       </AnimatePresence>
-    </main>
+    </AppShell>
   );
 }
