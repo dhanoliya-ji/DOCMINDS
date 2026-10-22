@@ -11,7 +11,7 @@
 #  the whole stack can be recreated from scratch by pointing Render at this
 #  repository again.
 #
-#  HOW TO DEPLOY   (the full guide, frontend included: DEPLOY.md)
+#  HOW TO DEPLOY   (the full guide, frontend included: docs/DEPLOYMENT.md)
 #  -------------
 #   1. Create a free database at https://neon.tech, open Connect, and copy
 #      the connection string. pgvector is switched on by the first migration

@@ -64,7 +64,7 @@ no code path that can accidentally skip it.
 import uuid
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -224,7 +224,15 @@ class RetrievalService:
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
             # Newest first, so LIMIT gives us the most RECENT messages...
-            .order_by(ChatMessage.created_at.desc())
+            .order_by(
+                ChatMessage.created_at.desc(),
+                # ...with a TIE-BREAKER. created_at comes from Postgres now(),
+                # which is the TRANSACTION start time, and a question and its
+                # answer are saved in the same transaction -- so they share a
+                # timestamp. Within such a pair the assistant row is the newer
+                # one, so it sorts first here (and last after the reverse).
+                case((ChatMessage.role == "assistant", 0), else_=1),
+            )
             .limit(limit)
         )
         result = await db.execute(statement)

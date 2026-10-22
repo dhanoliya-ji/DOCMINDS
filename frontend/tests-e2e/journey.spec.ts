@@ -36,8 +36,9 @@
  *
  * REQUIREMENTS
  * ------------
- * Postgres, Redis, the API and a Celery worker, all running, with the three
- * providers set to `mock`. See tests-e2e/README.md.
+ * Postgres, Redis, the API and a Celery worker, all running, with
+ * LLM_PROVIDER=mock, OCR_PROVIDER=mock and EMBEDDING_PROVIDER=local (not mock;
+ * see docs/DEVELOPMENT.md, End-to-end tests).
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -101,7 +102,7 @@ test.describe.serial("the full DocMinds journey", () => {
 
     expect(
       response.ok(),
-      "The backend is not answering on :8000. Start it first — see tests-e2e/README.md."
+      "The backend is not answering on :8000. Start it first — see docs/DEVELOPMENT.md (End-to-end tests)."
     ).toBeTruthy();
 
     const health = await response.json();

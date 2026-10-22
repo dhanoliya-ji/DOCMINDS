@@ -72,7 +72,7 @@ jobs:
             echo "- Render's 750 free hours for the month ran out, so every free service is suspended until the 1st."
             echo "- A deploy failed: check the service's **Events** and **Logs** in the Render dashboard."
             echo
-            echo "Recovery steps: [DEPLOY.md](../blob/HEAD/DEPLOY.md). This issue closes itself once every URL answers again."
+            echo "Recovery steps: [docs/DEPLOYMENT.md](../blob/HEAD/docs/DEPLOYMENT.md). This issue closes itself once every URL answers again."
           } > body.md
           existing=$(gh issue list -R "$REPO" --label uptime --state open --json number --jq '.[0].number')
           if [ -n "$existing" ]; then

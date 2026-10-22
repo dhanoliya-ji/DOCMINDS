@@ -19,6 +19,12 @@
  *    checkable. A missing or mismatched citation does not look like a bug; it
  *    looks like an answer.
  *
+ * 3. ANSWER MODE. "Quick answer" and "Deep research" are different backend
+ *    pipelines. The toggle must send the mode the user actually picked, and
+ *    the research steps an agent returns must be shown -- they are the only
+ *    record of how a deep-research answer was reached, since the backend does
+ *    not save them.
+ *
  * `lib/api` and `react-markdown` are both mocked -- what is under test is this
  * component's behaviour, not markdown rendering.
  */
@@ -507,5 +513,219 @@ describe("rating an answer", () => {
     // The answer is still there and no error surfaced.
     expect(answerText).toBeInTheDocument();
     expect(screen.queryByText(/feedback endpoint down/i)).not.toBeInTheDocument();
+  });
+});
+
+// ======================================================================
+// Answer mode: quick answer (rag) vs deep research (agent)
+// ======================================================================
+
+describe("answer mode", () => {
+  const step = (tool: string, summary: string, args: Record<string, unknown> = {}) =>
+    ({ tool, args, summary });
+
+  /** An agent-mode reply: same shape as `answer`, plus mode and steps. */
+  function agentAnswer(content: string, steps: unknown[], citations: unknown[] = []) {
+    return { ...answer(content, citations), mode: "agent", steps };
+  }
+
+  it("defaults to quick answer and sends the rag mode", async () => {
+    // The fast path is the default. Deep research costs several model calls,
+    // so nobody should land in it without choosing to.
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
+      "aria-checked", "true"
+    );
+
+    await ask(user, "A question");
+
+    await waitFor(() => expect(askQuestion).toHaveBeenCalled());
+    expect(askQuestion.mock.calls[0][2]).toBe("rag");
+  });
+
+  it("sends the agent mode once deep research is selected", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    expect(screen.getByRole("radio", { name: /deep research/i })).toHaveAttribute(
+      "aria-checked", "true"
+    );
+
+    await ask(user, "Compare the two policies");
+
+    await waitFor(() => expect(askQuestion).toHaveBeenCalled());
+    expect(askQuestion.mock.calls[0][1]).toBe("Compare the two policies");
+    expect(askQuestion.mock.calls[0][2]).toBe("agent");
+  });
+
+  it("explains the tradeoff of the selected mode", async () => {
+    // Without the hint, "Deep research" sounds strictly better, and people
+    // would pick it for everything and wonder why answers got slow.
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+
+    expect(screen.getByText(/slower/i)).toBeInTheDocument();
+  });
+
+  it("locks the toggle while a question is in flight", async () => {
+    askQuestion.mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await ask(user, "A question");
+
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: /deep research/i })).toBeDisabled()
+    );
+    // The mode the request started with stays selected while it runs.
+    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
+      "aria-checked", "true"
+    );
+  });
+
+  it("unlocks the toggle again after a failed question", async () => {
+    // If `sending` stayed true after an error, the toggle would be stuck for
+    // the rest of the session.
+    askQuestion.mockRejectedValue(new Error("The model timed out."));
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await ask(user, "A question");
+    expect(await screen.findByText(/model timed out/i)).toBeInTheDocument();
+
+    expect(screen.getByRole("radio", { name: /quick answer/i })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /deep research/i })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
+      "aria-checked", "true"
+    );
+  });
+
+  it("says it is researching while a deep research question is in flight", async () => {
+    askQuestion.mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    await ask(user, "Compare the two policies");
+
+    expect(await screen.findByText(/researching your documents/i)).toBeInTheDocument();
+  });
+
+  it("does not say it is researching for a quick answer", async () => {
+    askQuestion.mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await ask(user, "A question");
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: /deep research/i })).toBeDisabled()
+    );
+
+    expect(screen.queryByText(/researching/i)).not.toBeInTheDocument();
+  });
+
+  it("is one tab stop, switched with the arrow keys", async () => {
+    // The radio group keyboard contract: only the selected option is
+    // tabbable, and the arrow keys move both the selection and the focus.
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    const quick = screen.getByRole("radio", { name: /quick answer/i });
+    const deep = screen.getByRole("radio", { name: /deep research/i });
+    expect(quick).toHaveAttribute("tabindex", "0");
+    expect(deep).toHaveAttribute("tabindex", "-1");
+
+    quick.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(deep).toHaveAttribute("aria-checked", "true");
+    expect(deep).toHaveFocus();
+    expect(deep).toHaveAttribute("tabindex", "0");
+
+    // Wraps around at the end.
+    await user.keyboard("{ArrowRight}");
+    expect(quick).toHaveAttribute("aria-checked", "true");
+    expect(quick).toHaveFocus();
+  });
+
+  it("links the tradeoff hint to the mode control", async () => {
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    const group = screen.getByRole("radiogroup", { name: /answer mode/i });
+    const hintId = group.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    expect(document.getElementById(hintId as string)).toHaveTextContent(/.+/);
+  });
+
+  it("shows how many research steps an agent answer took", async () => {
+    askQuestion.mockResolvedValue(
+      agentAnswer("The answer.", [
+        step("search_documents", "Found 5 excerpts from 2 documents", { query: "leave" }),
+        step("read_document", "Read page 4 of handbook.pdf"),
+      ])
+    );
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    await ask(user, "A question");
+
+    expect(await screen.findByText(/research steps \(2\)/i)).toBeInTheDocument();
+    // Collapsed until asked for, like the sources.
+    expect(screen.queryByText(/Found 5 excerpts/)).not.toBeInTheDocument();
+  });
+
+  it("reveals each step's tool and summary, in order, when expanded", async () => {
+    askQuestion.mockResolvedValue(
+      agentAnswer("The answer.", [
+        step("search_documents", "Found 5 excerpts from 2 documents", { query: "leave" }),
+        step("read_document", "Read page 4 of handbook.pdf"),
+      ])
+    );
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    await ask(user, "A question");
+    await user.click(await screen.findByText(/research steps/i));
+
+    const first = await screen.findByText("search_documents");
+    const second = screen.getByText("read_document");
+    expect(screen.getByText(/Found 5 excerpts from 2 documents/)).toBeInTheDocument();
+    expect(screen.getByText(/Read page 4 of handbook\.pdf/)).toBeInTheDocument();
+    // The arguments too, so you can see WHAT the agent searched for.
+    expect(screen.getByText(/query: "leave"/)).toBeInTheDocument();
+
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  it("shows no steps toggle for a quick answer", async () => {
+    // Rag mode returns an empty steps list; an empty "Research steps (0)"
+    // control would only invite a pointless click.
+    askQuestion.mockResolvedValue({ ...answer("The answer."), mode: "rag", steps: [] });
+    const user = userEvent.setup();
+    render(<ChatPanel projectId="p1" />);
+    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+
+    await ask(user, "A question");
+    await screen.findByText("The answer.");
+
+    expect(screen.queryByText(/research steps/i)).not.toBeInTheDocument();
   });
 });

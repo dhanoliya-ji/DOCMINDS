@@ -28,7 +28,7 @@
  *     npm run test:e2e
  *
  * The `webServer` block below starts the Next.js dev server automatically, but
- * the BACKEND must already be up -- see tests-e2e/README.md.
+ * the BACKEND must already be up -- see docs/DEVELOPMENT.md (End-to-end tests).
  */
 
 import { defineConfig, devices } from "@playwright/test";
