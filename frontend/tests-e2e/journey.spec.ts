@@ -196,6 +196,10 @@ test.describe.serial("the full DocMinds journey", () => {
 
   // ==================================================================
   test("a project can be created", async () => {
+    // This step also checks GET /users/me end to end: "New project" is only
+    // drawn once the page knows the user is an editor or admin (lib/roles.ts),
+    // so a drift in that schema hides the button and fails here. The account
+    // that just signed up created its own organization, so it is the Admin.
     // A brand-new account has no projects, so the empty state's button is
     // what is on screen. Either label is accepted, because which one appears
     // depends on a state this test should not care about.

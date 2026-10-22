@@ -23,6 +23,7 @@ Everything hangs off this table:
              |
              +-- APIKeys      programmatic access
              +-- AuditLogs    who did what
+             +-- UsageEvents  tokens and estimated cost, per chat answer
 
 WHY THIS SHAPE MATTERS FOR SECURITY
 -----------------------------------
@@ -33,13 +34,27 @@ itself, not by application code that a developer might forget to write.
 
 An organization is created automatically when the first user signs up with an
 `org_name`, and that user becomes its Admin.
+
+ITS QUOTAS
+----------
+Three nullable columns let an operator give ONE organization different limits
+from everybody else -- a bigger plan, a trial, a customer with a contract:
+
+    monthly_token_quota   AI tokens per calendar month (QUOTA_MONTHLY_TOKENS)
+    max_documents         documents it may hold        (QUOTA_MAX_DOCUMENTS)
+    max_storage_bytes     bytes those may add up to    (QUOTA_MAX_STORAGE_BYTES)
+
+NULL means "use the setting named in brackets", so the defaults can change
+with a redeploy without touching every row. 0 means unlimited. They are set
+directly in the database -- deliberately NOT through the org admin API, or an
+organization's own Admin could raise its own limits. See services/usage.py.
 """
 
 import datetime
 import uuid
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import BigInteger, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -76,6 +91,13 @@ class Organization(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # ---- Per-organization quota overrides (see the module docstring) ----
+    # BigInteger for the two that count tokens and bytes: a 32-bit integer
+    # tops out at about 2.1 billion, which is only 2 GB of storage.
+    monthly_token_quota: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    max_documents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_storage_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # ---- Relationships -------------------------------------------------
     # Not columns. They let you navigate between objects in Python:

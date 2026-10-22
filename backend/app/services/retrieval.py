@@ -59,8 +59,28 @@ query in this file therefore joins all the way up the ownership chain
 and filters on the caller's own `org_id`. That check is not optional and is not
 done in the frontend -- it is enforced here, in the query itself, so there is
 no code path that can accidentally skip it.
+
+ONLY VECTORS FROM THE CURRENT MODEL ARE COMPARED
+------------------------------------------------
+Every stored vector records the model that made it (`model_name`, see
+embedding.py's current_model_name). After EMBEDDING_PROVIDER or the model is
+changed, older documents still hold vectors from the previous model. Those
+numbers describe a DIFFERENT space: a cosine distance between a new-model
+question and an old-model chunk is meaningless, and would surface random
+chunks with plausible-looking scores. So the search only considers chunks
+embedded by the model in use now. Older documents simply stop matching until
+they are re-processed -- an honest "not found" instead of a confident wrong one.
+
+NEVER BLOCKING THE SERVER
+-------------------------
+Embedding the question is SYNCHRONOUS work -- a local model crunching numbers,
+or an HTTP call to OpenAI/Gemini. Run directly in this async function it would
+freeze the event loop, and with it every other user's request, for its whole
+duration. `asyncio.to_thread` runs it on a worker thread instead.
 """
 
+import asyncio
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -72,6 +92,8 @@ from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
 from app.models.project import Project
 from app.services.embedding import EmbeddingService
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
@@ -122,12 +144,14 @@ class RetrievalService:
         # Critically, this uses the SAME model that embedded the chunks at
         # upload time. Comparing vectors from two different models is
         # meaningless -- the numbers would not describe the same space.
-        query_vector = EmbeddingService.get_embedding(query)
+        # On a thread: see "NEVER BLOCKING THE SERVER" above.
+        query_vector = await asyncio.to_thread(EmbeddingService.get_embedding, query)
+        model_name = EmbeddingService.current_model_name()
 
         if not query_vector:
             # Embedding failed entirely. Return nothing rather than running a
             # query with a broken vector and surfacing nonsense as "results".
-            print("[Retrieval] Could not embed the query. Returning no results.")
+            logger.warning("Could not embed the query; returning no results")
             return []
 
         # ----------------------------------------------------------
@@ -153,6 +177,9 @@ class RetrievalService:
             # Only search documents that finished processing. A document still
             # being chunked has partial embeddings and would give partial answers.
             .where(Document.status == "completed")
+            # Only vectors from the model that embedded the question -- see
+            # "ONLY VECTORS FROM THE CURRENT MODEL ARE COMPARED" above.
+            .where(ChunkEmbedding.model_name == model_name)
             # Closest first. This is the actual "search".
             .order_by(distance)
             # Stop after top_k rows. Combined with the index, Postgres does not

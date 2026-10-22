@@ -36,6 +36,8 @@ import { pushMock } from "./setup";
 const listDocuments = vi.fn();
 const listProjects = vi.fn();
 const getToken = vi.fn();
+// The signed-in user; drives whether the upload zone is offered.
+const getMe = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -44,7 +46,10 @@ vi.mock("@/lib/api", () => ({
     createChatSession: vi.fn().mockResolvedValue({ id: "s1" }),
     search: vi.fn().mockResolvedValue({ results: [], took_seconds: 0 }),
     uploadDocuments: vi.fn().mockResolvedValue([]),
+    getMe: (...a: unknown[]) => getMe(...a),
   },
+  // UploadZone checks `instanceof ApiError`; a stand-in class suffices.
+  ApiError: class ApiError extends Error {},
   getToken: () => getToken(),
   getErrorMessage: (e: unknown, fallback = "Something went wrong.") =>
     e instanceof Error && e.message ? e.message : fallback,
@@ -111,6 +116,7 @@ function renderPage(paramsPromise: SettledParams = routeParams()) {
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   getToken.mockReturnValue("a-valid-token");
+  getMe.mockReset().mockResolvedValue({ id: "u1", email: "ed@example.com", role: "Manager", is_verified: true });
   listDocuments.mockReset().mockResolvedValue([doc()]);
   listProjects.mockReset().mockResolvedValue([{ id: "project-1", name: "HR Handbook" }]);
 });
@@ -342,5 +348,79 @@ describe("loading", () => {
 
     expect(await screen.findByText(/first\.pdf/)).toBeInTheDocument();
     expect(screen.getByText(/second\.docx/)).toBeInTheDocument();
+  });
+});
+
+// ======================================================================
+// Why a document failed, or is being retried
+// ======================================================================
+
+describe("failure reasons", () => {
+  it("shows the backend's error_message for a failed document", async () => {
+    listDocuments.mockResolvedValue([
+      doc({
+        status: "failed",
+        error_message: "Rejected by the malware scan: Eicar-Signature",
+        meta_data: { error: "Rejected by the malware scan: Eicar-Signature" },
+      }),
+    ]);
+    renderPage();
+
+    expect(
+      await screen.findByText("Rejected by the malware scan: Eicar-Signature")
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to meta_data.error from an older backend", async () => {
+    // Before `error_message` existed the reason lived only in meta_data.
+    listDocuments.mockResolvedValue([
+      doc({ status: "failed", meta_data: { error: "Unsupported file type: xyz" } }),
+    ]);
+    renderPage();
+
+    expect(await screen.findByText("Unsupported file type: xyz")).toBeInTheDocument();
+  });
+
+  it("explains a pending document that is waiting to be retried", async () => {
+    // A transient failure puts the document back on the queue. Without this
+    // note it would just sit on "Queued" with no hint of why.
+    listDocuments.mockResolvedValue([
+      doc({ status: "pending", error_message: "embedding API unreachable", attempts: 1 }),
+    ]);
+    renderPage();
+
+    expect(
+      await screen.findByText(/Retrying after a temporary problem: embedding API unreachable/)
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing extra about an ordinary queued document", async () => {
+    listDocuments.mockResolvedValue([doc({ status: "pending", error_message: null })]);
+    renderPage();
+
+    await waitFor(() => expect(listDocuments).toHaveBeenCalled());
+    await settle();
+    expect(screen.queryByText(/Retrying/)).not.toBeInTheDocument();
+  });
+});
+
+// ======================================================================
+// Role gating
+// ======================================================================
+// Uploading needs the editor role. A viewer is told so instead of being
+// offered a drop zone that can only answer 403.
+
+describe("role gating", () => {
+  it("offers the upload zone to an editor", async () => {
+    const { container } = renderPage();
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy());
+  });
+
+  it("hides the upload zone from a viewer and says why", async () => {
+    getMe.mockResolvedValue({ id: "u2", email: "v@example.com", role: "Employee", is_verified: true });
+    const { container } = renderPage();
+
+    expect(await screen.findByText(/view-only access/i)).toBeInTheDocument();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
   });
 });

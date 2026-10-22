@@ -622,8 +622,13 @@ export default function ChatPanel({ projectId }: Props) {
       {/* ============================================================
           COMPOSER
           ============================================================ */}
+      {/* A 429 (rate limit, or the monthly token quota for chat) arrives
+          here already worded with WHEN to try again: getErrorMessage in
+          lib/api.ts appends the Retry-After wait when the backend's text does
+          not include it. role="alert" so a screen reader announces it. */}
       {error && (
         <div
+          role="alert"
           className="mt-3 rounded-xl px-4 py-2.5 text-sm"
           style={{ background: "rgba(248,113,113,0.1)", color: "var(--danger)" }}
         >

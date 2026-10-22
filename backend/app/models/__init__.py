@@ -41,9 +41,14 @@ from app.models.audit import AuditLog
 from app.models.chat import ChatMessage, ChatSession, Feedback
 from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
+from app.models.invite import Invite
 from app.models.organization import Organization
 from app.models.project import Project
+from app.models.refresh_token import RefreshToken
+from app.models.revoked_token import RevokedToken
+from app.models.usage import UsageEvent
 from app.models.user import User
+from app.models.user_token import UserToken
 
 # `__all__` declares this module's public surface. It controls what
 # `from app.models import *` brings in, and documents the intended exports for
@@ -66,4 +71,11 @@ __all__ = [
     # ---- Access and accountability ----
     "APIKey",
     "AuditLog",
+    # ---- Sessions, invites and emailed links ----
+    "Invite",
+    "RefreshToken",
+    "RevokedToken",
+    "UserToken",
+    # ---- Metering ----
+    "UsageEvent",
 ]

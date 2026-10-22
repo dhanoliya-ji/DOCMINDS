@@ -7,7 +7,7 @@ Endpoints for managing projects -- the document collections that also act as
 search boundaries.
 
     GET  /projects/   list the projects in MY organization
-    POST /projects/   create one  (Admin or Manager only)
+    POST /projects/   create one  (editor or above: Manager or Admin)
 
 THE TENANT ISOLATION PATTERN, IN ITS SIMPLEST FORM
 --------------------------------------------------
@@ -64,10 +64,11 @@ async def create_project(
     project_in: ProjectCreate,
     db: AsyncSession = Depends(deps.get_db),
     # ---- ROLE-BASED ACCESS CONTROL ----
-    # `RoleChecker` is a configurable dependency: it runs the normal
-    # authentication chain and then additionally requires one of these roles.
-    # An Employee calling this endpoint gets 403 before the body executes.
-    current_user: User = Depends(deps.RoleChecker(["Admin", "Manager"])),
+    # `require_editor` runs the normal authentication chain and then requires
+    # the editor role (Manager) or anything ranked above it (Admin). A viewer
+    # (Employee) -- or a viewer-scoped API key -- gets 403 before the body
+    # executes. See core/roles.py for the ranking.
+    current_user: User = Depends(deps.require_editor),
 ):
     """
     Create a project. Restricted to Admin and Manager roles.

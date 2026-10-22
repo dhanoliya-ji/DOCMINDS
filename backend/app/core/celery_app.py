@@ -83,6 +83,44 @@ celery_app.conf.update(
     # its memory.
     result_expires=86400,
 
+    # ---- Durability ----
+    # Fetch ONE message at a time. By default a worker grabs several in
+    # advance; combined with acks_late (set on the ingestion task) a crashed
+    # worker would then strand every pre-fetched document until Redis's
+    # visibility timeout passed. With one at a time, only the job actually
+    # running is affected.
+    worker_prefetch_multiplier=1,
+
+    # With acks_late, a message stays in Redis UNACKNOWLEDGED while its task
+    # runs -- and while a retry waits out its countdown on the worker. If it
+    # is still unacknowledged after the "visibility timeout", Redis decides
+    # the worker died and hands the message to another one. That must never
+    # happen to a job that is merely slow, so the window is kept longer than
+    # the hard time limit plus the longest retry wait. One hour, Celery's own
+    # default, is the floor. (Even if it did happen, the claim in
+    # tasks/ingestion.py would make the second copy skip -- this just avoids
+    # the wasted delivery.)
+    broker_transport_options={
+        "visibility_timeout": max(
+            3600,
+            settings.INGESTION_TIME_LIMIT_SECONDS
+            + settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS
+            + 300,
+        ),
+    },
+
+    # ---- Periodic jobs (Celery BEAT) ----
+    # Beat is a tiny scheduler process that sends a task on a timer, like
+    # cron. Here it sends the sweep that finds documents orphaned by a dead
+    # worker and puts them back on the queue (tasks/ingestion.py). Start it
+    # with `celery ... beat`, or `worker -B` when there is a single worker.
+    beat_schedule={
+        "recover-stuck-documents": {
+            "task": "app.tasks.ingestion.recover_stuck_documents_task",
+            "schedule": settings.INGESTION_RECOVERY_INTERVAL_MINUTES * 60.0,
+        },
+    },
+
     # Explicitly import the tasks package on worker start-up. A task the worker
     # has never imported is not registered, and any job for it fails with
     # "Received unregistered task" -- a genuinely confusing error, because the
@@ -94,3 +132,55 @@ celery_app.conf.update(
 # `@celery_app.task`. Between this and `imports` above, a newly added task is
 # picked up without further configuration.
 celery_app.autodiscover_tasks(["app"])
+
+
+# ----------------------------------------------------------------------
+# LOGGING, ERROR REPORTING AND PER-TASK CONTEXT  (core/observability.py)
+# ----------------------------------------------------------------------
+# Celery normally installs its OWN log handlers and format when a worker
+# starts. Connecting to `setup_logging` tells it "logging is handled": the
+# worker's lines then come out as the same JSON objects as the API's, which
+# one log query can search together.
+#
+# The task signals give every line a task runs a context of its own -- the
+# task id and name -- the worker-side counterpart of the request id the API
+# middleware assigns.
+from celery import signals  # noqa: E402
+
+from app.core import observability  # noqa: E402
+
+_task_context_tokens: dict = {}
+
+
+@signals.setup_logging.connect
+def _configure_worker_logging(**_kwargs) -> None:
+    observability.configure_logging()
+
+
+@signals.worker_process_init.connect
+@signals.worker_init.connect
+def _start_worker_sentry(**_kwargs) -> None:
+    # Off unless SENTRY_DSN is set; never raises.
+    observability.init_sentry("worker")
+
+
+@signals.beat_init.connect
+def _start_beat_sentry(**_kwargs) -> None:
+    observability.init_sentry("beat")
+
+
+@signals.task_prerun.connect
+def _bind_task_context(task_id=None, task=None, **_kwargs) -> None:
+    _task_context_tokens[task_id] = observability.new_context(
+        task_id=task_id, task=getattr(task, "name", None)
+    )
+
+
+@signals.task_postrun.connect
+def _clear_task_context(task_id=None, **_kwargs) -> None:
+    token = _task_context_tokens.pop(task_id, None)
+    if token is not None:
+        try:
+            observability.reset_context(token)
+        except ValueError:  # pragma: no cover - token from another context
+            pass

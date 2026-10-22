@@ -1,65 +1,149 @@
 /**
  * login/page.tsx  (served at "/login")
  * ====================================
- * One screen that handles both signing in and creating an account, toggled by
- * a single piece of state. Keeping them together avoids duplicating the form,
- * the validation and the error handling across two nearly identical files.
+ * One screen that handles signing in, creating an account, and accepting an
+ * invite, toggled by a little state. Keeping them together avoids duplicating
+ * the form, the validation and the error handling across nearly identical
+ * files.
  *
  * WHAT HAPPENS ON SUBMIT
  * ----------------------
- *   Sign in : POST /auth/login  -> receive a JWT -> save it -> go to dashboard
- *   Sign up : POST /auth/signup -> creates the org and an Admin user
+ *   Sign in : POST /auth/login  -> receive tokens -> save them -> dashboard
+ *   Sign up : POST /auth/signup -> creates a NEW org with the user as Admin
  *                                -> immediately log in with the same details
+ *   Invite  : POST /auth/signup with `invite_token` -> joins the inviting org
+ *             with the role the Admin chose -> log in
  *
- * Signing up creates a brand-new ORGANIZATION as well as a user. The person
- * who creates it becomes its Admin. That is what makes the app multi-tenant:
- * each organization's documents are completely isolated from every other one.
+ * WHY INVITES LIVE HERE AND NOT ON THEIR OWN PAGE
+ * -----------------------------------------------
+ * The invite email (backend/app/services/email.py) links to
+ * `/login?invite=<token>`. Accepting an invite IS signing up -- same fields,
+ * same request, one extra parameter -- so it is a mode of this form rather
+ * than a copy of it. The link format is the contract; change both sides
+ * together.
+ *
+ * Signing up WITHOUT an invite always creates a brand-new organization. There
+ * is deliberately no way to type in someone else's org: joining one requires
+ * an invite from its Admin. That is what keeps tenants isolated.
  */
 
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertCircle, ArrowRight, Loader2, Lock, Mail, Building2 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { ArrowRight, Building2, Loader2, Lock, Mail } from "lucide-react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 
-import { api, getErrorMessage } from "@/lib/api";
+import { AuthCard, Notice, PasswordHints } from "@/components/AuthCard";
+import { ApiError, InvitePreview, api, getErrorMessage } from "@/lib/api";
+import { PASSWORD_MIN_LENGTH, passwordProblems } from "@/lib/password";
+import { roleLabel } from "@/lib/roles";
 
+/**
+ * `useSearchParams` makes a page depend on the request's query string, which
+ * Next.js cannot know while pre-rendering. It therefore requires a Suspense
+ * boundary around whatever reads it -- without one, `next build` fails. The
+ * exported page is just that boundary.
+ */
 export default function LoginPage() {
-  // `useRouter` gives programmatic navigation -- moving the user to another
-  // page from inside code, rather than by them clicking a link.
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const inviteToken = useSearchParams().get("invite") || "";
 
   // ---- Form state ----------------------------------------------------
   // Each input is a "controlled component": React holds the value in state and
-  // the input displays it. That makes the current value available to the
-  // submit handler without ever reading the DOM directly.
-  const [isSignup, setIsSignup] = useState(false);
+  // the input displays it. An invite link opens straight into signup mode.
+  const [isSignup, setIsSignup] = useState(Boolean(inviteToken));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [orgName, setOrgName] = useState("");
+
+  // ---- Invite state --------------------------------------------------
+  // What the invite is for ("Join Acme as Editor"), or why it cannot be used.
+  const [invite, setInvite] = useState<InvitePreview | null>(null);
+  const [inviteError, setInviteError] = useState("");
 
   // ---- Request state -------------------------------------------------
   // `loading` disables the button and shows a spinner, which prevents the user
   // double-submitting and creating two accounts.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    let cancelled = false;
+    api
+      .previewInvite(inviteToken)
+      .then((preview) => {
+        if (cancelled) return;
+        setInvite(preview);
+        // The invite is bound to one address, and the backend refuses any
+        // other, so fill it in and lock the field.
+        setEmail(preview.email);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setInviteError(
+            getErrorMessage(err, "This invite link is not valid.") +
+              " Ask your admin for a new invite, or create your own workspace below."
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteToken]);
+
+  // Only use the token once the backend has confirmed it is usable.
+  const joining = isSignup && invite !== null;
+  const problems = passwordProblems(password, email);
+  const hintsId = "password-hints";
 
   async function handleSubmit(event: FormEvent) {
     // Stop the browser's default behaviour of reloading the page on submit,
     // which would throw away all our React state.
     event.preventDefault();
-
     setError("");
-    setLoading(true);
+    setNotice("");
 
+    // Check the password policy before the round trip; the backend checks
+    // again regardless.
+    if (isSignup && problems.length > 0) {
+      setError(problems.join(" "));
+      return;
+    }
+
+    setLoading(true);
     try {
       if (isSignup) {
-        // Create the organization and its first (Admin) user...
-        await api.signup(email, password, orgName);
-        // ...then log straight in, so the user is not asked to type the same
-        // credentials again immediately.
-        await api.login(email, password);
+        await api.signup(email, password, orgName, joining ? inviteToken : undefined);
+        try {
+          // Log straight in, so the user is not asked to type the same
+          // credentials again immediately.
+          await api.login(email, password);
+        } catch (err) {
+          // With REQUIRE_EMAIL_VERIFICATION on, the account exists but cannot
+          // sign in until the emailed link is clicked. That is success, not
+          // failure, so say so and switch to the sign-in form.
+          if (err instanceof ApiError && err.status === 403) {
+            setIsSignup(false);
+            setNotice(
+              "Account created. We've emailed you a link to confirm your address -- " +
+                "click it, then sign in here."
+            );
+            return;
+          }
+          throw err;
+        }
       } else {
         await api.login(email, password);
       }
@@ -68,7 +152,7 @@ export default function LoginPage() {
       router.push("/dashboard");
     } catch (err) {
       // Show the backend's real message ("A user with this email already
-      // exists") rather than a generic failure.
+      // exists", "Too many sign-in attempts...") rather than a generic one.
       setError(getErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       // `finally` runs whether or not an error was thrown, so the button can
@@ -77,146 +161,155 @@ export default function LoginPage() {
     }
   }
 
+  const title = joining
+    ? `Join ${invite.org_name}`
+    : isSignup
+      ? "Create your workspace"
+      : "Welcome back";
+  const subtitle = joining
+    ? `You've been invited as ${roleLabel(invite.role)}. Choose a password to finish.`
+    : isSignup
+      ? "Set up an organization and start uploading documents."
+      : "Sign in to search and question your documents.";
+
   return (
-    <main className="flex min-h-screen items-center justify-center px-6 py-12">
-      <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-        className="glass w-full max-w-md p-8"
-      >
-        {/* ---- Header ---- */}
-        <div className="mb-8 text-center">
-          <h1 className="text-gradient text-3xl font-bold">
-            {isSignup ? "Create your workspace" : "Welcome back"}
-          </h1>
-          <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-            {isSignup
-              ? "Set up an organization and start uploading documents."
-              : "Sign in to search and question your documents."}
-          </p>
-        </div>
+    <AuthCard title={title} subtitle={subtitle}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {inviteError && isSignup && <Notice tone="error">{inviteError}</Notice>}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Organization name is only relevant when creating an account. */}
-          {isSignup && (
-            <motion.div
-              // Animating the height lets the field slide open smoothly rather
-              // than making the whole form jump when it appears.
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              className="relative"
-            >
-              <Building2
-                size={16}
-                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2"
-                style={{ color: "var(--text-muted)" }}
-              />
-              <input
-                className="input pl-11"
-                placeholder="Organization name"
-                value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                required={isSignup}
-              />
-            </motion.div>
-          )}
-
-          {/* Email */}
-          <div className="relative">
-            <Mail
+        {/* Organization name: only when creating a NEW organization. Someone
+            accepting an invite joins the inviter's organization instead. */}
+        {isSignup && !joining && (
+          <motion.div
+            // Animating the height lets the field slide open smoothly rather
+            // than making the whole form jump when it appears.
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="relative"
+          >
+            <Building2
               size={16}
+              aria-hidden="true"
               className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2"
               style={{ color: "var(--text-muted)" }}
             />
             <input
-              // type="email" makes mobile browsers show an @-friendly keyboard
-              // and gives basic format validation for free.
-              type="email"
               className="input pl-11"
-              placeholder="you@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              // aria-label because the visible cue is the placeholder, which
+              // screen readers do not reliably announce as a label.
+              aria-label="Organization name"
+              placeholder="Organization name"
+              value={orgName}
+              onChange={(e) => setOrgName(e.target.value)}
               required
+              maxLength={255}
             />
-          </div>
+          </motion.div>
+        )}
 
-          {/* Password */}
+        {/* Email */}
+        <div className="relative">
+          <Mail
+            size={16}
+            aria-hidden="true"
+            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2"
+            style={{ color: "var(--text-muted)" }}
+          />
+          <input
+            // type="email" makes mobile browsers show an @-friendly keyboard
+            // and gives basic format validation for free.
+            type="email"
+            aria-label="Email"
+            autoComplete="email"
+            className="input pl-11"
+            placeholder="you@company.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            readOnly={joining}
+            required
+          />
+        </div>
+
+        {/* Password */}
+        <div className="space-y-2">
           <div className="relative">
             <Lock
               size={16}
+              aria-hidden="true"
               className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2"
               style={{ color: "var(--text-muted)" }}
             />
             <input
               // type="password" masks the characters as they are typed.
               type="password"
+              aria-label="Password"
+              // Tells password managers whether to offer a saved password or
+              // to generate a new one.
+              autoComplete={isSignup ? "new-password" : "current-password"}
+              aria-describedby={isSignup ? hintsId : undefined}
               className="input pl-11"
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={8}
             />
           </div>
-
-          {/* Error banner, shown only when there is something to report. */}
-          {error && (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex items-start gap-2 rounded-xl px-4 py-3 text-sm"
-              style={{
-                background: "rgba(248,113,113,0.1)",
-                color: "var(--danger)",
-              }}
-            >
-              <AlertCircle size={15} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </motion.div>
+          {isSignup && password.length > 0 && (
+            <PasswordHints id={hintsId} problems={problems} minLength={PASSWORD_MIN_LENGTH} />
           )}
-
-          <button
-            type="submit"
-            // Disabling during the request is what prevents a double submit.
-            disabled={loading}
-            className="btn-primary w-full py-3"
-          >
-            {loading ? (
-              <>
-                {/* `animate-spin` is a Tailwind utility that rotates the icon
-                    continuously, giving a standard loading spinner. */}
-                <Loader2 size={16} className="animate-spin" />
-                {isSignup ? "Creating workspace..." : "Signing in..."}
-              </>
-            ) : (
-              <>
-                {isSignup ? "Create workspace" : "Sign in"}
-                <ArrowRight size={16} />
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Toggle between the two modes */}
-        <div className="mt-6 text-center text-sm">
-          <span style={{ color: "var(--text-muted)" }}>
-            {isSignup ? "Already have an account?" : "No account yet?"}
-          </span>{" "}
-          <button
-            onClick={() => {
-              setIsSignup(!isSignup);
-              // Clear any stale error so a message from the previous mode does
-              // not linger confusingly over the new form.
-              setError("");
-            }}
-            className="font-medium transition-colors"
-            style={{ color: "var(--accent-hover)" }}
-          >
-            {isSignup ? "Sign in" : "Create one"}
-          </button>
         </div>
-      </motion.div>
-    </main>
+
+        {!isSignup && (
+          <div className="text-right text-sm">
+            <Link href="/forgot-password" style={{ color: "var(--accent-hover)" }}>
+              Forgot password?
+            </Link>
+          </div>
+        )}
+
+        {notice && <Notice tone="success">{notice}</Notice>}
+        {error && <Notice tone="error">{error}</Notice>}
+
+        <button
+          type="submit"
+          // Disabling during the request is what prevents a double submit.
+          disabled={loading}
+          className="btn-primary w-full py-3"
+        >
+          {loading ? (
+            <>
+              <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+              {isSignup ? "Creating account..." : "Signing in..."}
+            </>
+          ) : (
+            <>
+              {joining ? "Join workspace" : isSignup ? "Create workspace" : "Sign in"}
+              <ArrowRight size={16} aria-hidden="true" />
+            </>
+          )}
+        </button>
+      </form>
+
+      {/* Toggle between the two modes */}
+      <div className="mt-6 text-center text-sm">
+        <span style={{ color: "var(--text-muted)" }}>
+          {isSignup ? "Already have an account?" : "No account yet?"}
+        </span>{" "}
+        <button
+          type="button"
+          onClick={() => {
+            setIsSignup(!isSignup);
+            // Clear any stale message so one from the previous mode does not
+            // linger confusingly over the new form.
+            setError("");
+            setNotice("");
+          }}
+          className="font-medium transition-colors"
+          style={{ color: "var(--accent-hover)" }}
+        >
+          {isSignup ? "Sign in" : "Create one"}
+        </button>
+      </div>
+    </AuthCard>
   );
 }

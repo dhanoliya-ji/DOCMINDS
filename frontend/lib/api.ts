@@ -22,6 +22,12 @@
  * who you are. We keep it in `localStorage` (the browser's small persistent
  * key/value store) so a page refresh does not log you out. Every later request
  * carries it in the `Authorization: Bearer <token>` header.
+ *
+ * The access token lasts 30 minutes. Login also returns a REFRESH token (7
+ * days), stored alongside it. When a request comes back 401, `apiFetch`
+ * quietly trades the refresh token for a fresh pair and retries once; only if
+ * that fails is the user sent back to /login. Signing out tells the backend
+ * to revoke both tokens, so a copied token stops working too.
  */
 
 // ----------------------------------------------------------------------
@@ -38,8 +44,9 @@ export const API_BASE =
 
 const API_V1 = `${API_BASE}/api/v1`;
 
-// The localStorage key under which we save the token.
+// The localStorage keys under which we save the two tokens.
 const TOKEN_KEY = "edia_token";
+const REFRESH_KEY = "edia_refresh";
 
 // ----------------------------------------------------------------------
 // TOKEN STORAGE
@@ -60,6 +67,155 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
+  // Both go together: a refresh token left behind could sign the user
+  // straight back in after they chose to sign out.
+  localStorage.removeItem(REFRESH_KEY);
+}
+
+export function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(REFRESH_KEY);
+}
+
+export function setRefreshToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(REFRESH_KEY, token);
+}
+
+// ----------------------------------------------------------------------
+// SILENT REFRESH
+// ----------------------------------------------------------------------
+
+// The refresh currently in progress, shared by everyone who needs it.
+//
+// WHY THIS MATTERS: the backend ROTATES refresh tokens, and treats a token
+// presented twice as stolen -- it then ends the whole session. A page that
+// fires three requests at once, all of which come back 401, would otherwise
+// send three refreshes with the same token, and the second would log the user
+// out. Sharing one promise means one refresh, whatever the number of callers.
+let refreshInFlight: Promise<boolean> | null = null;
+
+/** Trade the stored refresh token for a new pair. Resolves true on success. */
+export function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const refreshToken = getRefreshToken();
+      if (!refreshToken) return false;
+      try {
+        const response = await fetch(`${API_V1}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        setToken(data.access_token);
+        setRefreshToken(data.refresh_token);
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+/** Clear the session and send the user to sign in again. */
+function endSession(): never {
+  clearToken();
+  if (typeof window !== "undefined") {
+    // A HARD navigation, deliberately, and not `router.push`.
+    //
+    // Two reasons. This is a plain module function rather than a component,
+    // so there is no router to reach for -- and a full page load is what we
+    // actually want: it discards every piece of in-memory React state along
+    // with the token. A soft navigation would carry the previous user's
+    // loaded projects and open chat session into the login screen.
+    //
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.href = "/login";
+  }
+  throw new Error("Your session expired. Please sign in again.");
+}
+
+// ----------------------------------------------------------------------
+// ERRORS THAT REMEMBER THEIR STATUS
+// ----------------------------------------------------------------------
+
+/**
+ * A failed request, carrying the HTTP status and any Retry-After wait.
+ *
+ * WHY NOT A PLAIN Error?
+ * ----------------------
+ * Most screens only need the message, and an ApiError IS an Error, so they
+ * keep working unchanged. But a few need to know WHICH failure it was: the
+ * upload zone words a 413 differently from a 415, and chat and search want to
+ * say "try again in 40 seconds" after a 429. Parsing that back out of the
+ * message text would break the first time the backend rewords a sentence.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  /** Seconds to wait before retrying (from Retry-After), or null. */
+  readonly retryAfter: number | null;
+
+  constructor(message: string, status: number, retryAfter: number | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+/**
+ * Read a Retry-After header as a number of seconds.
+ *
+ * The header may be either a number of seconds or an HTTP date; the backend
+ * only sends seconds, but a proxy in front of it could send a date. NOTE: in a
+ * browser this header is only readable cross-origin because the backend lists
+ * it in CORS `expose_headers` -- without that, `get` returns null here.
+ */
+function readRetryAfter(response: Response): number | null {
+  // `headers?.get` because test doubles (and very old polyfills) may not
+  // provide a Headers object at all.
+  const raw = response.headers?.get?.("Retry-After");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(raw);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+/**
+ * Turn a non-2xx response into an ApiError with the backend's own words.
+ *
+ * FastAPI reports problems as {"detail": "..."}. Reading it gives the user the
+ * real reason ("Project not found") instead of a bare status code. Validation
+ * errors arrive as an ARRAY of problems rather than a string, and String() of
+ * that would show "[object Object]", so both shapes are handled.
+ */
+async function errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
+  let message = fallback;
+  try {
+    const body = await response.json();
+    if (body && body.detail) {
+      message =
+        typeof body.detail === "string" ? body.detail : body.detail[0]?.msg || message;
+    }
+  } catch {
+    // The error body was not JSON at all -- keep the fallback.
+  }
+  return new ApiError(message, response.status, readRetryAfter(response));
+}
+
+/** 42 -> "42 seconds", 150 -> "3 minutes", 7200 -> "2 hours" (as the backend words it). */
+export function formatWait(seconds: number): string {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 90 * 60) return `${Math.ceil(seconds / 60)} minutes`;
+  if (seconds < 48 * 3600) return `${Math.ceil(seconds / 3600)} hours`;
+  return `${Math.ceil(seconds / 86400)} days`;
 }
 
 // ----------------------------------------------------------------------
@@ -75,7 +231,10 @@ export function clearToken(): void {
  */
 async function apiFetch<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  // True on the one retry after a silent refresh, so a second 401 ends the
+  // session instead of looping.
+  isRetry = false
 ): Promise<T> {
   const token = getToken();
 
@@ -95,44 +254,19 @@ async function apiFetch<T>(
 
   const response = await fetch(`${API_V1}${path}`, { ...options, headers });
 
-  // 401 means the token is missing, invalid or expired. Clear it and send the
-  // user back to the login page, rather than leaving them on a screen that
-  // silently fails to load anything.
+  // 401 means the token is missing, invalid or expired. First try a silent
+  // refresh and repeat the request once. If that is not possible, clear the
+  // tokens and send the user back to the login page, rather than leaving them
+  // on a screen that silently fails to load anything.
   if (response.status === 401) {
-    clearToken();
-    if (typeof window !== "undefined") {
-      // A HARD navigation, deliberately, and not `router.push`.
-      //
-      // Two reasons. This is a plain module function rather than a component,
-      // so there is no router to reach for -- and a full page load is what we
-      // actually want: it discards every piece of in-memory React state along
-      // with the token. A soft navigation would carry the previous user's
-      // loaded projects and open chat session into the login screen.
-      //
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = "/login";
+    if (!isRetry && (await refreshSession())) {
+      return apiFetch<T>(path, options, true);
     }
-    throw new Error("Your session expired. Please sign in again.");
+    endSession();
   }
 
   if (!response.ok) {
-    // FastAPI reports problems as {"detail": "..."}. Reading it gives the user
-    // the real reason ("Project not found") instead of a bare status code.
-    let message = `Request failed (${response.status})`;
-    try {
-      const body = await response.json();
-      if (body.detail) {
-        // Validation errors arrive as an ARRAY of problems rather than a
-        // string, so handle both shapes.
-        message =
-          typeof body.detail === "string"
-            ? body.detail
-            : body.detail[0]?.msg || message;
-      }
-    } catch {
-      // The error body was not JSON at all -- keep the generic message.
-    }
-    throw new Error(message);
+    throw await errorFromResponse(response, `Request failed (${response.status})`);
   }
 
   // 204 No Content has an empty body, so calling .json() on it would throw.
@@ -151,6 +285,19 @@ async function apiFetch<T>(
  * safely instead of assuming it is always an Error.
  */
 export function getErrorMessage(error: unknown, fallback = "Something went wrong."): string {
+  if (error instanceof ApiError && error.message) {
+    // A 429 (rate limit, or the monthly token quota) with a Retry-After: make
+    // sure the user is told WHEN to try again. The backend's rate-limit text
+    // already says so; the hint is only added when the message does not.
+    if (
+      error.status === 429 &&
+      error.retryAfter !== null &&
+      !/try again/i.test(error.message)
+    ) {
+      return `${error.message} Try again in ${formatWait(error.retryAfter)}.`;
+    }
+    return error.message;
+  }
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
   return fallback;
@@ -206,9 +353,17 @@ export interface DocumentItem {
   file_type: string;
   file_size: number;
   // "pending" -> "processing" -> "completed" | "failed"
+  // A temporary failure (a network blip, a rate limit) sends a document back
+  // to "pending" to be retried, with the reason in `error_message`.
   status: string;
   version: number;
   meta_data: DocumentMeta;
+  // Why processing failed -- or, while still "pending", why it is being
+  // retried. Null when nothing went wrong. Optional so that responses from an
+  // older backend, which only had meta_data.error, still type-check.
+  error_message?: string | null;
+  // How many times processing has started; above 1 means it was retried.
+  attempts?: number;
   project_id: string;
   created_at: string;
   updated_at: string;
@@ -276,6 +431,141 @@ export interface ChatSessionItem {
  */
 export type ChatMode = "rag" | "agent";
 
+// ----------------------------------------------------------------------
+// ACCOUNTS AND ORGANIZATION ADMIN (backend/app/schemas/account.py)
+// ----------------------------------------------------------------------
+
+// Stored role names, and what they mean: Employee = viewer (read, search,
+// chat), Manager = editor (+ upload, projects), Admin = admin (+ members,
+// invites, API keys, audit log). The backend also accepts the aliases.
+export type Role = "Admin" | "Manager" | "Employee";
+export type RoleInput = Role | "admin" | "editor" | "viewer";
+
+export interface Member {
+  id: string;
+  email: string;
+  role: Role;
+  is_active: boolean;
+  is_verified: boolean;
+  created_at: string;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: Role;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  invited_by: string | null;
+  created_at: string;
+  status: "pending" | "accepted" | "revoked" | "expired";
+}
+
+/** Only the create response carries the token -- it is never shown again. */
+export interface InviteCreated extends Invite {
+  token: string;
+  invite_url: string;
+}
+
+export interface InvitePreview {
+  email: string;
+  role: Role;
+  org_name: string;
+  expires_at: string;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  role: Role;
+  user_id: string;
+  is_active: boolean;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+/** Only the create response carries the key -- it is never shown again. */
+export interface ApiKeyCreated extends ApiKey {
+  key: string;
+}
+
+export interface AuditLogItem {
+  id: string;
+  action: string;
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  user_id: string | null;
+  created_at: string;
+}
+
+export interface AuditLogPage {
+  items: AuditLogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditLogFilters {
+  limit?: number;
+  offset?: number;
+  /** Exact action, or a prefix ending in "." such as "member." */
+  action?: string;
+  user_id?: string;
+  since?: string;
+  until?: string;
+}
+
+// ----------------------------------------------------------------------
+// THE SIGNED-IN USER AND THE ORGANIZATION'S USAGE
+// ----------------------------------------------------------------------
+
+/** GET /users/me (backend/app/schemas/user.py UserOut). */
+export interface CurrentUser {
+  id: string;
+  email: string;
+  role: Role;
+  org_id: string;
+  is_active: boolean;
+  is_verified: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One metered quantity against its limit (backend/app/schemas/usage.py). */
+export interface QuotaUsage {
+  used: number;
+  quota: number;
+  // True when the quota is 0, which the backend treats as "no limit".
+  unlimited: boolean;
+  remaining: number | null;
+}
+
+/** GET /org/usage (backend/app/schemas/usage.py UsageSummary). */
+export interface UsageSummary {
+  period_start: string;
+  period_end: string;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost_usd: number;
+  tokens: QuotaUsage;
+  documents: QuotaUsage;
+  storage_bytes: QuotaUsage;
+  by_model: {
+    model: string;
+    requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    estimated_cost_usd: number;
+  }[];
+  by_mode: { mode: string; requests: number; total_tokens: number }[];
+}
+
 /**
  * One tool call the agent made while researching an answer.
  *
@@ -312,10 +602,14 @@ export const api = {
   // ---- Authentication ----------------------------------------------
 
   /**
-   * Create an account and a brand-new organization for it.
-   * The first user of an organization automatically becomes its Admin.
+   * Create an account.
+   *
+   * Without an invite token this creates a brand-new organization and makes
+   * the user its Admin. With one (from an invite email's `?invite=` link) it
+   * joins the inviting organization with the role the Admin chose; the email
+   * must be the one the invite was sent to.
    */
-  async signup(email: string, password: string, orgName: string) {
+  async signup(email: string, password: string, orgName: string, inviteToken?: string) {
     return apiFetch<{ id: string; email: string; role: string }>(
       "/auth/signup",
       {
@@ -323,10 +617,107 @@ export const api = {
         body: JSON.stringify({
           email,
           password,
-          org_name: orgName,
+          ...(inviteToken ? { invite_token: inviteToken } : { org_name: orgName }),
         }),
       }
     );
+  },
+
+  /** What an invite link is for, so a signup form can say "Join Acme as Manager". */
+  previewInvite(token: string) {
+    return apiFetch<InvitePreview>(`/auth/invites/${encodeURIComponent(token)}`);
+  },
+
+  /** Always resolves the same way, whether or not the email has an account. */
+  requestPasswordReset(email: string) {
+    return apiFetch<{ detail: string }>("/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  confirmPasswordReset(token: string, newPassword: string) {
+    return apiFetch<{ detail: string }>("/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  },
+
+  verifyEmail(token: string) {
+    return apiFetch<{ detail: string }>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  },
+
+  resendVerification() {
+    return apiFetch<{ detail: string }>("/auth/verify-email/resend", { method: "POST" });
+  },
+
+  /** Who is signed in: email, role and whether the email is confirmed. */
+  getMe() {
+    return apiFetch<CurrentUser>("/users/me");
+  },
+
+  // ---- Organization admin (Admin role only) -------------------------
+
+  listMembers() {
+    return apiFetch<Member[]>("/org/members");
+  },
+
+  updateMember(userId: string, changes: { role?: RoleInput; is_active?: boolean }) {
+    return apiFetch<Member>(`/org/members/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  },
+
+  removeMember(userId: string) {
+    return apiFetch<void>(`/org/members/${userId}`, { method: "DELETE" });
+  },
+
+  createInvite(email: string, role: RoleInput = "viewer") {
+    return apiFetch<InviteCreated>("/org/invites", {
+      method: "POST",
+      body: JSON.stringify({ email, role }),
+    });
+  },
+
+  listInvites() {
+    return apiFetch<Invite[]>("/org/invites");
+  },
+
+  revokeInvite(inviteId: string) {
+    return apiFetch<void>(`/org/invites/${inviteId}`, { method: "DELETE" });
+  },
+
+  createApiKey(name: string, role: RoleInput = "viewer", expiresInDays?: number) {
+    return apiFetch<ApiKeyCreated>("/org/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name, role, expires_in_days: expiresInDays ?? null }),
+    });
+  },
+
+  listApiKeys() {
+    return apiFetch<ApiKey[]>("/org/api-keys");
+  },
+
+  revokeApiKey(keyId: string) {
+    return apiFetch<void>(`/org/api-keys/${keyId}`, { method: "DELETE" });
+  },
+
+  /** This month's tokens, estimated cost and the organization's quotas. */
+  getUsage() {
+    return apiFetch<UsageSummary>("/org/usage");
+  },
+
+  listAuditLogs(filters: AuditLogFilters = {}) {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.append(key, String(value));
+    });
+    const query = params.toString();
+    return apiFetch<AuditLogPage>(`/org/audit-logs${query ? `?${query}` : ""}`);
   },
 
   /**
@@ -349,16 +740,46 @@ export const api = {
     });
 
     if (!response.ok) {
-      throw new Error("Incorrect email or password.");
+      // The backend's own words: wrong credentials (401), a deactivated
+      // account (400), an unconfirmed email (403) or too many attempts (429)
+      // each need a different reaction from the user.
+      throw await errorFromResponse(response, "Incorrect email or password.");
     }
 
     const data = await response.json();
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     return data;
   },
 
+  /**
+   * Sign out: forget both tokens here AND ask the backend to revoke them.
+   *
+   * The local part happens first and unconditionally, so the user is signed
+   * out on this device even if the network call fails. The backend call is
+   * best effort (`keepalive` lets it finish while the page navigates away):
+   * it is what makes a COPY of the token stop working too.
+   */
   logout() {
+    const accessToken = getToken();
+    const refreshToken = getRefreshToken();
     clearToken();
+    if (!accessToken && !refreshToken) return;
+    try {
+      void fetch(`${API_V1}/auth/logout`, {
+        method: "POST",
+        keepalive: true,
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }).catch(() => {
+        /* signed out locally regardless */
+      });
+    } catch {
+      /* no fetch available (tests, old browsers): signed out locally */
+    }
   },
 
   // ---- Projects ------------------------------------------------------
@@ -406,22 +827,30 @@ export const api = {
     // field name "files".
     files.forEach((file) => form.append("files", file));
 
-    const token = getToken();
-    const response = await fetch(`${API_V1}/documents/upload`, {
-      method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: form,
-    });
+    const send = () => {
+      const token = getToken();
+      return fetch(`${API_V1}/documents/upload`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+    };
+
+    let response = await send();
+    // Same silent refresh as apiFetch: an upload started just as the access
+    // token expired should not fail.
+    if (response.status === 401) {
+      if (!(await refreshSession())) endSession();
+      response = await send();
+      if (response.status === 401) endSession();
+    }
 
     if (!response.ok) {
-      let message = "Upload failed.";
-      try {
-        const body = await response.json();
-        if (body.detail) message = String(body.detail);
-      } catch {
-        /* the error body was not JSON */
-      }
-      throw new Error(message);
+      // The backend says exactly what was wrong: 413 too large, 415 a type it
+      // cannot read or a renamed file, 422 bad chunking options, 429 too many
+      // uploads, 402 over the organization's document or storage quota. The
+      // status travels with the error so UploadZone can word each one.
+      throw await errorFromResponse(response, "Upload failed.");
     }
 
     return response.json() as Promise<DocumentItem[]>;

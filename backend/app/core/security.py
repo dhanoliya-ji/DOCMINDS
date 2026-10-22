@@ -57,7 +57,10 @@ is not forced to log in twice an hour.
 """
 
 import datetime
-from typing import Any, Optional, Union
+import hashlib
+import secrets
+import uuid
+from typing import Any, List, Optional, Tuple, Union
 
 import jwt  # PyJWT
 from passlib.context import CryptContext
@@ -135,6 +138,15 @@ def create_access_token(
     # "type" is our own addition, explained below.
     to_encode = {
         "exp": expire,
+        # "iat" -- issued-at. Lets get_current_user reject tokens issued BEFORE
+        # the user's last password change (see `password_changed_at`). A
+        # FRACTIONAL timestamp (RFC 7519 allows it): with whole seconds, a
+        # token stolen in the same second as a password reset would survive it.
+        "iat": datetime.datetime.now(datetime.timezone.utc).timestamp(),
+        # "jti" -- JWT ID, a random unique name for THIS token. Logout puts it
+        # on the denylist (models/revoked_token.py), which is the only way to
+        # kill a stateless token before it expires on its own.
+        "jti": uuid.uuid4().hex,
         # Cast to str because the id is a UUID object, and JSON has no UUID type.
         "sub": str(subject),
         # WHY THIS MATTERS: without a type marker, a refresh token would also be
@@ -176,6 +188,97 @@ def create_refresh_token(
         "exp": expire,
         "sub": str(subject),
         "type": "refresh",
+        # A random id makes every refresh token unique, even two issued to the
+        # same user in the same second. That matters because the server stores
+        # a HASH of each one (models/refresh_token.py) under a unique index.
+        "jti": uuid.uuid4().hex,
     }
 
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+# ----------------------------------------------------------------------
+# OPAQUE TOKENS: invites, password reset, email verification, API keys
+# ----------------------------------------------------------------------
+# These are NOT JWTs. They are long random strings whose only meaning is "the
+# row in the database with this hash". That makes them revocable and single
+# use for free: delete or mark the row, and the string is worthless.
+#
+# THE SERVER ONLY EVER STORES A HASH OF THEM -- the same idea as passwords.
+# Somebody who reads the database (a backup, a leaked dump) finds hashes they
+# cannot turn back into working links.
+#
+# SHA-256, not bcrypt, and that is correct here: bcrypt is slow to protect
+# SHORT human-chosen passwords from guessing. These strings carry 256 bits of
+# randomness, so guessing is hopeless anyway, and a fast hash keeps the lookup
+# cheap -- it runs on every API-key request.
+
+
+def generate_token() -> str:
+    """A fresh, URL-safe random token (43 characters, 256 bits)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 hex digest -- what the database stores instead of the token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Every API key starts with this, so a key pasted into the wrong place (a chat
+# message, a public repo) is recognisable at a glance -- and by secret scanners.
+API_KEY_PREFIX = "dm_"
+
+
+def generate_api_key() -> Tuple[str, str, str]:
+    """
+    Create a new API key.
+
+    Returns (plaintext, display_prefix, hash). The plaintext is shown to the
+    user exactly ONCE, by the endpoint that creates it, and never again: only
+    the prefix (for recognising the key in a list) and the hash are stored.
+    """
+    plaintext = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    # 12 characters: "dm_" plus 9 random ones. Enough to tell keys apart in a
+    # list, nowhere near enough to guess the other ~34.
+    return plaintext, plaintext[:12], hash_token(plaintext)
+
+
+# ----------------------------------------------------------------------
+# PASSWORD POLICY
+# ----------------------------------------------------------------------
+
+
+def password_problems(password: str, email: Optional[str] = None) -> List[str]:
+    """
+    Everything wrong with a proposed password, as human-readable sentences.
+
+    An EMPTY list means the password is acceptable. Returning every problem at
+    once (rather than raising on the first) lets the signup form tell the user
+    everything they need to fix in one round trip.
+
+    THE RULES, AND WHY THESE AND NOT OTHERS
+    ---------------------------------------
+    Modern guidance (NIST SP 800-63B) is to require LENGTH and to block the
+    obviously guessable, rather than demanding a capital, a digit and a symbol.
+    Composition rules mostly produce "Password1!", which every cracking list
+    tries early; length is what actually costs an attacker time.
+
+        * at least PASSWORD_MIN_LENGTH characters (10 by default)
+        * not ONLY digits -- "1234567890" is long and still the first thing
+          anyone tries, and a phone number or date of birth is guessable
+        * not the account's own email address, which is the very first
+          thing an attacker who knows the email would try
+    """
+    problems: List[str] = []
+    minimum = settings.PASSWORD_MIN_LENGTH
+
+    if len(password) < minimum:
+        problems.append(f"Password must be at least {minimum} characters long.")
+    if password.isdigit():
+        problems.append("Password cannot be made of numbers only.")
+    if email:
+        lowered = password.strip().lower()
+        if lowered == email.strip().lower() or lowered == email.split("@")[0].lower():
+            problems.append("Password cannot be the same as your email address.")
+
+    return problems

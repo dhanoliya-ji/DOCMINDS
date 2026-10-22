@@ -27,9 +27,12 @@ That halves the search space in one request. The real pipeline lives in
 `tasks/ingestion.py`; nothing here is used in normal operation.
 """
 
+import logging
 import time
 
 from app.core.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.test.add_numbers_task")
@@ -45,13 +48,13 @@ def add_numbers_task(x: int, y: int) -> int:
     HTTP response returns immediately, and you can watch the status move from
     PENDING through STARTED to SUCCESS by polling /tasks/status/{id}.
     """
-    print(f"Executing add_numbers_task with x={x}, y={y}")
+    logger.info(f"Executing add_numbers_task with x={x}, y={y}")
 
     # Simulated work. In a real task this would be the slow part.
     time.sleep(2)
 
     result = x + y
-    print(f"add_numbers_task completed. Result: {result}")
+    logger.info(f"add_numbers_task completed. Result: {result}")
 
     # The return value is stored in the result backend (Redis) and is what
     # /tasks/status/{id} reports back as `result`.
@@ -71,14 +74,14 @@ def dummy_process_document_task(document_id: str) -> dict:
     The real implementation is `process_document_task` in tasks/ingestion.py,
     and it is triggered automatically by the upload endpoint.
     """
-    print(f"Initializing dummy ingestion for document: {document_id}")
+    logger.info(f"Initializing dummy ingestion for document: {document_id}")
 
     stages = ["Virus Scanning", "Text Extraction", "Chunking", "Vector Embedding"]
     for index, stage in enumerate(stages, 1):
-        print(f"[{index}/{len(stages)}] Running {stage}...")
+        logger.info(f"[{index}/{len(stages)}] Running {stage}...")
         time.sleep(1)
 
-    print(f"Ingestion completed for document: {document_id}")
+    logger.info(f"Ingestion completed for document: {document_id}")
 
     # Plausible-looking but entirely invented numbers. Nothing here was
     # measured, which is exactly why this task is confined to diagnostics.

@@ -20,8 +20,14 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Semantic search:** page-aware chunking, configurable embeddings (local, OpenAI, Gemini) and HNSW-indexed cosine search in pgvector.
 - **Grounded answers:** every answer cites numbered excerpts mapped to file and page; weak matches are discarded so the system can say it does not know.
 - **Two chat modes:** a single-pass RAG pipeline, or a Pydantic AI agent with search, list and read tools.
-- **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search.
-- **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments.
+- **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search. Existing organisations can only be joined by invite.
+- **Access control:** viewer, editor and admin roles; member management, invites, API keys, an audit log and a usage page for admins under `/settings`; rotating refresh tokens with silent refresh in the browser, server-side logout, password reset and email verification pages. The frontend hides actions a role cannot perform and sends a Content-Security-Policy and other security headers.
+- **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments. Transient failures are retried with backoff, a database claim stops a job running twice, and a recovery sweep re-queues documents orphaned by a dead worker.
+- **Hardened uploads:** size limits enforced while streaming, an extension allowlist plus content sniffing, sanitised filenames and server-generated storage keys, zip-bomb limits for archives and Office files, and optional ClamAV scanning.
+- **Pluggable file storage:** local disk by default, or any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2).
+- **Limits and metering:** per-IP limits on sign-in, sign-up and password reset, per-user limits on chat, search and upload (Redis-backed, in-memory fallback), and per-organisation monthly token, document and storage quotas with usage and estimated cost reported to admins.
+- **Robust model calls:** Groq is called asynchronously with retries, backoff and an optional fallback model; document text is fenced as untrusted data against prompt injection.
+- **Observable:** structured JSON logs carrying a request id, user and organisation; optional Sentry; liveness and readiness health checks; security headers on every response.
 - **Runs offline:** deterministic mock providers for OCR, embeddings and the LLM allow development and testing without API keys.
 
 ## Architecture
@@ -38,7 +44,7 @@ flowchart LR
     REDIS[("Redis: Celery broker and result backend")]
     WORKER["Celery worker: process_document_task"]
     PG[("PostgreSQL 16 + pgvector")]
-    DISK[("uploads/ on local disk")]
+    DISK[("File storage: local disk or S3-compatible bucket")]
     GROQ["Groq API: GROQ_MODEL"]
     EMB["Embedding provider: local, openai, gemini or mock"]
 
@@ -141,7 +147,17 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `INGESTION_MODE` | `celery` | `celery` (worker) or `inline` (API processes uploads) |
 | `DATABASE_URL` | *(empty)* | Postgres connection string; overrides `POSTGRES_*` |
 | `REDIS_URL_OVERRIDE` | *(empty)* | Redis URL; overrides `REDIS_HOST` / `REDIS_PORT` |
-| `SECRET_KEY` | development value | JWT signing key; must be replaced in any deployment |
+| `SECRET_KEY` | development value | JWT signing key; must be replaced in any deployment (the app will not start with `ENV=production` and the default) |
+| `SMTP_HOST` | *(empty)* | SMTP server for invite, reset and verification emails; empty writes them to the log |
+| `STORAGE_BACKEND` | `local` | `local` (`backend/uploads`) or `s3` (any S3-compatible bucket; set `S3_BUCKET` and friends) |
+| `MALWARE_SCAN` | `off` | `off` or `clamav` (scan every upload with a clamd daemon before processing) |
+| `MAX_UPLOAD_SIZE_BYTES` | `52428800` | Per-file upload limit (50 MB), enforced while the file streams in |
+| `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload) |
+| `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API, so per-IP limits see the real client address (1 on Render) |
+| `QUOTA_MONTHLY_TOKENS` | `1000000` | AI tokens per organisation per month; `0` is unlimited (also `QUOTA_MAX_DOCUMENTS`, `QUOTA_MAX_STORAGE_BYTES`) |
+| `LLM_FALLBACK_MODEL` | *(empty)* | Groq model used when the main one keeps failing or is retired |
+| `LOG_FORMAT` | `json` | `json` or `text` |
+| `SENTRY_DSN` | *(empty)* | Optional error reporting; empty is off |
 
 The complete reference, including OCR, retrieval and chunking settings, is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference).
 
@@ -161,7 +177,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#testing) for test tiers and end-to
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, pipeline and agent diagrams, data model, authentication, API surface, design decisions |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, full configuration reference, testing, linting, troubleshooting, glossary |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Hosted demo on Neon, Render and Vercel; Docker image; production checklist |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Hosted demo on Neon, Render and Vercel; Docker image; workers and failure handling; file storage (S3, R2, MinIO); malware scanning; backups; production checklist |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy |
 
 ## Project structure

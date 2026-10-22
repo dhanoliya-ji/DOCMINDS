@@ -36,7 +36,7 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -50,6 +50,13 @@ if TYPE_CHECKING:
 
 class AuditLog(Base):
     """One recorded action. Table name: "audit_logs"."""
+
+    # The audit log screen always asks "this organization's events, newest
+    # first" -- so one composite index serves every page of it, instead of
+    # sorting the whole table on every request.
+    __table_args__ = (
+        Index("ix_audit_logs_org_created", "org_id", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
 

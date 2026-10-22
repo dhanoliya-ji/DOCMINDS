@@ -100,10 +100,12 @@ RUN if [ "$EMBEDDING_PROVIDER" = "local" ]; then \
 # ---- Application code -----------------------------------------------
 COPY . .
 
-# Where uploaded files are written. Note this lives inside the container's
-# own filesystem, which is EPHEMERAL: it is wiped whenever the container
-# restarts. That is fine for a demo, but a production deployment should
-# mount a persistent volume here or store uploads in object storage.
+# Where uploaded files are written with the default STORAGE_BACKEND=local.
+# Note this lives inside the container's own filesystem, which is EPHEMERAL:
+# it is wiped whenever the container restarts. That is fine for a demo, but a
+# production deployment should mount a persistent volume here (or point
+# LOCAL_STORAGE_DIR at one) or set STORAGE_BACKEND=s3 to keep uploads in an
+# object store -- see docs/DEPLOYMENT.md, "File storage".
 RUN mkdir -p /app/uploads
 
 # ---- Runtime settings ------------------------------------------------

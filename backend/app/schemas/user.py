@@ -32,7 +32,7 @@ import datetime
 import uuid
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserBase(BaseModel):
@@ -51,21 +51,38 @@ class UserCreate(UserBase):
     """
     Body for POST /auth/signup.
 
-    A new user either CREATES an organization or JOINS one, which is why both
-    org fields are optional -- exactly one should be supplied. The endpoint
-    enforces that, since Pydantic alone cannot express "one or the other".
+    There are exactly two ways to sign up, and the CLIENT CANNOT CHOOSE ITS
+    OWN ROLE in either:
+
+        no invite_token   a brand-new organization is created (named
+                          `org_name`, or after the email if omitted) and the
+                          user becomes its Admin.
+
+        invite_token      the user joins the organization that invited them,
+                          with the role the inviting Admin chose. The email
+                          must match the one the invite was sent to.
+
+    The inherited `role` field is still ACCEPTED, so older clients do not get
+    a 422, but it is IGNORED -- see api/v1/auth.py. Letting a request pick its
+    own role is precisely the hole invites exist to close.
     """
 
-    # The PLAIN password. It arrives here, is immediately bcrypt-hashed by
-    # core/security.py, and the plain value is never stored or logged.
+    # The PLAIN password. It arrives here, is checked against the password
+    # policy (core/security.py), immediately bcrypt-hashed, and never stored
+    # or logged as given.
     password: str
 
-    # Supply this to create a brand-new tenant. The signup endpoint then makes
-    # you its Admin, regardless of the `role` field above.
-    org_name: Optional[str] = None
+    # The name for a NEW organization. Optional: without it the organization
+    # is named after the email address, and can be renamed later.
+    org_name: Optional[str] = Field(default=None, max_length=255)
 
-    # Supply this instead to join an EXISTING organization, in which case the
-    # `role` field is honoured.
+    # The token from an invite email. Present = join; absent = create.
+    invite_token: Optional[str] = Field(default=None, max_length=256)
+
+    # DEPRECATED. Joining an organization by its id is no longer possible --
+    # anyone who learned an id could join that company. Kept in the schema
+    # only so a client still sending it gets a clear error from the endpoint
+    # instead of silently landing in a brand-new organization.
     org_id: Optional[uuid.UUID] = None
 
 

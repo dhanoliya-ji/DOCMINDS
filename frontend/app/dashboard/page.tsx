@@ -20,13 +20,18 @@ import {
   Loader2,
   LogOut,
   Plus,
+  Settings,
   Sparkles,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import VerifyBanner from "@/components/VerifyBanner";
 import { Project, api, getErrorMessage, getToken } from "@/lib/api";
+import { canEdit } from "@/lib/roles";
+import { useCurrentUser } from "@/lib/useCurrentUser";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -43,6 +48,13 @@ export default function DashboardPage() {
   // Whether the backend has a Groq key. Drives the demo-mode banner, so the
   // user understands why answers might look like raw excerpts.
   const [aiReady, setAiReady] = useState<boolean | null>(null);
+
+  // Who is signed in. Drives two things: the "confirm your email" banner,
+  // and whether "New project" is offered at all -- creating a project needs
+  // the editor role, so a viewer would only ever get a 403 from it. Until the
+  // role is known the button stays hidden (fail closed; the backend decides).
+  const { user } = useCurrentUser();
+  const mayCreate = canEdit(user?.role);
 
   // ------------------------------------------------------------------
   // LOAD DATA ON FIRST RENDER
@@ -123,15 +135,23 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowModal(true)} className="btn-primary">
-            <Plus size={16} />
-            New project
-          </button>
-          <button onClick={handleLogout} className="btn-ghost" title="Sign out">
-            <LogOut size={16} />
+          {mayCreate && (
+            <button onClick={() => setShowModal(true)} className="btn-primary">
+              <Plus size={16} aria-hidden="true" />
+              New project
+            </button>
+          )}
+          <Link href="/settings" className="btn-ghost" title="Settings" aria-label="Settings">
+            <Settings size={16} aria-hidden="true" />
+          </Link>
+          <button onClick={handleLogout} className="btn-ghost" title="Sign out" aria-label="Sign out">
+            <LogOut size={16} aria-hidden="true" />
           </button>
         </div>
       </div>
+
+      {/* ---- Email confirmation banner ---- */}
+      {user && !user.is_verified && <VerifyBanner email={user.email} />}
 
       {/* ---- Demo-mode banner ----
           Shown only when the backend reports no Groq key. Explaining this
@@ -209,16 +229,19 @@ export default function DashboardPage() {
             className="mt-2 max-w-sm text-sm"
             style={{ color: "var(--text-secondary)" }}
           >
-            Create your first project, then upload documents into it to start
-            asking questions.
+            {mayCreate
+              ? "Create your first project, then upload documents into it to start asking questions."
+              : "Your organization has no projects yet. Ask an editor or admin to create one."}
           </p>
-          <button
-            onClick={() => setShowModal(true)}
-            className="btn-primary mt-6"
-          >
-            <Plus size={16} />
-            Create a project
-          </button>
+          {mayCreate && (
+            <button
+              onClick={() => setShowModal(true)}
+              className="btn-primary mt-6"
+            >
+              <Plus size={16} aria-hidden="true" />
+              Create a project
+            </button>
+          )}
         </motion.div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

@@ -23,7 +23,7 @@ This file is imported by the worker because `core/celery_app.py` sets
 `imports=("app.tasks",)`.
 """
 
-from app.tasks.ingestion import process_document_task
+from app.tasks.ingestion import process_document_task, recover_stuck_documents_task
 from app.tasks.test import add_numbers_task, dummy_process_document_task
 
 # `__all__` documents the public surface of this package and tells linters that
@@ -31,6 +31,9 @@ from app.tasks.test import add_numbers_task, dummy_process_document_task
 __all__ = [
     # The real pipeline: extract -> chunk -> embed -> store.
     "process_document_task",
+    # The periodic sweep that re-queues documents orphaned by a dead worker,
+    # sent on a timer by Celery beat (see core/celery_app.py).
+    "recover_stuck_documents_task",
     # Diagnostic tasks, used by the /tasks endpoints to prove the queue works.
     "add_numbers_task",
     "dummy_process_document_task",

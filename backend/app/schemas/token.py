@@ -72,8 +72,30 @@ class TokenPayload(BaseModel):
     # not "access".
     type: Optional[str] = None
 
+    # "jti" -- the token's unique id. Logout puts it on the denylist.
+    jti: Optional[str] = None
+
+    # "iat" / "exp" -- issued-at and expiry, as Unix seconds. `iat` is checked
+    # against the user's last password change; `exp` tells logout how long the
+    # denylist entry must last.
+    iat: Optional[float] = None
+    exp: Optional[float] = None
+
 
 class TokenRefreshRequest(BaseModel):
     """Body for POST /auth/refresh -- exchange a refresh token for a new pair."""
 
     refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    """
+    Body for POST /auth/logout.
+
+    The refresh token is optional only so that a client which never stored
+    one can still sign out its access token. Sending it is what actually ends
+    the SESSION -- without it, the refresh token could mint new access tokens
+    for another week.
+    """
+
+    refresh_token: Optional[str] = None

@@ -36,10 +36,18 @@ this file) and every other module shares it.
 """
 
 import os
-from typing import List, Literal
+import re
+from typing import Dict, List, Literal, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The development signing key, committed to the repository on purpose so the
+# project runs with zero setup. Because it is PUBLIC, it must never sign
+# production tokens -- the startup guard at the bottom of `Settings` compares
+# against this exact value.
+_DEFAULT_SECRET_KEY = "7e15291b0f19c25f1b1c55bc6d01e1498b671a532321bc36efc0d8f07df590ad"
 
 
 def _for_asyncpg(url: str) -> str:
@@ -58,6 +66,51 @@ def _for_asyncpg(url: str) -> str:
         if key != "channel_binding"
     ]
     return urlunsplit(parts._replace(query=urlencode(pairs)))
+
+
+# ----------------------------------------------------------------------
+# RATE LIMIT STRINGS
+# ----------------------------------------------------------------------
+# A limit is written the way people say it: "20/minute", "10/hour",
+# "5/15minutes". One string per limit keeps the settings readable -- the
+# alternative is two numbers per limit (count and window) and twice as many
+# environment variables to get wrong.
+_RATE_UNITS = {
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+    "d": 86400, "day": 86400, "days": 86400,
+}
+_RATE_PATTERN = re.compile(r"^\s*(\d+)\s*/\s*(\d*)\s*([a-z]+)\s*$")
+
+
+def parse_rate_limit(text: str) -> Optional[Tuple[int, int]]:
+    """
+    Turn "20/minute" into (20, 60): at most 20 requests per 60 seconds.
+
+    An empty string or "off" switches that one limit off and returns None.
+    Anything unparseable raises ValueError -- at startup, because Settings
+    validates every RATE_LIMIT_* value -- rather than silently meaning
+    "unlimited" after a typo like "20/minuet".
+
+    It lives here, not in core/rate_limit.py, because the startup validator
+    below needs it, and rate_limit.py itself imports `settings` from this file.
+    """
+    cleaned = (text or "").strip().lower()
+    if cleaned in ("", "off", "none", "disabled"):
+        return None
+    match = _RATE_PATTERN.match(cleaned)
+    if not match or match.group(3) not in _RATE_UNITS:
+        raise ValueError(
+            f"Rate limit {text!r} is not in the form '<count>/<period>', "
+            "for example '20/minute', '10/hour' or '5/15minutes'."
+        )
+    count = int(match.group(1))
+    multiplier = int(match.group(2) or 1)
+    window = multiplier * _RATE_UNITS[match.group(3)]
+    if count < 1 or window < 1:
+        raise ValueError(f"Rate limit {text!r} must allow at least 1 request per period.")
+    return count, window
 
 
 class Settings(BaseSettings):
@@ -160,7 +213,11 @@ class Settings(BaseSettings):
     # a token and log in as ANY user. The default below is acceptable for local
     # development only. On a real server, generate a fresh one with:
     #     openssl rand -hex 32
-    SECRET_KEY: str = "7e15291b0f19c25f1b1c55bc6d01e1498b671a532321bc36efc0d8f07df590ad"
+    #
+    # With ENV=production the app REFUSES TO START if this is still the
+    # committed default, or shorter than 32 characters. See the validator
+    # `_refuse_weak_secret_in_production` near the bottom of this class.
+    SECRET_KEY: str = _DEFAULT_SECRET_KEY
 
     # HS256 = sign using one shared secret (symmetric signing). Simple and
     # standard for a single backend that both issues and verifies its tokens.
@@ -172,6 +229,52 @@ class Settings(BaseSettings):
     # access token. This is what stops users being logged out every 30 minutes
     # while still keeping the short-lived access token.
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ------------------------------------------------------------------
+    # ACCOUNTS: passwords, invites, reset and verification links
+    # ------------------------------------------------------------------
+    # The shortest password signup and password reset will accept. Length is
+    # the single biggest factor in how long a password resists guessing, far
+    # more than "must contain a symbol" rules, which mostly produce
+    # "Password1!". See `password_problems` in core/security.py for the rules.
+    PASSWORD_MIN_LENGTH: int = 10
+
+    # How long a "reset your password" link works. Short, because the link is
+    # as good as the password for anyone who reads the email.
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # How long a "confirm your email address" link works.
+    EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 48
+
+    # How long an invitation to join an organization stays valid.
+    INVITE_EXPIRE_DAYS: int = 7
+
+    # When True, an account must confirm its email address before it can sign
+    # in. Off by default so local development and the demo work without an
+    # inbox; the verification flow itself always runs either way.
+    REQUIRE_EMAIL_VERIFICATION: bool = False
+
+    # ------------------------------------------------------------------
+    # OUTGOING EMAIL (invites, password reset, email verification)
+    # ------------------------------------------------------------------
+    # Links inside emails point at the FRONTEND, which owns the pages that
+    # read the token out of the URL. Left empty it falls back to the first
+    # FRONTEND_ORIGIN, then to http://localhost:3000 -- see `frontend_url`.
+    FRONTEND_URL: str = ""
+
+    # With SMTP_HOST empty, emails are not sent at all: the "console" sender
+    # writes them to the log instead, so a developer can copy the link from
+    # the terminal. Setting SMTP_HOST switches to real delivery -- see
+    # services/email.py. Nothing else needs to change.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    # STARTTLS on port 587 is the modern default. Set SMTP_USE_SSL instead for
+    # a server that wants TLS from the first byte (usually port 465).
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    EMAIL_FROM: str = "DocMinds <no-reply@docminds.local>"
 
     # ==================================================================
     # 6. OCR -- reading text out of images and scanned PDFs
@@ -311,6 +414,38 @@ class Settings(BaseSettings):
     # search again, read a section, answer" with room to spare.
     AGENT_MAX_STEPS: int = 6
 
+    # ------------------------------------------------------------------
+    # WHEN THE MODEL PROVIDER MISBEHAVES  (services/llm.py)
+    # ------------------------------------------------------------------
+    # A hosted model fails in two very different ways, and they need opposite
+    # treatment:
+    #
+    #   TRANSIENT  a rate limit (429), an overloaded server (5xx), a dropped
+    #              connection. The same request a moment later usually works,
+    #              so it is retried, waiting longer each time.
+    #   PERMANENT  a bad key (401), a malformed request (400). Retrying cannot
+    #              fix it, so it is not retried at all.
+    #
+    # How many times a transient failure is retried on the same model, and the
+    # first wait (doubled for each later retry: 1s, 2s, ...). A server that
+    # says how long to wait (a Retry-After header) is believed instead.
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BACKOFF_SECONDS: float = 1.0
+
+    # How long one model call may take before it is abandoned. A call that
+    # TIMES OUT is not retried on the same model: an overloaded model that did
+    # not answer in 30 seconds rarely answers the second time either, and the
+    # user is already waiting. It goes straight to the fallback model instead.
+    LLM_TIMEOUT_SECONDS: float = 30.0
+
+    # A second Groq model to try when the main one keeps failing -- out of
+    # retries, timed out, or RETIRED. That last case is not hypothetical:
+    # Groq shut llama-3.3-70b-versatile down on 2026-08-16 and every answer
+    # failed until GROQ_MODEL was changed. Groq's rate limits are per model,
+    # so a fallback also rides out one model's limit being exhausted.
+    # Empty = no fallback. e.g. LLM_FALLBACK_MODEL=openai/gpt-oss-20b
+    LLM_FALLBACK_MODEL: str = ""
+
     # ==================================================================
     # 9. RETRIEVAL -- how the "R" in RAG behaves
     # ==================================================================
@@ -346,7 +481,254 @@ class Settings(BaseSettings):
     # 11. FILE UPLOAD LIMITS
     # ==================================================================
     # 50 MB, written as a multiplication so the number stays human-readable.
+    # Enforced PER FILE while the upload is read in chunks (services/uploads.py),
+    # so an oversized file is refused with 413 as soon as it crosses the line,
+    # not after the whole thing has been read into memory.
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024
+
+    # How many files one upload request may carry. Together with the per-file
+    # limit this sets a ceiling on the WHOLE request body, which middleware in
+    # main.py checks before the multipart body is even parsed -- so a 10 GB
+    # POST is turned away at the door instead of being spooled to disk first.
+    MAX_FILES_PER_UPLOAD: int = 20
+
+    # ------------------------------------------------------------------
+    # ZIP SAFETY (services/extractor.py)
+    # ------------------------------------------------------------------
+    # A "zip bomb" is a tiny archive that expands to gigabytes -- 42 KB can
+    # unpack to 4.5 PB. Without limits, one upload fills the worker's disk.
+    # Each of these closes a different variant of that attack:
+    #
+    # most members one archive may hold (millions of empty files is a bomb too)
+    ZIP_MAX_ENTRIES: int = 1000
+    # total bytes ALL members may expand to, counted while actually unpacking
+    # (the sizes an archive declares about itself can be lies)
+    ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES: int = 500 * 1024 * 1024
+    # uncompressed / compressed for any one member. Real documents compress
+    # 2-10x; text maybe 20x. A bomb is in the thousands.
+    ZIP_MAX_COMPRESSION_RATIO: int = 100
+    # How deep archives inside archives are followed. 1 = a zip inside the
+    # uploaded zip is opened; a zip inside THAT is skipped. Recursive nesting
+    # is the classic way to multiply a bomb's expansion.
+    ZIP_MAX_NESTING_DEPTH: int = 1
+
+    # ==================================================================
+    # 12. FILE STORAGE -- where the original uploaded bytes live
+    # ==================================================================
+    #   local -> a directory on this machine's disk (backend/uploads by
+    #            default). Zero setup, but a cloud container's disk is often
+    #            wiped on restart, taking every original with it.
+    #   s3    -> any S3-compatible object store: AWS S3, Cloudflare R2,
+    #            MinIO, Backblaze B2. Survives restarts, can be versioned and
+    #            backed up. Needs `boto3` (in requirements.txt).
+    # See services/storage.py.
+    STORAGE_BACKEND: Literal["local", "s3"] = "local"
+
+    # Empty means backend/uploads. Set an absolute path to put files on a
+    # mounted volume instead.
+    LOCAL_STORAGE_DIR: str = ""
+
+    # Only read when STORAGE_BACKEND=s3. The bucket is required; the others
+    # are optional:
+    #   S3_REGION        e.g. "eu-west-1"; "auto" for Cloudflare R2
+    #   S3_ENDPOINT_URL  empty for AWS; the provider's URL for R2/MinIO/B2,
+    #                    e.g. https://<account>.r2.cloudflarestorage.com
+    #   S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY
+    #                    empty means boto3's normal credential chain (an IAM
+    #                    role, AWS_* environment variables, ~/.aws).
+    #   S3_KEY_PREFIX    prepended to every object key, so one bucket can be
+    #                    shared, e.g. "docminds/".
+    S3_BUCKET: str = ""
+    S3_REGION: str = ""
+    S3_ENDPOINT_URL: str = ""
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_KEY_PREFIX: str = ""
+
+    # ==================================================================
+    # 13. INGESTION DURABILITY -- what happens when processing goes wrong
+    # ==================================================================
+    # A TRANSIENT failure (database blip, embedding API rate limit, object
+    # store timeout) is retried this many times, waiting longer each time. A
+    # PERMANENT failure (corrupt file, no text, unsupported type) is not
+    # retried at all -- doing the same thing again would only fail the same way.
+    INGESTION_MAX_RETRIES: int = 3
+    # The first wait; each retry doubles it -- 10s, 20s, 40s by default --
+    # capped at the maximum below. (With Celery each wait is also randomised
+    # between zero and that value, so a recovered service is not hit by every
+    # waiting document at the same instant.) Ten seconds rather than one or
+    # two because the outages worth retrying last that long: a per-minute
+    # rate limit resetting, ClamAV reloading its definitions, a database
+    # failing over. Retries that are all over in a few seconds would fail the
+    # document before most of them had ended.
+    INGESTION_RETRY_BACKOFF_SECONDS: int = 10
+    INGESTION_RETRY_BACKOFF_MAX_SECONDS: int = 600
+
+    # Celery kills a task that runs too long. The SOFT limit raises an
+    # exception inside the task so it can record "timed out" on the document;
+    # the HARD limit is the backstop that kills the process if even that hangs.
+    INGESTION_SOFT_TIME_LIMIT_SECONDS: int = 1500
+    INGESTION_TIME_LIMIT_SECONDS: int = 1800
+
+    # A document still "processing" (or "pending") this long after it was last
+    # touched is assumed to be orphaned -- the worker died, the API restarted
+    # mid-job, the queue was flushed -- and is put back on the queue by the
+    # recovery routine. Must be comfortably LONGER than the hard time limit,
+    # or a slow-but-alive job would be started a second time.
+    INGESTION_STALE_AFTER_MINUTES: int = 45
+
+    # How often Celery beat runs the recovery routine. It also runs once when
+    # the API starts, unless INGESTION_RECOVER_ON_STARTUP is false.
+    INGESTION_RECOVERY_INTERVAL_MINUTES: int = 10
+    INGESTION_RECOVER_ON_STARTUP: bool = True
+
+    # ==================================================================
+    # 14. MALWARE SCANNING (optional) -- services/malware.py
+    # ==================================================================
+    #   off    -> no scanning (the default; nothing extra to install)
+    #   clamav -> every upload is streamed to a ClamAV daemon (clamd) before
+    #             it is processed. An infected file is marked failed and
+    #             quarantined, and its bytes are deleted from storage.
+    # If clamd is unreachable the job is retried and finally FAILS -- an
+    # unscanned file is never processed when scanning is switched on.
+    MALWARE_SCAN: Literal["off", "clamav"] = "off"
+    # TCP address of clamd (port 3310 is its standard). CLAMAV_SOCKET, if set,
+    # is a Unix socket path and wins over host/port.
+    CLAMAV_HOST: str = "localhost"
+    CLAMAV_PORT: int = 3310
+    CLAMAV_SOCKET: str = ""
+    CLAMAV_TIMEOUT_SECONDS: int = 60
+
+    # ==================================================================
+    # 15. RATE LIMITING -- core/rate_limit.py
+    # ==================================================================
+    # Caps how often one caller may hit an expensive or sensitive endpoint.
+    # Over the limit the request is refused with 429 Too Many Requests and a
+    # Retry-After header saying how many seconds to wait.
+    #
+    # Two kinds of "caller":
+    #   per IP ADDRESS  for the sign-in endpoints, where there is no user yet.
+    #                   This is what slows down password guessing and
+    #                   sign-up spam.
+    #   per USER        for chat, search and upload, the endpoints that cost
+    #                   real money (model tokens) or real CPU (OCR, embedding).
+    #
+    # The off switch exists for tests and emergencies; leave it on.
+    RATE_LIMIT_ENABLED: bool = True
+
+    # Where the counters live:
+    #   auto   -> Redis when it is reachable, so every API process shares ONE
+    #             set of counters; otherwise an in-memory store inside each
+    #             process (and Redis is tried again every 30 seconds).
+    #   memory -> always in-memory. Fine for a single process; with several
+    #             (`uvicorn --workers 4`) each keeps its own counters, so the
+    #             effective limit is multiplied by the number of processes.
+    RATE_LIMIT_STORAGE: Literal["auto", "memory"] = "auto"
+
+    # "<count>/<period>": "20/minute", "10/hour", "5/15minutes". Empty or
+    # "off" switches that one limit off. Checked at startup.
+    #
+    # Per IP. Generous enough for an office of people behind one shared
+    # address, tight enough that guessing a 10-character password is hopeless.
+    RATE_LIMIT_LOGIN: str = "20/minute"
+    RATE_LIMIT_SIGNUP: str = "10/hour"
+    # Request AND confirm share this one. The request sends an email, so this
+    # also stops the endpoint being used to flood someone's inbox.
+    RATE_LIMIT_PASSWORD_RESET: str = "10/hour"
+    # Per user.
+    # "Resend the confirmation email": each call sends an email, so keep it low.
+    RATE_LIMIT_VERIFY_RESEND: str = "5/hour"
+    RATE_LIMIT_CHAT: str = "30/minute"
+    RATE_LIMIT_SEARCH: str = "60/minute"
+    RATE_LIMIT_UPLOAD: str = "30/minute"
+
+    # ------------------------------------------------------------------
+    # WHO IS THE CLIENT? (behind a proxy, the TCP peer is the proxy)
+    # ------------------------------------------------------------------
+    # On Render, Heroku, behind nginx or a load balancer, every request
+    # reaches the API FROM THE PROXY. Per-IP limits would then lump every
+    # user together into one bucket. The real address travels in the
+    # X-Forwarded-For header -- but any client can also SEND that header, so
+    # it may only be believed as far as proxies you control wrote it.
+    #
+    # TRUSTED_PROXY_COUNT: how many proxies you control sit in front of the
+    # API. Each appends the address it received the request from, so with N
+    # proxies the client's real address is the Nth entry FROM THE RIGHT --
+    # the leftmost entries are whatever the client claimed. 0 (the default)
+    # ignores the header and uses the TCP peer, which is right when nothing
+    # sits in front of the API.
+    TRUSTED_PROXY_COUNT: int = 0
+
+    # Alternatively, a header your proxy or CDN OVERWRITES with the client's
+    # address, e.g. "CF-Connecting-IP" (Cloudflare) or "True-Client-IP". Wins
+    # over TRUSTED_PROXY_COUNT when present. Only set it if every request
+    # really passes through that proxy -- otherwise a client can send the
+    # header itself and pick any address it likes.
+    CLIENT_IP_HEADER: str = ""
+
+    # ==================================================================
+    # 16. USAGE METERING AND QUOTAS -- services/usage.py
+    # ==================================================================
+    # Every chat answer records a usage event: the model, the tokens it read
+    # (input) and wrote (output), and an estimated cost. Admins see the
+    # month's totals at GET /api/v1/org/usage.
+    #
+    # The quotas below are PER ORGANIZATION. 0 means unlimited. Each can be
+    # overridden for one organization with the matching column on the
+    # `organizations` table (NULL there = use these defaults), which is how
+    # an operator gives one customer a bigger plan without a redeploy -- see
+    # docs/DEPLOYMENT.md, "Quotas".
+    #
+    # AI tokens per calendar month (UTC), across every member. Over it, chat
+    # answers 429 with Retry-After pointing at the 1st of next month.
+    QUOTA_MONTHLY_TOKENS: int = 1_000_000
+    # Documents the organization may hold, and the bytes they may add up to.
+    # An upload that would cross either answers 402 and stores nothing.
+    QUOTA_MAX_DOCUMENTS: int = 1000
+    QUOTA_MAX_STORAGE_BYTES: int = 5 * 1024 * 1024 * 1024
+
+    # What each model costs, in US dollars per MILLION tokens, split into
+    # input (the prompt: excerpts, history, question) and output (the answer).
+    # Used only to ESTIMATE cost on the usage report -- the provider's invoice
+    # is the real number. Prices from https://console.groq.com/docs/models
+    # (October 2026). A model missing from this table is costed at 0 and
+    # logged once, so add your model here if you switch. From the
+    # environment, set it as JSON:
+    #   LLM_PRICING='{"openai/gpt-oss-120b": {"input": 0.15, "output": 0.60}}'
+    LLM_PRICING: Dict[str, Dict[str, float]] = {
+        "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
+        "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30},
+    }
+
+    # ==================================================================
+    # 17. OBSERVABILITY -- core/observability.py, core/middleware.py
+    # ==================================================================
+    # Every log line is one JSON object -- time, level, message, plus the
+    # request id, user and organization it belongs to -- so a log platform
+    # can filter "everything request 3f9c... did" without regular expressions.
+    # "text" prints plain lines instead, easier to read in a local terminal.
+    LOG_FORMAT: Literal["json", "text"] = "json"
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    # Error reporting with Sentry (optional, off by default). Set the DSN
+    # from your Sentry project to switch it on for the API and the worker;
+    # `sentry-sdk` is in requirements.txt but only imported when this is set.
+    SENTRY_DSN: str = ""
+    # Fraction of requests whose performance is traced too (0.0 - 1.0).
+    # Errors are always reported; tracing everything costs Sentry quota.
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
+    # Tags every event; empty means the value of ENV.
+    SENTRY_ENVIRONMENT: str = ""
+
+    # GET /api/v1/health/ready waits at most this long for EACH dependency
+    # (database, Redis, a Celery worker) before reporting it down.
+    READINESS_TIMEOUT_SECONDS: float = 3.0
+
+    # Strict-Transport-Security: tells browsers to use HTTPS for this API for
+    # this many seconds, even if a link says http://. Sent only with
+    # ENV=production -- on localhost over plain HTTP it would be ignored at
+    # best. 0 switches it off.
+    HSTS_MAX_AGE_SECONDS: int = 365 * 24 * 60 * 60
 
     # ==================================================================
     # DERIVED VALUES
@@ -421,6 +803,121 @@ class Settings(BaseSettings):
         if self.REDIS_URL_OVERRIDE:
             return self.REDIS_URL_OVERRIDE
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @property
+    def frontend_url(self) -> str:
+        """
+        The base URL that links in emails point at, without a trailing slash.
+
+        FRONTEND_URL wins when set. Otherwise the first FRONTEND_ORIGIN is a
+        good guess (it is the deployed frontend), and localhost:3000 is the
+        development default.
+        """
+        if self.FRONTEND_URL:
+            return self.FRONTEND_URL.rstrip("/")
+        for origin in self.FRONTEND_ORIGIN.split(","):
+            if origin.strip():
+                return origin.strip().rstrip("/")
+        return "http://localhost:3000"
+
+    @property
+    def email_backend(self) -> str:
+        """`smtp` when an SMTP server is configured, otherwise `console`."""
+        return "smtp" if self.SMTP_HOST else "console"
+
+    # ------------------------------------------------------------------
+    # STARTUP GUARD
+    # ------------------------------------------------------------------
+    @model_validator(mode="after")
+    def _refuse_weak_secret_in_production(self) -> "Settings":
+        """
+        Refuse to start in production with a guessable SECRET_KEY.
+
+        The default SECRET_KEY above is committed to a public repository, so
+        anybody can read it -- and anybody holding it can sign a token that
+        says "I am the Admin of organization X". In development that does not
+        matter. In production it is a complete authentication bypass, and the
+        failure is silent: everything appears to work perfectly.
+
+        So the app fails LOUDLY instead, at startup, with the fix in the
+        message. Pydantic runs this validator when `Settings()` is created on
+        the last line of this file, which happens before uvicorn or Celery
+        serve a single request.
+        """
+        if self.ENV == "production":
+            if self.SECRET_KEY == _DEFAULT_SECRET_KEY:
+                raise ValueError(
+                    "SECRET_KEY is still the committed development default. "
+                    "Refusing to start with ENV=production. Generate a new "
+                    "one with `openssl rand -hex 32` and set it in the "
+                    "environment."
+                )
+            if len(self.SECRET_KEY) < 32:
+                raise ValueError(
+                    f"SECRET_KEY is only {len(self.SECRET_KEY)} characters. "
+                    "Refusing to start with ENV=production: use at least 32 "
+                    "random characters (`openssl rand -hex 32` gives 64)."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_bucket_for_s3(self) -> "Settings":
+        """
+        STORAGE_BACKEND=s3 without a bucket is a typo, not a choice.
+
+        Caught here, at startup, rather than on the first upload -- where it
+        would surface as a confusing boto3 error long after the deploy looked
+        healthy.
+        """
+        if self.STORAGE_BACKEND == "s3" and not self.S3_BUCKET:
+            raise ValueError("STORAGE_BACKEND=s3 needs S3_BUCKET to be set.")
+        return self
+
+    @model_validator(mode="after")
+    def _check_rate_limits_and_quotas(self) -> "Settings":
+        """
+        Parse every RATE_LIMIT_* string now, at startup.
+
+        A typo such as "20/minuet" would otherwise be discovered by the first
+        user to log in -- as a 500 -- or, worse, be read as "no limit". Here
+        it stops the app from starting, with the bad value in the message.
+        """
+        for name in (
+            "RATE_LIMIT_LOGIN", "RATE_LIMIT_SIGNUP", "RATE_LIMIT_PASSWORD_RESET", "RATE_LIMIT_VERIFY_RESEND",
+            "RATE_LIMIT_CHAT", "RATE_LIMIT_SEARCH", "RATE_LIMIT_UPLOAD",
+        ):
+            try:
+                parse_rate_limit(getattr(self, name))
+            except ValueError as exc:
+                raise ValueError(f"{name}: {exc}") from None
+        for name in ("QUOTA_MONTHLY_TOKENS", "QUOTA_MAX_DOCUMENTS", "QUOTA_MAX_STORAGE_BYTES"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} cannot be negative (0 means unlimited).")
+        if self.TRUSTED_PROXY_COUNT < 0:
+            raise ValueError("TRUSTED_PROXY_COUNT cannot be negative.")
+        return self
+
+    @property
+    def local_storage_dir(self) -> str:
+        """Where LocalStorage keeps files: LOCAL_STORAGE_DIR, or backend/uploads."""
+        if self.LOCAL_STORAGE_DIR:
+            return os.path.abspath(self.LOCAL_STORAGE_DIR)
+        # config.py -> core -> app -> backend, then /uploads. The same
+        # directory the upload endpoint has always written to.
+        backend_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        return os.path.join(backend_dir, "uploads")
+
+    @property
+    def max_upload_request_bytes(self) -> int:
+        """
+        The ceiling for a whole upload request body.
+
+        Every file at the per-file maximum, plus 1 MB for the multipart
+        boundaries and the small form fields (project id, chunk settings).
+        """
+        return self.MAX_UPLOAD_SIZE_BYTES * self.MAX_FILES_PER_UPLOAD + 1024 * 1024
 
     @property
     def cors_origins(self) -> List[str]:

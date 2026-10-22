@@ -29,6 +29,7 @@ polls this shape until `status` reads "completed".
 
 import datetime
 import uuid
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -46,6 +47,7 @@ class DocumentBase(BaseModel):
     file_size: int
 
     # pending | processing | completed | failed
+    # ("pending" also covers "waiting to retry after a transient error")
     #
     # The single most-read field in this schema: the document list polls until
     # it reads "completed", and only completed documents are searchable.
@@ -86,5 +88,16 @@ class DocumentOut(DocumentBase):
 
     id: uuid.UUID
     project_id: uuid.UUID
+
+    # Why processing failed, in words a user can act on ("The file does not
+    # look like a PDF", "Rejected by the malware scan: Eicar-Signature").
+    # None unless something went wrong. Also mirrored into meta_data["error"]
+    # for frontends written before this field existed.
+    error_message: Optional[str] = None
+
+    # How many times processing has been started. Above 1 means it was retried
+    # after a transient failure or recovered after a worker died.
+    attempts: int = 0
+
     created_at: datetime.datetime
     updated_at: datetime.datetime
