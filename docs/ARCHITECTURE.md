@@ -8,15 +8,17 @@ Technical reference for DocMinds: how the components fit together, how a documen
 2. [Module reference](#module-reference)
 3. [Ingestion pipeline](#ingestion-pipeline)
 4. [Answering questions](#answering-questions)
-5. [Agent mode](#agent-mode)
-6. [Data model](#data-model)
-7. [Authentication and tenant isolation](#authentication-and-tenant-isolation)
-8. [Limits, quotas and observability](#limits-quotas-and-observability)
-9. [API surface](#api-surface)
-10. [Frontend](#frontend)
-11. [CI pipeline](#ci-pipeline)
-12. [Deployment topology](#deployment-topology)
-13. [Design decisions](#design-decisions)
+5. [Streaming answers](#streaming-answers)
+6. [Agent mode](#agent-mode)
+7. [Data model](#data-model)
+8. [Authentication and tenant isolation](#authentication-and-tenant-isolation)
+9. [Limits, quotas and observability](#limits-quotas-and-observability)
+10. [API surface](#api-surface)
+11. [Frontend](#frontend)
+12. [Answer quality](#answer-quality)
+13. [CI pipeline](#ci-pipeline)
+14. [Deployment topology](#deployment-topology)
+15. [Design decisions](#design-decisions)
 
 ---
 
@@ -81,12 +83,12 @@ Services contain all domain logic and never import FastAPI, so the same function
 | | `celery_app.py` | The Celery app; Redis as broker and result backend, `task_track_started`, results expire after 24 h, prefetch of one message, a Redis visibility timeout longer than any live job, and the beat schedule for the recovery sweep |
 | `db/` | `session.py` | Async engine (asyncpg, `NullPool`) and `SessionLocal` (`expire_on_commit=False`, `autoflush=False`) |
 | | `base_class.py` | Declarative `Base`; derives plural snake_case table names from class names |
-| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint; then `c3d5e7f9a2b4`: invites, refresh tokens, access-token denylist, emailed tokens, API key roles, `users.password_changed_at`, audit index; then `d4e6f8a0b2c5`: `documents.storage_backend`, `attempts`, `processing_started_at`, `error_message` and an index on `status`; then `e5f7a9b1c3d6`: the `usage_events` table and the per-organisation quota overrides `organizations.monthly_token_quota`, `max_documents`, `max_storage_bytes` |
+| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint; then `c3d5e7f9a2b4`: invites, refresh tokens, access-token denylist, emailed tokens, API key roles, `users.password_changed_at`, audit index; then `d4e6f8a0b2c5`: `documents.storage_backend`, `attempts`, `processing_started_at`, `error_message` and an index on `status`; then `e5f7a9b1c3d6`: the `usage_events` table and the per-organisation quota overrides `organizations.monthly_token_quota`, `max_documents`, `max_storage_bytes`; then `a7b9c1d3e5f8`: `chat_messages.mode`, `model` and `steps` (JSONB), and the GIN full-text index `ix_chunks_content_fts` on `to_tsvector('english', chunks.content)` for hybrid search |
 | `models/` | `organization.py`, `user.py`, `project.py`, `document.py`, `chunk.py`, `chat.py`, `api_key.py`, `audit.py`, `invite.py`, `refresh_token.py`, `revoked_token.py`, `user_token.py`, `usage.py` | 16 SQLAlchemy tables, UUID primary keys, cascading foreign keys |
 | `schemas/` | `user.py`, `token.py`, `organization.py`, `project.py`, `document.py`, `account.py`, `usage.py` | Pydantic request/response shapes (`Base` / `Create` / `Update` / `Out`); `*Out` use `from_attributes=True`. `account.py` covers reset, verification, members, invites, API keys and the audit log |
-| | `rag.py` | Search and chat contract: `SearchRequest`, `ChatRequest` (`mode`), `Citation`, `AgentStep`, `ChatResponse`, `FeedbackCreate` |
+| | `rag.py` | Search and chat contract: `SearchRequest` and `ChatRequest` (`mode`, `document_ids`), `Citation`, `AgentStep`, `ChatMessageOut` (with `mode`, `model`, `steps`), `ChatResponse` (with `search_query`), `ChatSessionUpdate`, `FeedbackCreate`, `FeedbackSummary` |
 | `api/` | `deps.py` | `get_db`, `get_current_user` (Bearer JWT or `X-API-Key`), `get_current_active_user`, `require_role` / `require_viewer` / `require_editor` / `require_admin`, `RoleChecker`, `rate_limit_by_ip` / `rate_limit_by_user` (route dependencies that answer `429` + `Retry-After`) |
-| | `v1/auth.py`, `users.py`, `projects.py`, `documents.py`, `search.py`, `chat.py`, `tasks.py`, `org.py` | One router per resource, mounted under `/api/v1`. `org.py` is the admin-only members, invites, API keys and audit log router |
+| | `v1/auth.py`, `users.py`, `projects.py`, `documents.py`, `search.py`, `chat.py`, `tasks.py`, `org.py` | One router per resource, mounted under `/api/v1`. `org.py` is the admin-only members, invites, API keys, audit log, usage and feedback router. `chat.py` holds one answer pipeline (`_answer_events`, an async generator of events) that both the JSON and the SSE endpoint run |
 | `services/` | `extractor.py` | `DocumentExtractor`: 19 file extensions to text with page markers; zip-bomb limits for archives and Office files (`UnsafeArchiveError`) |
 | | `uploads.py` | Upload validation: `sanitize_filename`, the extension allowlist (exactly `extractor.SUPPORTED_EXTENSIONS`), `spool_upload` (1 MB chunks to a temp file, counted and SHA-256 hashed in one pass), `check_content` (magic bytes) |
 | | `storage.py` | `get_storage`: `LocalStorage` or `S3Storage` (boto3, imported lazily) behind one interface (`save`, `exists`, `delete`, `iter_bytes`, `local_copy`); `new_key` makes server-side keys; botocore errors mapped to `StorageObjectNotFound` (permanent) or `StorageUnavailableError` (retry) |
@@ -94,15 +96,20 @@ Services contain all domain logic and never import FastAPI, so the same function
 | | `ocr.py` | `OCRService`: Tesseract, EasyOCR, PaddleOCR or mock |
 | | `chunker.py` | `ChunkerService`: page-aware chunking, token counts via `tiktoken` |
 | | `embedding.py` | `EmbeddingService`: local, OpenAI, Gemini or mock vectors, batched |
-| | `retrieval.py` | `RetrievalService`: tenant-scoped pgvector search restricted to vectors from the current embedding model (the query is embedded on a worker thread), chat history |
-| | `llm.py` | `LLMService`: numbered, fenced-excerpt prompt (untrusted-content rule); async Groq client with retries, backoff and `LLM_FALLBACK_MODEL`; demo fallback |
-| | `agent.py` | `run_agent`: Pydantic AI agent, its three tools (output fenced like rag excerpts) and the citation registry; reports tokens in and out |
+| | `retrieval.py` | `RetrievalService`: tenant-scoped HYBRID search -- pgvector nearest neighbours plus Postgres full-text (`websearch_to_tsquery`, GIN-indexed), fused with reciprocal rank fusion (`reciprocal_rank_fusion`), optionally reranked; restricted to vectors from the current embedding model and optionally to a list of documents; chat history |
+| | `query_rewrite.py` | `rewrite_query`: turns a follow-up ("and part-timers?") into a standalone search query from the history -- one small model call with a key, a heuristic without; only the search uses it |
+| | `reranker.py` | Optional cross-encoder rerank of the fused candidates (`RERANKER=cross-encoder`); loads lazily and fails safe to the original order |
+| | `export.py` | A conversation as Markdown, for `GET /chat/sessions/{id}/export` |
+| | `feedback.py` | `summarise`: thumbs up / down for an organisation, by mode and model, with the recent thumbs-down questions |
+| | `llm.py` | `LLMService`: numbered, fenced-excerpt prompt (untrusted-content rule); async Groq client with retries, backoff and `LLM_FALLBACK_MODEL`; `generate_answer` and the token-by-token `stream_answer` (which reports model and usage through a `stats` dict); demo fallback |
+| | `agent.py` | `run_agent`: Pydantic AI agent, its three tools (output fenced like rag excerpts) and the citation registry; reports tokens in and out; `document_ids` limits every tool, `on_step` reports each tool call as it happens (used for streaming) |
 | | `usage.py` | Metering and quotas: `record_chat_usage`, `check_token_quota` (`429`), `upload_allowance` (`402`), `usage_summary`, `estimate_cost_usd` from `LLM_PRICING` |
 | | `sessions.py` | Refresh-token issue, rotation and revocation; the access-token denylist; single-use emailed tokens |
 | | `audit.py` | `record`: stage an audit row in the caller's transaction |
 | | `email.py` | Invite, reset and verification emails; console sender by default, SMTP when `SMTP_HOST` is set; never raises |
 | `tasks/` | `ingestion.py` | `process_document_task` / `async_process_document`: the ingestion pipeline; `claim_document`, `is_transient`, `run_inline_ingestion` (the same retry policy without Celery), `recover_stuck_documents` and its beat task `recover_stuck_documents_task` |
 | | `test.py` | `add_numbers_task`, `dummy_process_document_task`: queue diagnostics |
+| `eval/` | `harness.py`, `__main__.py`, `golden_example.json` | The evaluation harness: golden-set loader, retrieval hit rate and MRR, keyword check, LLM-judge faithfulness; `python -m app.eval` (see [Answer quality](#answer-quality)) |
 
 Conventions worth knowing when changing the backend:
 
@@ -126,14 +133,16 @@ Conventions worth knowing when changing the backend:
 | `app/reset-password/page.tsx` | `/reset-password?token=`: choose a new password with the emailed token |
 | `app/verify-email/page.tsx` | `/verify-email?token=`: confirms the address on load, sending the single-use token once |
 | `app/dashboard/page.tsx` | `/dashboard`: list and create projects (editor and above); email-confirmation banner with "Resend link"; provider status from `/api/v1/health` |
-| `app/project/[id]/page.tsx` | `/project/:id`: Documents, Search and Chat tabs; polls document status; the upload zone is shown to editors and above |
-| `app/settings/page.tsx` | `/settings`: your account; for admins, Members (invite, change role, remove), API keys (shown once on creation), Audit log (paginated, filterable) and Usage (token, document and storage quotas) |
+| `app/project/[id]/page.tsx` | `/project/:id`: Documents, Search and Chat tabs; polls document status; editors and above get the upload zone, project rename / delete, and per-document rename, re-index and delete (`DocumentActions`) |
+| `app/settings/page.tsx` | `/settings`: your account; for admins, Members (invite, change role, remove), API keys (shown once on creation), Audit log (paginated, filterable), Usage (token, document and storage quotas) and Feedback (answer ratings) |
 | `app/layout.tsx`, `app/globals.css` | Shared shell, fonts, metadata, Tailwind theme |
-| `components/UploadZone.tsx` | Drag-and-drop multipart upload |
-| `components/SearchPanel.tsx` | Semantic search results with similarity scores, no LLM |
-| `components/ChatPanel.tsx` | Chat sessions, Quick answer / Deep research toggle, citations, research steps, feedback |
-| `components/AuthCard.tsx`, `components/VerifyBanner.tsx`, `components/settings/*` | Shared signed-out frame and notices; the confirmation banner; the four settings panels and `QuotaBar` |
-| `lib/api.ts` | Typed API client: token storage, `apiFetch`, silent refresh, `ApiError` (status + `Retry-After`), response interfaces, one method per endpoint |
+| `components/UploadZone.tsx` | Drag-and-drop bulk upload: one request per file, three at a time, a progress bar and an error per file |
+| `components/SearchPanel.tsx` | Hybrid search results with similarity scores and which half found them, the document filter, "View" into the source; no LLM |
+| `components/ChatPanel.tsx` | Streaming chat: history sidebar (`ChatSidebar`), Quick answer / Deep research toggle, live tokens and research steps, Stop, document filter (`DocumentFilter`), citations with "View", copy and Markdown export, feedback |
+| `components/SourceViewer.tsx` | The citation viewer: a PDF page drawn by pdf.js with the passage highlighted, or the extracted text around the cited chunk with the passage marked |
+| `components/AuthCard.tsx`, `components/VerifyBanner.tsx`, `components/settings/*` | Shared signed-out frame and notices; the confirmation banner; the five settings panels and `QuotaBar` |
+| `lib/api.ts` | Typed API client: token storage, `apiFetch`, silent refresh, `ApiError` (status + `Retry-After`), response interfaces, one method per endpoint; `streamQuestion` (SSE over `fetch`) with `parseSseBuffer`, and `uploadFile` (XHR, for upload progress) |
+| `lib/pdf.ts`, `lib/highlight.ts`, `lib/export.ts` | pdf.js loaded on demand (main-thread worker, `isEvalSupported: false`, both for the CSP) with highlight boxes; whitespace-tolerant passage matching; Markdown copy / export |
 | `lib/roles.ts`, `lib/password.ts`, `lib/useCurrentUser.ts` | Role checks for hiding actions, the password policy mirrored from the backend, and the `/users/me` hook |
 | `security-headers.mjs` | The CSP and other security headers `next.config.mjs` sends on every route |
 
@@ -401,7 +410,7 @@ The time limits rely on Unix signals, so they need the prefork pool. On Windows 
 
 ### Mode dispatch
 
-`POST /api/v1/chat/sessions/{id}/messages` shares authorisation, persistence and response shape between the two modes. The user message is saved before the model is called, so a failed generation still leaves the question in the transcript. Neither mode returns a 500 when the model is missing or fails.
+`POST /api/v1/chat/sessions/{id}/messages` (and its streaming twin, see [Streaming answers](#streaming-answers)) shares authorisation, persistence and response shape between the two modes. The user message is saved before the model is called, so a failed generation still leaves the question in the transcript. Neither mode returns a 500 when the model is missing or fails.
 
 ```mermaid
 flowchart TD
@@ -438,20 +447,26 @@ flowchart TD
     STORE --> RESP["ChatResponse: messages, citations, model, mode, steps"]
 ```
 
-A session titled "New Chat" is renamed from the first 60 characters of its first question.
+A session titled "New Chat" is titled after its first question (`make_title`: whitespace collapsed, cut at a word boundary near 60 characters). A title the user set with `PATCH /chat/sessions/{id}` is never replaced. Each assistant message is saved with its `mode`, the `model` that actually answered, and the agent's `steps`, so a conversation resumed from the history sidebar renders exactly as it did live. `document_ids` in the request limits retrieval (and every agent tool) to those documents; the tenant and project filters still apply to each id.
 
 ### Fast RAG pipeline (`mode: "rag"`)
 
-One embedding, one SQL query, one model call. The tenant and project filters are part of the vector query itself.
+One embedding, two SQL queries (vector and keyword), one model call -- plus one small rewrite call for a follow-up question when a key is set. The tenant and project filters are part of both queries.
 
 ```mermaid
 flowchart TD
-    Q["Question text"] --> EQ["EmbeddingService.get_embedding with for_query"]
-    EQ --> SQL["pgvector: ORDER BY cosine_distance, LIMIT top_k"]
-    SQL --> SCOPE["JOIN chunks, documents, projects. WHERE Project.org_id = caller org AND Document.project_id = session project AND Document.status = completed AND model_name = current embedding model"]
-    SCOPE --> SCORE["similarity = 1 - distance. Drop anything below RETRIEVAL_MIN_SCORE"]
-    SCORE --> HIST["build_history: last 6 messages, loaded before the question is saved"]
-    HIST --> PROMPT["build_context_prompt: EXCERPT [1] fenced in document_excerpt tags ... reminder ... QUESTION"]
+    Q["Question text"] --> HIST["build_history: last 6 messages, loaded before the question is saved"]
+    HIST --> RW["rewrite_query: a follow-up becomes a standalone search query (model call with a key, heuristic without)"]
+    RW --> EQ["EmbeddingService.get_embedding for the search query"]
+    EQ --> SQL["pgvector: ORDER BY cosine_distance, LIMIT RETRIEVAL_CANDIDATES"]
+    RW --> FTS["Full text: to_tsvector(content) @@ websearch_to_tsquery(query), ORDER BY ts_rank_cd, GIN index"]
+    SQL --> SCOPE["Both: JOIN chunks, documents, projects. WHERE Project.org_id = caller org AND project = session project AND status = completed AND model_name = current embedding model AND (document_ids filter)"]
+    FTS --> SCOPE
+    SCOPE --> SCORE["Vector hits below RETRIEVAL_MIN_SCORE dropped; keyword hits kept"]
+    SCORE --> RRF["Reciprocal rank fusion: sum of 1 / (RETRIEVAL_RRF_K + rank)"]
+    RRF --> RR["Optional cross-encoder rerank (RERANKER)"]
+    RR --> TOPK["Keep top_k"]
+    TOPK --> PROMPT["build_context_prompt: EXCERPT [1] fenced in document_excerpt tags ... reminder ... QUESTION"]
     PROMPT --> LLM["Groq GROQ_MODEL async, retries with backoff, then LLM_FALLBACK_MODEL"]
     LLM --> CITE["Citation n points at excerpt n: chunk_id, filename, page, score, 300-char snippet"]
     CITE --> PERSIST["chat_messages row and usage_events row, one transaction"]
@@ -459,7 +474,63 @@ flowchart TD
 
 Before any of this, the endpoint checks the organisation's monthly token quota (`429` when used up) and the per-user chat rate limit. The question is sent to the model exactly once: history is loaded before the new message is saved, and `build_messages` also drops a trailing copy defensively.
 
+Only the SEARCH uses the rewritten query; the model still receives the user's own words and the history, so the rewrite cannot change the question being answered. Its tokens are metered with the answer, and the query actually searched is returned as `search_query`.
+
+Hybrid search exists for exact terms -- a policy number, a product code, a surname -- that embeddings blur. Reciprocal rank fusion merges the two rankings by position alone, because a cosine similarity and a `ts_rank_cd` live on scales that cannot be compared; a chunk near the top of both lists beats one at the top of only one. Every result keeps its cosine similarity as `score` (so the UI's "% match" means the same for every hit) and reports `match_type`: `vector`, `keyword` or `both`. `RETRIEVAL_HYBRID=false` restores vector-only search.
+
 `top_k` defaults to `RETRIEVAL_TOP_K` (5) and a request may raise it to 20. If nothing survives the score threshold the prompt says `EXCERPTS: (none found)` and the system prompt makes the model answer with the not-found sentence. Answers stay grounded through the system prompt (no outside knowledge, no invented citations), the `RETRIEVAL_MIN_SCORE` cut-off, a temperature of 0.1, and citations that map each `[n]` to a real file and page.
+
+---
+
+## Streaming answers
+
+`POST /api/v1/chat/sessions/{id}/messages/stream` takes the same body as the JSON endpoint and answers with Server-Sent Events, so the web UI can show the answer as it is written and, in agent mode, every research step the moment the agent takes it. Both endpoints run the same pipeline, `_answer_events` in `api/v1/chat.py`: an async generator of `(event, payload)` pairs. The JSON endpoint runs it to the end and returns the final `ChatResponse`; the SSE endpoint forwards every event. The two cannot disagree about how a question is answered, saved or metered.
+
+| Event | Payload | When |
+|---|---|---|
+| `start` | `session_id`, `user_message_id`, `mode`, `title` | the question is saved (not yet committed) |
+| `query` | `search_query`, `rewritten` | rag: the query retrieval used |
+| `step` | `tool`, `args`, `summary` | agent: each tool call, as it happens |
+| `citations` | `citations` | before the first token, so sources are on screen when the text cites them |
+| `token` | `text` | the next piece of the answer |
+| `done` | the full `ChatResponse` | after the commit |
+| `error` | `detail` | something failed after the stream began; nothing was saved |
+
+```mermaid
+sequenceDiagram
+    participant B as Browser (api.streamQuestion)
+    participant E as /messages/stream
+    participant P as _answer_events
+    participant A as run_agent (task)
+    participant L as LLMService.stream_answer
+    B->>E: POST (Bearer, body)
+    E->>E: ownership 404, rate limit and token quota 429 -- BEFORE streaming
+    E-->>B: 200 text/event-stream
+    E->>P: run with its own DB session
+    P-->>B: start
+    alt agent
+        P->>A: create_task(run_agent(on_step=queue.put_nowait))
+        loop until the task finishes
+            A-->>P: step (queue)
+            P-->>B: step
+        end
+        P-->>B: citations, then the answer word by word as token
+    else rag
+        P-->>B: query, citations
+        P->>L: stream_answer(stats)
+        L-->>P: pieces as the model writes them
+        P-->>B: token ...
+    end
+    P->>P: save answer (mode, model, steps), usage event, ONE commit
+    P-->>B: done
+```
+
+- **Refusals happen before the stream.** Once the `200` is sent its status cannot change, so everything that can be refused -- ownership, the rate limit, the token quota -- is checked in the handler first and arrives as an ordinary HTTP error.
+- **The stream has its own database session.** The request's session belongs to the handler, which returns before the first byte is streamed; the generator opens and closes its own.
+- **Saved at the end, or not at all.** The question, the answer and the usage event are committed together after the last token. A disconnect or an error mid-stream rolls everything back (and cancels a running agent), so a half-written answer is never stored.
+- **Agent tokens are replayed.** The agent's tool loop produces its final text in one piece, so its answer is sent word by word after the steps; the steps themselves are live.
+- **Token usage while streaming** comes from the provider's final chunk (`usage`, or Groq's `x_groq.usage`) through `stream_answer(stats=...)`.
+- Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no` so proxies do not buffer the stream into one late block.
 
 ---
 
@@ -641,6 +712,9 @@ erDiagram
         int tokens_used
         float latency
         jsonb citations
+        string mode
+        string model
+        jsonb steps
     }
     FEEDBACKS {
         uuid id PK
@@ -706,7 +780,8 @@ erDiagram
 - `duplicate_hash` (SHA-256 of the file content) is unique per `(project_id, duplicate_hash)`, not globally. The HNSW index, the `vector` extension and this constraint are defined in migration `a1b2c3d4e5f6_rag_vector_index.py`, not in the model files.
 - `documents.meta_data` (JSONB) holds pipeline results: language, word and page counts, chunk count and strategy, embedding model, OCR use, processing time, `attempts`, `malware_scan` (the scanner that cleared the file, or `off`), and `error` when `failed`. A quarantined file also has `quarantined` and `malware_signature`; an archive lists `files_extracted` and `skipped_entries`. The attribute is named `meta_data` because `metadata` is reserved by SQLAlchemy.
 - `documents.file_path` holds a storage key, `<project_id>/<uuid>.<ext>`, read through the backend named in `storage_backend` (`local` or `s3`). Rows from before migration `d4e6f8a0b2c5` hold an absolute path on disk, which `LocalStorage` still reads. `attempts` counts claims (the first run and every retry or recovery), `processing_started_at` is when the current claim was made, and `error_message` is the reason for `failed`, or for a retry while `pending`. `status` is indexed because the recovery sweep searches on it.
-- `chat_messages.citations` (JSONB) stores the citations returned with each answer.
+- `chat_messages.citations` (JSONB) stores the citations returned with each answer; `mode`, `model` and `steps` (JSONB, the agent's tool trace) record how it was produced. All three are empty on user messages and on answers saved before migration `a7b9c1d3e5f8`.
+- `chunks` has a GIN index on the EXPRESSION `to_tsvector('english', content)` (migration `a7b9c1d3e5f8`), not a stored `tsvector` column: Postgres maintains it on insert, nothing had to be back-filled, and `retrieval.fts_document()` builds the identical expression so the planner can use it. It is not declared on the model because the SQLite test schema has no `to_tsvector`.
 - Every token the server issues other than access tokens -- invite, refresh, reset, verification, API key -- is stored only as a SHA-256 hash. `revoked_tokens` holds access-token `jti`s until the token would have expired; logout prunes expired rows.
 - `audit_logs` has a composite index on `(org_id, created_at)` for the audit log endpoint.
 
@@ -870,7 +945,9 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `POST` | `/api/v1/auth/verify-email` | Confirm an email address (`token`) |
 | `POST` | `/api/v1/auth/verify-email/resend` | Send a new verification email to the signed-in user |
 | `GET` | `/api/v1/users/me` | The current user |
-| `GET` / `POST` | `/api/v1/projects/` | List projects / create one (editor or admin) |
+| `GET` / `POST` | `/api/v1/projects/` | List projects / create one (editor or admin; audited) |
+| `GET` | `/api/v1/projects/{id}` | One project with `document_count` and `ready_count` |
+| `PATCH` / `DELETE` | `/api/v1/projects/{id}` | Rename (`name`) / delete with its documents, chunks, stored files and conversations (editor or admin; audited) |
 | `GET` | `/api/v1/org/members` | Members of the organisation (admin) |
 | `PATCH` / `DELETE` | `/api/v1/org/members/{id}` | Change `role` / `is_active`, or remove a member (admin; not yourself, never the last admin) |
 | `POST` / `GET` | `/api/v1/org/invites` | Invite an email with a role (token returned once) / list invites with status (admin) |
@@ -879,13 +956,22 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `DELETE` | `/api/v1/org/api-keys/{id}` | Revoke a key (admin) |
 | `GET` | `/api/v1/org/audit-logs` | Audit entries, newest first; `limit`, `offset`, `action`, `user_id`, `since`, `until` (admin) |
 | `GET` | `/api/v1/org/usage` | This calendar month's chat usage: requests, tokens in and out, estimated cost, by model and by mode, and the token, document and storage quotas (admin) |
+| `GET` | `/api/v1/org/feedback?days=` | Answer ratings over the last `days` (default 30): totals, satisfaction, by mode and by model, and the 20 most recent thumbs-down answers with their questions (admin) |
 | `POST` | `/api/v1/documents/upload` | Multipart upload (`project_id`, `files`, optional `chunk_strategy`, `chunk_size`, `chunk_overlap`), editor or admin; returns `202` with `pending` rows. `413` too large, `415` unsupported or mismatched content, `422` chunk options out of range, `402` document or storage quota reached, `429` rate limited, `503` storage unreachable |
 | `GET` | `/api/v1/documents/?project_id=` | Documents with status, `error_message`, `attempts` and processing metadata |
+| `GET` | `/api/v1/documents/{id}` | One document |
+| `PATCH` | `/api/v1/documents/{id}` | Rename (`filename`, cleaned like an upload name; the real extension is kept) (editor or admin; audited) |
+| `DELETE` | `/api/v1/documents/{id}` | Delete the row, its chunks and vectors (cascade) and then the stored file (editor or admin; audited) |
+| `POST` | `/api/v1/documents/{id}/reindex` | Process the stored file again, optionally with new `chunk_strategy` / `chunk_size` / `chunk_overlap`; `202`, `409` while queued or processing, `410` if quarantined (editor or admin; audited; upload rate limit) |
+| `GET` | `/api/v1/documents/{id}/chunks?around=&window=` | The cited chunk and up to 5 neighbours each side (or the start of the document), for the citation viewer; `404` for a chunk that no longer exists |
 | `GET` | `/api/v1/documents/{id}/preview` | The original file, as an attachment under its original name with `nosniff`; HTML is served as `text/plain`, and a type outside the allowlist (possible only for rows uploaded before it existed) as `application/octet-stream`. `409` while scanning is on and the file has not been cleared, `410` if quarantined, `404` if the stored file is gone |
-| `POST` | `/api/v1/search/` | Semantic search only: chunks with scores, no LLM |
-| `POST` / `GET` | `/api/v1/chat/sessions` | Start a conversation in a project / list your sessions |
-| `GET` | `/api/v1/chat/sessions/{id}/messages` | Transcript |
-| `POST` | `/api/v1/chat/sessions/{id}/messages` | Ask a question: `message` (1-4000 chars), optional `top_k` (1-20), optional `mode` (`rag` or `agent`). `429` when rate limited or the monthly token quota is used up |
+| `POST` | `/api/v1/search/` | Hybrid search only: chunks with scores and `match_type`, no LLM; optional `document_ids` (up to 50) |
+| `POST` / `GET` | `/api/v1/chat/sessions` | Start a conversation in a project / list your sessions (optional `?project_id=`) |
+| `PATCH` | `/api/v1/chat/sessions/{id}` | Rename a conversation (`title`) |
+| `GET` | `/api/v1/chat/sessions/{id}/messages` | Transcript, with each answer's citations, `mode`, `model` and `steps` |
+| `GET` | `/api/v1/chat/sessions/{id}/export` | The conversation as a Markdown attachment |
+| `POST` | `/api/v1/chat/sessions/{id}/messages` | Ask a question: `message` (1-4000 chars), optional `top_k` (1-20), optional `mode` (`rag` or `agent`), optional `document_ids` (up to 50). `429` when rate limited or the monthly token quota is used up |
+| `POST` | `/api/v1/chat/sessions/{id}/messages/stream` | The same, answered as Server-Sent Events (see [Streaming answers](#streaming-answers)) |
 | `DELETE` | `/api/v1/chat/sessions/{id}` | Delete a conversation |
 | `POST` | `/api/v1/chat/messages/{id}/feedback` | Rate an answer (`1` or `-1`) |
 | `POST` | `/api/v1/tasks/trigger-add`, `/api/v1/tasks/trigger-document` | Queue diagnostics (admin; `503` in inline mode; `404` with `ENV=production`) |
@@ -913,26 +999,60 @@ The frontend is a Next.js 16 / React 19 client of the API with no server-side da
 - **Hand-written types.** The interfaces in `lib/api.ts` mirror `backend/app/schemas/` and must be updated by hand when a schema changes; the end-to-end suite is what detects drift.
 - **Token storage.** The access token is stored in `localStorage` behind a `typeof window` guard, since components also render on the server. Client-side route guards are a convenience; the API enforces authorisation.
 - **Status polling.** The project page polls the document list every 3 seconds while any document is `pending` or `processing`, stops when all have settled, and clears the interval on cleanup. A `failed` document shows its `error_message` (falling back to `meta_data.error`), and a `pending` one with an `error_message` shows that it is waiting to be retried.
-- **Optimistic chat.** A question is appended with a temporary id before the response arrives, replaced by the saved message on success, and removed on failure.
+- **Optimistic, streamed chat.** A question and an empty answer bubble are appended with temporary ids; streamed tokens and steps are written into the bubble as they arrive; both are replaced by the saved messages on `done`, and both are removed on failure or Stop (an `AbortController` cancels the `fetch`, and the backend saves nothing).
+- **SSE over fetch.** `EventSource` can only `GET` and cannot send a bearer token, so `api.streamQuestion` POSTs with `fetch`, reads the body stream, and `parseSseBuffer` splits complete events from a partial tail that waits for the next read.
+- **History.** A conversation is created on its first question, not when the tab opens, so the sidebar never fills with empty "New Chat"s. Selecting one loads its transcript; rename is inline and delete asks for a second click.
+- **Citation viewer.** "View" on a citation (or a search result) opens `SourceViewer`. A PDF is fetched through the authenticated `/preview` endpoint and drawn by pdf.js at the cited page; the text runs that appear in the snippet are painted over. pdf.js is imported only when a PDF is opened, runs its worker on the main thread (the CSP allows scripts from `'self'` only) and never uses `eval`. Other types -- and PDFs on request or failure -- show the extracted text around the cited chunk with the passage in a `<mark>`, found by whitespace- and case-insensitive matching (`lib/highlight.ts`).
+- **Bulk upload.** `UploadZone` sends one request per file, three at a time, through `api.uploadFile` (XMLHttpRequest, the only browser API with upload progress), so one rejected file is one red row while the rest succeed.
+- **Copy and export.** Each answer copies as Markdown with its sources; Export downloads the whole conversation as a `.md` file built in the browser (`lib/export.ts`, the same layout as the backend's `/export`).
 
 ### Chat mode flow
 
 ```mermaid
 flowchart TD
-    PICK["Toggle: Quick answer or Deep research"] --> SEND["api.askQuestion with sessionId, question, mode"]
-    SEND --> WAIT{"mode"}
-    WAIT -->|"rag"| W1["Typing indicator"]
-    WAIT -->|"agent"| W2["Typing indicator plus Researching your documents..."]
-    W1 --> RESP["ChatResponse arrives"]
-    W2 --> RESP
-    RESP --> MSG["Replace the optimistic question, append the answer with its citations"]
-    RESP --> HAS{"steps non-empty?"}
-    HAS -->|"yes"| KEEP["Store steps by assistant message id"]
-    KEEP --> SHOW["Research steps toggle: tool, shortened args and summary for each step"]
-    HAS -->|"no"| NONE["No steps toggle"]
+    PICK["Toggle: Quick answer or Deep research, optional document filter"] --> NEW{"Conversation exists?"}
+    NEW -->|"no"| CREATE["api.createChatSession, added to the sidebar"]
+    NEW -->|"yes"| SEND
+    CREATE --> SEND["api.streamQuestion with mode, documentIds, AbortSignal"]
+    SEND --> WAIT["Optimistic question plus an empty answer bubble with typing dots"]
+    WAIT --> EV{"event"}
+    EV -->|"step"| STEP["Append to the live, open steps list"]
+    EV -->|"citations"| CIT["Attach sources to the bubble"]
+    EV -->|"token"| TOK["Append text to the bubble"]
+    EV -->|"done"| DONE["Replace both placeholders with the saved messages: mode, model, steps, citations"]
+    EV -->|"error, failure or Stop"| ROLL["Remove both placeholders and show why"]
+    DONE --> SIDE["Conversation moves to the top of the sidebar"]
 ```
 
-The mode is component state only (default Quick answer) and resets on reload. Steps are stored per assistant message id because the backend does not persist them.
+The mode is component state only (default Quick answer) and resets on reload. Steps live on the message itself (`ChatMessageItem.steps`) because the backend now saves them.
+
+---
+
+## Answer quality
+
+Two complementary signals, one from real users and one reproducible.
+
+**Feedback.** The thumbs under every answer (`POST /chat/messages/{id}/feedback`) are summarised for admins by `GET /org/feedback` and the Settings > Feedback tab: satisfaction (up / (up + down)), the split by mode and by model, and the recent thumbs-down answers with their questions and comments. Feedback has no `org_id`; it is scoped by joining message -> session -> project -> organisation.
+
+**Evaluation harness** (`backend/app/eval`). A golden set is a JSON file of questions with the documents (and optionally snippets) that should answer them:
+
+```json
+{ "name": "HR handbook", "top_k": 5, "cases": [
+  { "id": "leave", "question": "How many days of annual leave?",
+    "expected_documents": ["handbook.pdf"], "expected_snippets": ["25 days"],
+    "expected_keywords": ["25"] } ] }
+```
+
+`python -m app.eval --golden <file> --project-id <uuid>` runs every question through the real `RetrievalService.search` and reports:
+
+| Metric | Meaning | Needs |
+|---|---|---|
+| hit rate | share of questions with at least one relevant result in the top k (for a case with no `expected_documents`, a hit means nothing came back) | nothing |
+| MRR | mean of 1 / rank of the first relevant result | nothing |
+| keyword rate | share of answers containing every `expected_keywords` entry (`--answers`) | nothing (mock answers without a key) |
+| faithfulness | 0..1 from an LLM judge: is every claim supported by the excerpts? (`--answers`) | `GROQ_API_KEY`; reported as `n/a` without one rather than faked |
+
+Retrieval and generation are scored separately because a wrong answer has two possible causes with different fixes. `--no-hybrid` compares against vector-only search, `--output` writes the JSON report, and `--min-hit-rate` exits non-zero below a threshold for use as a CI gate. The harness takes its search, answer and judge functions as arguments, which is how `tests/test_retrieval_quality.py` runs it with no database or model.
 
 ---
 
@@ -1038,5 +1158,17 @@ flowchart TB
 **402 for storage, 429 for tokens.** The token quota resets on the 1st, so it behaves like a rate limit with a known `Retry-After`. Document and storage quotas never free themselves, so they use the status that means "you need a bigger plan".
 
 **Liveness separate from readiness.** A liveness probe that queried the database would have the platform restart every API instance during a database outage, fixing nothing. Only readiness checks dependencies, concurrently and with a timeout each, so the probe itself can never hang.
+
+**Hybrid search fused by rank, not by score.** Embeddings miss exact identifiers; full-text search misses paraphrase. Running both and merging with reciprocal rank fusion needs no weights to tune, because RRF ignores the incomparable raw scores. The keyword half reuses the same tenant-scoped joins as the vector half (one `scoped()` helper), so it cannot become a way around the `org_id` filter.
+
+**Rewrite the search, not the question.** A follow-up is rewritten into a standalone query for retrieval only. The model still answers the user's own words with the history in front of it, so a poor rewrite costs recall at worst, never a subtly different answer.
+
+**One pipeline, two transports.** The JSON and SSE chat endpoints both drain the same async generator. Streaming was added without a second copy of the authorisation, persistence and metering code that a second code path would have needed -- and would eventually have let drift.
+
+**Persist the answer only when it is complete.** Saving tokens as they stream would leave half-answers in the history after every disconnect. Committing once at the end keeps the question, the answer and its usage event one atomic fact.
+
+**Bulk upload as many single uploads.** The upload endpoint keeps its all-or-nothing rule (right for API clients); the browser sends files one at a time, three in parallel, so a person dropping a folder gets per-file progress and per-file errors.
+
+**pdf.js on the main thread.** A worker would need a separate script URL that the bundler must emit and the CSP must allow; for rendering one cited page the main-thread cost is negligible, and no CSP relaxation was needed.
 
 **Low temperature and a score threshold.** `LLM_TEMPERATURE=0.1` keeps answers close to the excerpts, and `RETRIEVAL_MIN_SCORE` discards weak matches so the system can answer "not found" instead of answering from unrelated text.

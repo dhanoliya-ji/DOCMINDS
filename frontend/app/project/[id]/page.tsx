@@ -17,6 +17,14 @@
  * Since Next.js 15 `params` arrives as a PROMISE, unwrapped below with
  * React's `use()`.
  *
+ * MANAGING THE PROJECT
+ * --------------------
+ * Editors and admins can rename or delete the project from its header, and
+ * rename, re-index or delete each document from its row (DocumentActions).
+ * Deleting the project removes its documents, their files and every
+ * conversation about it, so it asks for a second click and then returns to
+ * the dashboard.
+ *
  * THE POLLING LOOP
  * ----------------
  * Processing happens in a background Celery worker, so the browser is never
@@ -31,21 +39,26 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
+  Check,
   CheckCircle2,
   Clock,
   FileText,
   Loader2,
   MessageSquare,
+  Pencil,
   Search,
+  Trash2,
+  X,
   XCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useState } from "react";
 
 import ChatPanel from "@/components/ChatPanel";
+import DocumentActions from "@/components/DocumentActions";
 import SearchPanel from "@/components/SearchPanel";
 import UploadZone from "@/components/UploadZone";
-import { api, DocumentItem, getToken } from "@/lib/api";
+import { api, DocumentItem, getErrorMessage, getToken } from "@/lib/api";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
@@ -83,6 +96,12 @@ export default function ProjectPage({
   const [projectName, setProjectName] = useState("Project");
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("documents");
+  // A failed rename / delete / re-index, shown above the list.
+  const [actionError, setActionError] = useState("");
+  // Project header editing: the inline rename box, and the delete confirm.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // ------------------------------------------------------------------
   // FETCH THE DOCUMENT LIST
@@ -124,19 +143,25 @@ export default function ProjectPage({
     // Avoiding it would mean adopting a data-fetching library (TanStack Query
     // or similar), which is a reasonable thing to want and a much larger
     // change than this warrants.
+  }, [projectId, router, loadDocuments]);
 
-    // Look up this project's name for the page heading. The list endpoint is
-    // reused rather than adding a dedicated "get one project" call.
+  // ---- This project's name, for the heading ----
+  // An effect of its own, keyed on the project alone: folded into the one
+  // above, any re-run of that effect would fetch the name again and could
+  // overwrite a rename the user has just made.
+  useEffect(() => {
+    if (!getToken()) return;
+    let cancelled = false;
     api
-      .listProjects()
-      .then((projects) => {
-        const match = projects.find((p) => p.id === projectId);
-        if (match) setProjectName(match.name);
-      })
+      .getProject(projectId)
+      .then((project) => !cancelled && setProjectName(project.name))
       .catch(() => {
         /* a missing title is not worth surfacing as an error */
       });
-  }, [projectId, router, loadDocuments]);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // ---- The polling loop ----
   useEffect(() => {
@@ -197,9 +222,33 @@ export default function ProjectPage({
     }
   }
 
-  // How many documents are actually searchable, which decides whether the
-  // search and chat tabs have anything to work with.
-  const readyCount = documents.filter((d) => d.status === "completed").length;
+  // The documents that are actually searchable. They decide whether the
+  // search and chat tabs have anything to work with, and they are what the
+  // "only these documents" filter offers.
+  const readyDocuments = documents.filter((d) => d.status === "completed");
+  const readyCount = readyDocuments.length;
+
+  async function saveProjectName() {
+    setRenaming(false);
+    const name = nameDraft.trim();
+    if (!name || name === projectName) return;
+    try {
+      const project = await api.renameProject(projectId, name);
+      setProjectName(project.name);
+    } catch (err) {
+      setActionError(getErrorMessage(err, "Could not rename the project."));
+    }
+  }
+
+  async function deleteProject() {
+    try {
+      await api.deleteProject(projectId);
+      router.push("/dashboard");
+    } catch (err) {
+      setConfirmDelete(false);
+      setActionError(getErrorMessage(err, "Could not delete the project."));
+    }
+  }
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-6 py-8">
@@ -214,7 +263,73 @@ export default function ProjectPage({
       </button>
 
       <div className="mb-6">
-        <h1 className="text-gradient text-3xl font-bold">{projectName}</h1>
+        {renaming ? (
+          <div className="flex items-center gap-2">
+            <input
+              className="input max-w-md text-lg"
+              value={nameDraft}
+              autoFocus
+              aria-label="Project name"
+              maxLength={255}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveProjectName();
+                if (e.key === "Escape") setRenaming(false);
+              }}
+            />
+            <button type="button" className="btn-ghost" onClick={saveProjectName} aria-label="Save project name">
+              <Check size={15} />
+            </button>
+            <button type="button" className="btn-ghost" onClick={() => setRenaming(false)} aria-label="Cancel rename">
+              <X size={15} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-gradient text-3xl font-bold">{projectName}</h1>
+            {mayUpload && (
+              <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                <button
+                  type="button"
+                  className="rounded p-1.5 hover:bg-white/5"
+                  onClick={() => {
+                    setNameDraft(projectName);
+                    setRenaming(true);
+                  }}
+                  aria-label="Rename project"
+                  title="Rename project"
+                >
+                  <Pencil size={14} />
+                </button>
+                {confirmDelete ? (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded px-2 py-1 font-medium"
+                      style={{ color: "var(--danger)" }}
+                      onClick={deleteProject}
+                    >
+                      Delete the project, its documents and conversations?
+                    </button>
+                    <button type="button" className="p-1" onClick={() => setConfirmDelete(false)} aria-label="Keep project">
+                      <X size={13} />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="rounded p-1.5 hover:bg-white/5"
+                    onClick={() => setConfirmDelete(true)}
+                    aria-label="Delete project"
+                    title="Delete project"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
           {documents.length} document{documents.length === 1 ? "" : "s"} ·{" "}
           {readyCount} ready to search
@@ -300,6 +415,19 @@ export default function ProjectPage({
                     admin to upload documents.
                   </p>
                 )
+              )}
+
+              {actionError && (
+                <div
+                  role="alert"
+                  className="flex items-center justify-between rounded-xl px-4 py-2.5 text-sm"
+                  style={{ background: "rgba(248,113,113,0.1)", color: "var(--danger)" }}
+                >
+                  <span>{actionError}</span>
+                  <button onClick={() => setActionError("")} aria-label="Dismiss error">
+                    <X size={14} />
+                  </button>
+                </div>
               )}
 
               {loading ? (
@@ -399,6 +527,16 @@ export default function ProjectPage({
                           {badge.icon}
                           {badge.label}
                         </span>
+                        {mayUpload && (
+                          <DocumentActions
+                            document={doc}
+                            onChanged={() => {
+                              setActionError("");
+                              loadDocuments();
+                            }}
+                            onError={setActionError}
+                          />
+                        )}
                       </motion.div>
                     );
                   })}
@@ -414,7 +552,7 @@ export default function ProjectPage({
                 message="Upload a document and wait for it to finish processing before searching."
               />
             ) : (
-              <SearchPanel projectId={projectId} />
+              <SearchPanel projectId={projectId} documents={readyDocuments} />
             ))}
 
           {/* ================= CHAT ================= */}
@@ -424,7 +562,7 @@ export default function ProjectPage({
                 message="Upload a document and wait for processing to finish, then ask questions about it."
               />
             ) : (
-              <ChatPanel projectId={projectId} />
+              <ChatPanel projectId={projectId} documents={readyDocuments} />
             ))}
         </motion.div>
       </AnimatePresence>

@@ -9,10 +9,11 @@ Local setup, the full configuration reference, testing, linting and troubleshoot
 3. [Configuration reference](#configuration-reference)
 4. [Frontend conventions](#frontend-conventions)
 5. [Testing](#testing)
-6. [Linting and build checks](#linting-and-build-checks)
-7. [Database migrations](#database-migrations)
-8. [Troubleshooting](#troubleshooting)
-9. [Glossary](#glossary)
+6. [Evaluating answer quality](#evaluating-answer-quality)
+7. [Linting and build checks](#linting-and-build-checks)
+8. [Database migrations](#database-migrations)
+9. [Troubleshooting](#troubleshooting)
+10. [Glossary](#glossary)
 
 ---
 
@@ -229,7 +230,13 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 | Variable | Default | Description |
 |---|---|---|
 | `RETRIEVAL_TOP_K` | `5` | Chunks per search (a chat request may set 1-20) |
-| `RETRIEVAL_MIN_SCORE` | `0.15` | Matches below this cosine similarity are discarded |
+| `RETRIEVAL_MIN_SCORE` | `0.15` | Semantic matches below this cosine similarity are discarded (keyword matches from hybrid search are kept) |
+| `RETRIEVAL_HYBRID` | `true` | Also run Postgres full-text search and merge the two rankings with reciprocal rank fusion. `false` = vectors only |
+| `RETRIEVAL_CANDIDATES` | `20` | Candidates each half of hybrid search (and the reranker) considers before the top `top_k` are kept |
+| `RETRIEVAL_RRF_K` | `60` | The constant in RRF's `1 / (k + rank)`; smaller favours the top of each list more |
+| `RERANKER` | `off` | `off` or `cross-encoder`: rescore the fused candidates with `RERANKER_MODEL` (needs `sentence-transformers` and a model download; falls back to the fused order if it cannot load) |
+| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | The cross-encoder used when `RERANKER=cross-encoder` |
+| `QUERY_REWRITE_ENABLED` | `true` | Rewrite a follow-up question into a standalone search query from the conversation (one small model call with a key, a heuristic without). Only retrieval uses the rewrite |
 | `DEFAULT_CHUNK_STRATEGY` | `fixed_size` | `fixed_size`, `sentence` or `markdown` |
 | `DEFAULT_CHUNK_SIZE` | `500` | Tokens per chunk |
 | `DEFAULT_CHUNK_OVERLAP` | `50` | Tokens repeated between consecutive chunks |
@@ -316,10 +323,12 @@ python -m pytest -m "not gemini_live"     # skip the live Gemini test
 | Tier 1 + 2 (`test_ingestion_durability.py`, `test_upload_hardening.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | The claim, retries, quarantine, the recovery sweep, inline retries and the Celery task options; the upload and preview endpoints (`413`, `415`, storage keys, queueing after the commit) |
 | Tier 1 (`test_rate_limit.py`, `test_observability.py`, `test_llm_robustness.py`) | Nothing | The sliding-window limiter (fake clock, fake and failing Redis), client-IP resolution behind proxies, `429` + `Retry-After` on every limited endpoint; JSON logs with request context, Sentry staying off, request ids, the access log, security headers, `/health/ready` with faked dependency checks; LLM retries, backoff and fallback (fake Groq client), the question being sent once, prompt-injection fencing in rag and agent output, retrieval's model filter and off-loop embedding |
 | Tier 1 + 2 (`test_usage.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Usage events per chat answer, the token quota (`429`), document and storage quotas (`402`, nothing stored), per-org overrides, `GET /org/usage` |
-| Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, tenant isolation, cascades, the HTTP layer |
+| Tier 1 (`test_retrieval_quality.py`) | Nothing | Reciprocal rank fusion, the reranker (and its fail-safe), follow-up query rewriting (heuristic and a faked model), conversation titles, the SSE framing, Markdown export, and the evaluation harness (golden-set loading, hit rate, MRR, judge parsing, the CLI's errors) |
+| Tier 1 + 2 (`test_product_api.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Project get / rename / delete (cascades and stored files), document get / rename / delete / re-index / chunks, role and tenant checks and audit entries; chat rename, list by project, Markdown export, the document filter and the rewritten follow-up reaching retrieval; the streaming endpoint's events in rag and agent mode, the answer saved with mode, model and steps, nothing saved on a mid-stream failure; the admin feedback summary |
+| Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, hybrid search (an exact code found only by the keyword half, tenant and document filters on both halves), tenant isolation, cascades, the HTTP layer |
 | `gemini_live` marker | `GEMINI_API_KEY` | One call to the real Gemini embedding API |
 
-`test_auth_flows.py`, `test_ingestion_durability.py` and `test_upload_hardening.py` run every test twice (the last two build their SQLite database with `tests/sqlite_harness.py`). The `[sqlite]` run builds the schema from the models in an in-memory SQLite database (via `aiosqlite`) and always runs; it is acceptable there because the account system uses plain rows, not pgvector or JSONB queries. The `[postgres]` run uses the migrated database, which is what checks that the Alembic migration matches the models. Both replace bcrypt with SHA-256 for speed.
+`test_auth_flows.py`, `test_ingestion_durability.py`, `test_upload_hardening.py` and `test_product_api.py` run every test twice (the last two build their SQLite database with `tests/sqlite_harness.py`). The `[sqlite]` run builds the schema from the models in an in-memory SQLite database (via `aiosqlite`) and always runs; it is acceptable there because the account system uses plain rows, not pgvector or JSONB queries. The `[postgres]` run uses the migrated database, which is what checks that the Alembic migration matches the models. Both replace bcrypt with SHA-256 for speed.
 
 Tier 2 tests skip, with a reason, when Postgres is unreachable or pgvector is missing. CI runs them against a pgvector service and fails if any test is skipped. They use the real database rather than SQLite because the queries depend on the `vector` type, the `<=>` operator and JSONB. `tests/test_agent.py` drives the real Pydantic AI agent and tools with a scripted model, so it needs no Groq key.
 
@@ -333,7 +342,9 @@ Tier 2 tests skip, with a reason, when Postgres is unreachable or pgvector is mi
 
 Rate limits are switched off for every test by an autouse fixture in `tests/conftest.py` (the suite signs up many users from one address); `test_rate_limit.py` turns them back on where they are the subject.
 
-Known gaps: binary PDF and Office extraction, real OCR engines, a real S3 bucket and a real ClamAV daemon (both are tested against fakes), Celery's own retry scheduling and time limits (the task options are checked, not exercised), and live Groq tool calling.
+The streaming endpoint opens its own database session through `app.api.v1.chat.SessionLocal`; tests that call it on SQLite patch that name the same way they patch `app.tasks.ingestion.SessionLocal`.
+
+Known gaps: binary PDF and Office extraction, the full-text half of hybrid search on SQLite (it is Postgres-only and covered in Tier 2), real OCR engines, a real S3 bucket and a real ClamAV daemon (both are tested against fakes), Celery's own retry scheduling and time limits (the task options are checked, not exercised), and live Groq tool calling.
 
 ### Frontend unit tests (Vitest)
 
@@ -344,7 +355,7 @@ npm run test:run                  # single run
 npx vitest run tests/api.test.ts  # one file
 ```
 
-Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts` (silent refresh, logout, `ApiError` and `Retry-After`), `ChatPanel`, `SearchPanel`, `UploadZone` (including `413`/`415`/`429`/`402` wording), the project page's polling, auth guard and role gating, the signed-out pages (`AuthPages.test.tsx`: sign in, sign up, invites, forgot/reset password, verify email), the settings area and dashboard (`Settings.test.tsx`), and the password policy, role rules and security headers (`policy.test.ts`). `tests/setup.ts` stubs `next/navigation` (set `searchParamsMock.value` to drive `useSearchParams`), `window.location`, `scrollIntoView` and `framer-motion` (one cached component per tag, so inputs inside `motion.div` keep focus while typing), and clears `localStorage` between tests. Component tests mock `lib/api`; page tests mock only the `api` object and keep the real error helpers.
+Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts` (silent refresh, logout, `ApiError` and `Retry-After`), the streaming client and the batch-2 endpoints (`streaming.test.ts`: SSE parsing across read boundaries, handler order, `error` events, upload progress over a fake `XMLHttpRequest`), `ChatPanel` (streamed tokens and live steps, Stop, history sidebar, document filter, copy and export, the source viewer), `SourceViewer` (pdf.js mocked: the cited page and snippet, page navigation, the text fallback), Markdown export and passage matching (`export.test.ts`), `SearchPanel`, `UploadZone` (per-file progress and errors, at most three in flight, `413`/`415`/`429`/`402` wording), the project page's polling, auth guard and role gating, the signed-out pages (`AuthPages.test.tsx`: sign in, sign up, invites, forgot/reset password, verify email), the settings area and dashboard (`Settings.test.tsx`), and the password policy, role rules and security headers (`policy.test.ts`). `tests/setup.ts` stubs `next/navigation` (set `searchParamsMock.value` to drive `useSearchParams`), `window.location`, `scrollIntoView` and `framer-motion` (one cached component per tag, so inputs inside `motion.div` keep focus while typing), and clears `localStorage` between tests. Component tests mock `lib/api`; page tests mock only the `api` object and keep the real error helpers.
 
 ### End-to-end tests (Playwright)
 
@@ -364,6 +375,29 @@ npm run test:e2e                     # or npm run test:e2e:ui
 ```
 
 Playwright starts `next dev` itself. Set `E2E_BASE_URL` to run against a frontend other than `http://localhost:3000`. Embeddings must be `local`, not `mock`: mock vectors are hashes, so a search for a sentence from the document would not match its chunk. The first run downloads the local model. Retries are disabled locally and set to one in CI.
+
+---
+
+## Evaluating answer quality
+
+`backend/app/eval` measures retrieval (and optionally answers) against a golden set of questions whose right sources you know. Start from `app/eval/golden_example.json`; the format is described in `app/eval/harness.py` and [ARCHITECTURE.md](ARCHITECTURE.md#answer-quality).
+
+```bash
+cd backend
+# retrieval only: hit rate and MRR, no API key needed
+python -m app.eval --golden app/eval/golden_example.json --project-id <uuid>
+
+# compare against vector-only search
+python -m app.eval --golden my_set.json --project-id <uuid> --no-hybrid
+
+# also generate answers: keyword check, and faithfulness by an LLM judge when GROQ_API_KEY is set
+python -m app.eval --golden my_set.json --project-id <uuid> --answers --output report.json
+
+# as a gate: exit 1 below a hit rate
+python -m app.eval --golden my_set.json --project-id <uuid> --min-hit-rate 0.8
+```
+
+It reads the database configured by `POSTGRES_*` / `DATABASE_URL`, uses the current retrieval settings (`RETRIEVAL_*`, `RERANKER`), and never writes anything or records usage. Good questions to add: the ones people rated thumbs-down (Settings > Feedback, or `GET /api/v1/org/feedback`), and a few whose answer is not in the documents (an empty `expected_documents` list -- a hit then means nothing was returned).
 
 ---
 
@@ -392,6 +426,8 @@ alembic upgrade head                              # apply all
 alembic revision --autogenerate -m "description"  # generate from model changes
 alembic downgrade -1                              # revert the last revision
 ```
+
+The chain is linear -- check there is exactly one head (`grep -n down_revision app/db/migrations/versions/*.py`) before adding a revision. The current head is `a7b9c1d3e5f8` (chat-message `mode` / `model` / `steps` and the full-text index for hybrid search). That index is created on an EXPRESSION in the migration only and is not declared on the model, so autogenerate may offer to drop `ix_chunks_content_fts`: delete that line from the generated revision.
 
 Alembic uses the synchronous psycopg2 URL. Always review a generated migration: autogenerate represents a renamed column as a drop plus an add, which deletes data; use `op.alter_column(..., new_column_name=...)` instead.
 

@@ -379,6 +379,8 @@ export interface SearchResultItem {
   // Similarity from 0 to 1. Higher is a closer match in meaning.
   score: number;
   meta_data: DocumentMeta;
+  // Which half of hybrid search found it. Absent when hybrid search is off.
+  match_type?: "vector" | "keyword" | "both" | null;
 }
 
 export interface SearchResponse {
@@ -407,6 +409,12 @@ export interface ChatMessageItem {
   tokens_used: number | null;
   latency: number | null;
   citations: CitationItem[];
+  // How an ASSISTANT answer was produced, saved since batch 2 so a resumed
+  // conversation renders exactly like the live one. Optional: older answers
+  // (and older backends) have none.
+  mode?: ChatMode | null;
+  model?: string | null;
+  steps?: AgentStep[];
   created_at: string;
 }
 
@@ -569,8 +577,8 @@ export interface UsageSummary {
 /**
  * One tool call the agent made while researching an answer.
  *
- * Only ever filled in agent mode, and only on the LIVE response: the backend
- * does not save steps, so a reloaded conversation has none.
+ * Only ever filled in agent mode. Saved with the answer (since batch 2), so
+ * a conversation reopened from the history sidebar shows them too.
  */
 export interface AgentStep {
   // The tool's name, e.g. "search_documents".
@@ -592,6 +600,116 @@ export interface ChatResponse {
   mode?: ChatMode;
   // The agent's tool calls, in order. Empty (or absent) in rag mode.
   steps?: AgentStep[];
+  // What retrieval actually searched for -- differs from the question when
+  // a follow-up was rewritten into a standalone query. Rag mode only.
+  search_query?: string | null;
+}
+
+// ----------------------------------------------------------------------
+// BATCH 2: projects, documents, streaming, history, feedback
+// ----------------------------------------------------------------------
+
+/** GET /projects/{id} -- one project plus how much is in it. */
+export interface ProjectDetail extends Project {
+  document_count: number;
+  ready_count: number;
+}
+
+/** One chunk of a document's text, for the citation viewer. */
+export interface ChunkContext {
+  id: string;
+  chunk_index: number;
+  page_number: number | null;
+  content: string;
+}
+
+/** New chunking options for a re-index; anything left out is kept. */
+export interface ReindexOptions {
+  chunk_strategy?: "fixed_size" | "sentence" | "markdown";
+  chunk_size?: number;
+  chunk_overlap?: number;
+}
+
+/** Up and down votes for one slice of answers (a mode, or a model). */
+export interface FeedbackBreakdown {
+  key: string;
+  up: number;
+  down: number;
+}
+
+/** GET /org/feedback (backend/app/schemas/rag.py FeedbackSummary). */
+export interface FeedbackSummary {
+  total: number;
+  up: number;
+  down: number;
+  // up / (up + down); null before anyone has voted.
+  satisfaction: number | null;
+  by_mode: FeedbackBreakdown[];
+  by_model: FeedbackBreakdown[];
+  recent_negative: {
+    message_id: string;
+    session_id: string;
+    rating: number;
+    comment: string | null;
+    question: string | null;
+    answer: string;
+    mode: string | null;
+    model: string | null;
+    created_at: string;
+  }[];
+}
+
+/** Options for asking a question, by either endpoint. */
+export interface AskOptions {
+  mode?: ChatMode;
+  // Answer only from these documents. Empty or absent = the whole project.
+  documentIds?: string[];
+  // Lets the caller stop a streaming answer (the "Stop" button).
+  signal?: AbortSignal;
+}
+
+/**
+ * Callbacks for a STREAMED answer, one per kind of event the backend sends
+ * (see "THE STREAM, EVENT BY EVENT" in backend/app/api/v1/chat.py).
+ */
+export interface StreamHandlers {
+  onStart?: (event: { session_id: string; user_message_id: string; mode: ChatMode; title: string }) => void;
+  onQuery?: (event: { search_query: string; rewritten: boolean }) => void;
+  onStep?: (step: AgentStep) => void;
+  onCitations?: (citations: CitationItem[]) => void;
+  onToken?: (text: string) => void;
+}
+
+/** One parsed Server-Sent Event. */
+export interface SseEvent {
+  event: string;
+  data: string;
+}
+
+/**
+ * Split a buffer of SSE text into complete events plus the unfinished rest.
+ *
+ * A network read can end anywhere -- in the middle of a line, even in the
+ * middle of a UTF-8 character (the decoder handles that part). An event is
+ * only complete once its blank line has arrived, so anything after the last
+ * blank line is handed back as `rest` and glued to the front of the next
+ * read. Exported so the tests can feed it awkward splits directly.
+ */
+export function parseSseBuffer(buffer: string): { events: SseEvent[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const frames = normalized.split("\n\n");
+  const rest = frames.pop() ?? "";
+  const events: SseEvent[] = [];
+  for (const frame of frames) {
+    let event = "message";
+    const data: string[] = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (data.length > 0) events.push({ event, data: data.join("\n") });
+  }
+  return { events, rest };
 }
 
 // ======================================================================
@@ -858,13 +976,16 @@ export const api = {
 
   // ---- Semantic search -----------------------------------------------
 
-  search(query: string, projectId?: string, topK?: number) {
+  search(query: string, projectId?: string, topK?: number, documentIds?: string[]) {
     return apiFetch<SearchResponse>("/search/", {
       method: "POST",
       body: JSON.stringify({
         query,
         project_id: projectId,
         top_k: topK,
+        // Only these documents. Sent only when the filter is in use, so an
+        // unfiltered search is exactly the request it always was.
+        ...(documentIds && documentIds.length > 0 ? { document_ids: documentIds } : {}),
       }),
     });
   },
@@ -894,10 +1015,14 @@ export const api = {
    * `{ "message": "..." }` -- the request the backend has always accepted, and
    * which it treats as "rag".
    */
-  askQuestion(sessionId: string, message: string, mode?: ChatMode) {
+  askQuestion(sessionId: string, message: string, mode?: ChatMode, documentIds?: string[]) {
     return apiFetch<ChatResponse>(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
-      body: JSON.stringify(mode ? { message, mode } : { message }),
+      body: JSON.stringify({
+        message,
+        ...(mode ? { mode } : {}),
+        ...(documentIds && documentIds.length > 0 ? { document_ids: documentIds } : {}),
+      }),
     });
   },
 
@@ -910,6 +1035,248 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ rating, comment }),
     });
+  },
+
+
+  // ---- Projects: one, rename, delete (batch 2) ------------------------
+
+  getProject(projectId: string) {
+    return apiFetch<ProjectDetail>(`/projects/${projectId}`);
+  },
+
+  renameProject(projectId: string, name: string) {
+    return apiFetch<Project>(`/projects/${projectId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  /** Deletes the project's documents, files and conversations too. */
+  deleteProject(projectId: string) {
+    return apiFetch<void>(`/projects/${projectId}`, { method: "DELETE" });
+  },
+
+  // ---- Documents: rename, delete, re-index, text, file ------------------
+
+  renameDocument(documentId: string, filename: string) {
+    return apiFetch<DocumentItem>(`/documents/${documentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ filename }),
+    });
+  },
+
+  deleteDocument(documentId: string) {
+    return apiFetch<void>(`/documents/${documentId}`, { method: "DELETE" });
+  },
+
+  reindexDocument(documentId: string, options: ReindexOptions = {}) {
+    return apiFetch<DocumentItem>(`/documents/${documentId}/reindex`, {
+      method: "POST",
+      body: JSON.stringify(options),
+    });
+  },
+
+  /** The cited chunk and `window` neighbours either side (or the start). */
+  documentChunks(documentId: string, aroundChunkId?: string, window = 2) {
+    const params = new URLSearchParams({ window: String(window) });
+    if (aroundChunkId) params.set("around", aroundChunkId);
+    return apiFetch<ChunkContext[]>(`/documents/${documentId}/chunks?${params}`);
+  },
+
+  /**
+   * The original file's bytes, through the authenticated /preview endpoint.
+   *
+   * Not a plain link: the browser would not send the Authorization header,
+   * so the PDF viewer fetches the bytes itself and hands them to pdf.js.
+   */
+  async fetchDocumentFile(documentId: string): Promise<ArrayBuffer> {
+    const send = () => {
+      const token = getToken();
+      return fetch(`${API_V1}/documents/${documentId}/preview`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    };
+    let response = await send();
+    if (response.status === 401) {
+      if (!(await refreshSession())) endSession();
+      response = await send();
+    }
+    if (!response.ok) throw await errorFromResponse(response, "Could not open the file.");
+    return response.arrayBuffer();
+  },
+
+  /**
+   * Upload ONE file, reporting progress as it goes.
+   *
+   * WHY XMLHttpRequest AND NOT fetch: fetch has no upload-progress event.
+   * XHR's `upload.onprogress` is still the only way a browser reports how
+   * many bytes of a request body have been sent -- which is what turns a
+   * spinner into "report.pdf 63%".
+   *
+   * The bulk upload zone calls this once per file, so one bad file is one
+   * failed row instead of a refused batch.
+   */
+  uploadFile(
+    projectId: string,
+    file: File,
+    onProgress?: (fraction: number) => void,
+    chunkStrategy = "sentence",
+    chunkSize = 400,
+    chunkOverlap = 60
+  ): Promise<DocumentItem[]> {
+    const form = new FormData();
+    form.append("project_id", projectId);
+    form.append("chunk_strategy", chunkStrategy);
+    form.append("chunk_size", String(chunkSize));
+    form.append("chunk_overlap", String(chunkOverlap));
+    form.append("files", file);
+
+    const send = () =>
+      new Promise<{ status: number; body: string; retryAfter: string | null }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${API_V1}/documents/upload`);
+        const token = getToken();
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+        };
+        xhr.onload = () =>
+          resolve({
+            status: xhr.status,
+            body: xhr.responseText,
+            retryAfter: xhr.getResponseHeader("Retry-After"),
+          });
+        xhr.onerror = () => reject(new Error("Network error while uploading."));
+        xhr.send(form);
+      });
+
+    return (async () => {
+      let result = await send();
+      if (result.status === 401) {
+        if (!(await refreshSession())) endSession();
+        result = await send();
+      }
+      // Reuse errorFromResponse by wrapping the XHR result in a Response.
+      const response = new Response(result.status === 204 ? null : result.body, {
+        status: result.status,
+        headers: result.retryAfter ? { "Retry-After": result.retryAfter } : {},
+      });
+      if (!response.ok) throw await errorFromResponse(response, "Upload failed.");
+      onProgress?.(1);
+      return (await response.json()) as DocumentItem[];
+    })();
+  },
+
+  // ---- Conversation history ---------------------------------------------
+
+  /** This user's conversations about one project, most recent first. */
+  listProjectChatSessions(projectId: string) {
+    return apiFetch<ChatSessionItem[]>(`/chat/sessions?project_id=${projectId}`);
+  },
+
+  renameChatSession(sessionId: string, title: string) {
+    return apiFetch<ChatSessionItem>(`/chat/sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    });
+  },
+
+  /**
+   * Ask a question and receive the answer AS IT IS WRITTEN.
+   *
+   * The backend replies with Server-Sent Events: the question is saved, the
+   * sources arrive, then the answer word by word (and, in agent mode, each
+   * research step the moment the agent takes it). Each event is passed to
+   * the matching handler; the promise resolves with the final ChatResponse --
+   * the same object askQuestion returns -- once the answer has been saved.
+   *
+   * WHY fetch AND NOT EventSource: EventSource can only make GET requests
+   * and cannot send an Authorization header. fetch can do both, and its
+   * response body is a stream we read chunk by chunk.
+   */
+  async streamQuestion(
+    sessionId: string,
+    message: string,
+    options: AskOptions = {},
+    handlers: StreamHandlers = {}
+  ): Promise<ChatResponse> {
+    const body = JSON.stringify({
+      message,
+      ...(options.mode ? { mode: options.mode } : {}),
+      ...(options.documentIds && options.documentIds.length > 0
+        ? { document_ids: options.documentIds }
+        : {}),
+    });
+    const send = () => {
+      const token = getToken();
+      return fetch(`${API_V1}/chat/sessions/${sessionId}/messages/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body,
+        signal: options.signal,
+      });
+    };
+
+    let response = await send();
+    if (response.status === 401) {
+      if (!(await refreshSession())) endSession();
+      response = await send();
+      if (response.status === 401) endSession();
+    }
+    // Ownership, the rate limit and the quota are checked BEFORE the stream
+    // starts, so they arrive as ordinary HTTP errors with their status.
+    if (!response.ok || !response.body) {
+      throw await errorFromResponse(response, "Could not get an answer.");
+    }
+
+    const reader = response.body.getReader();
+    // `stream: true` keeps a multi-byte character split across two reads
+    // intact instead of turning it into two replacement characters.
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const parsed = parseSseBuffer(done ? `${buffer}\n\n` : buffer);
+      buffer = parsed.rest;
+      for (const { event, data } of parsed.events) {
+        const payload = JSON.parse(data);
+        switch (event) {
+          case "start":
+            handlers.onStart?.(payload);
+            break;
+          case "query":
+            handlers.onQuery?.(payload);
+            break;
+          case "step":
+            handlers.onStep?.(payload);
+            break;
+          case "citations":
+            handlers.onCitations?.(payload.citations);
+            break;
+          case "token":
+            handlers.onToken?.(payload.text);
+            break;
+          case "error":
+            throw new ApiError(payload.detail || "Could not get an answer.", 500);
+          case "done":
+            return payload as ChatResponse;
+        }
+      }
+      if (done) break;
+    }
+    throw new Error("The answer was interrupted. Please try again.");
+  },
+
+  // ---- Answer quality (Admin) -------------------------------------------
+
+  /** Thumbs up / down over the last `days` days, summarised. */
+  getFeedbackSummary(days = 30) {
+    return apiFetch<FeedbackSummary>(`/org/feedback?days=${days}`);
   },
 
   // ---- Health ----------------------------------------------------------

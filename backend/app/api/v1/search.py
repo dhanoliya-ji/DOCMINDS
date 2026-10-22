@@ -65,7 +65,8 @@ async def semantic_search(
     current_user: User = Depends(deps.get_current_active_user),
 ):
     """
-    Search across documents by MEANING rather than by keyword.
+    Search across documents by MEANING -- and, with hybrid search on, by
+    exact words too (see services/retrieval.py).
 
     Unlike a keyword search, asking about "time off" will surface a paragraph
     headed "Annual Leave Entitlement" even though the two phrases share no
@@ -87,6 +88,9 @@ async def semantic_search(
         org_id=current_user.org_id,
         project_id=payload.project_id,
         document_id=payload.document_id,
+        # The "only these files" filter -- narrows, never widens: the
+        # tenant filter inside the search still applies to every id.
+        document_ids=payload.document_ids,
         top_k=payload.top_k,
         min_score=payload.min_score,
     )

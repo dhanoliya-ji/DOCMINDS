@@ -528,32 +528,47 @@ class LLMService:
         question: str,
         chunks: List[Dict[str, Any]],
         history: Optional[List[Dict[str, str]]] = None,
+        stats: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Yield the answer in small pieces as the model writes it.
 
         This is what produces the "typing" effect in a chat UI. Instead of
         the user staring at a spinner for three seconds and then seeing a wall
-        of text, words appear as they are generated.
+        of text, words appear as they are generated. The streaming chat
+        endpoint (chat.py, POST .../messages/stream) forwards each piece to
+        the browser as a Server-Sent Event the moment it arrives.
 
         An ASYNC generator: `async for piece in LLMService.stream_answer(...)`.
         Retries and the fallback model apply to STARTING the stream; once text
         has begun to arrive, a failure ends it with an apology instead.
+
+        `stats`, if given, is a dictionary filled in as the stream runs with
+        the same metric keys generate_answer returns -- "model",
+        "prompt_tokens", "completion_tokens", "tokens_used" -- so the caller
+        can save and meter the answer once the stream is finished. A generator
+        cannot `return` a value to an `async for` loop, so an "out" parameter
+        is the simplest honest way to hand them back.
         """
+        stats = stats if stats is not None else {}
+        stats.update({"model": "mock", "prompt_tokens": 0, "completion_tokens": 0, "tokens_used": 0})
+
         if settings.LLM_PROVIDER == "mock" or not settings.GROQ_API_KEY:
             # Mimic streaming by emitting the canned answer word by word, so
             # the frontend behaves identically with or without an API key.
             mock = cls._mock_answer(question, chunks, time.perf_counter())
-            for word in mock["answer"].split(" "):
-                yield word + " "
+            words = mock["answer"].split(" ")
+            for position, word in enumerate(words):
+                yield word + (" " if position < len(words) - 1 else "")
             return
 
         try:
             client = cls._client()
             # `stream=True` is the only difference from generate_answer above.
-            stream, _model = await cls._complete(
+            stream, model = await cls._complete(
                 client, cls.build_messages(question, chunks, history), stream=True
             )
+            stats["model"] = model
             async for piece in stream:
                 # Each piece carries a `delta` -- only the NEW text since the
                 # last piece, not the whole answer so far. The final piece has
@@ -561,8 +576,22 @@ class LLMService:
                 token = piece.choices[0].delta.content if piece.choices else None
                 if token:
                     yield token
+                # Token usage arrives on the LAST piece only: as `usage` in the
+                # OpenAI-style API, or under `x_groq.usage` on Groq.
+                usage = getattr(piece, "usage", None) or getattr(
+                    getattr(piece, "x_groq", None), "usage", None
+                )
+                if usage is not None:
+                    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    completion = int(getattr(usage, "completion_tokens", 0) or 0)
+                    stats["prompt_tokens"] = prompt
+                    stats["completion_tokens"] = completion
+                    stats["tokens_used"] = int(getattr(usage, "total_tokens", 0) or 0) or (
+                        prompt + completion
+                    )
         except Exception as exc:
             logger.error("Streaming failed", extra={"error": describe(exc)}, exc_info=exc)
+            stats["model"] = "error"
             yield "The AI service is temporarily unavailable."
 
     # ==================================================================

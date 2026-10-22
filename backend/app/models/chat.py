@@ -34,7 +34,7 @@ can show expandable source cards under every reply.
 
 import datetime
 import uuid
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -133,6 +133,26 @@ class ChatMessage(Base):
     # always read together with their message and never queried independently.
     # A join table would add complexity for no benefit.
     citations: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+
+    # ---- How the answer was produced. ASSISTANT messages only ----
+    # Saved so a conversation reopened from the history sidebar looks exactly
+    # as it did live: the mode badge, the model name and the agent's research
+    # steps all come back. Before these columns existed the steps were only on
+    # the live response and vanished on reload.
+
+    # "rag" or "agent". NULL on user messages and on answers saved before the
+    # column was added (migration a7b9c1d3e5f8).
+    mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # The model that actually answered -- the fallback's name when the main
+    # model failed, "mock" in demo mode, "error" when nothing could answer.
+    model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # The agent's tool calls, in order: [{"tool", "args", "summary"}, ...].
+    # Always [] for rag answers and user messages.
+    steps: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]", nullable=False
+    )
 
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -71,6 +71,23 @@ chunks with plausible-looking scores. So the search only considers chunks
 embedded by the model in use now. Older documents simply stop matching until
 they are re-processed -- an honest "not found" instead of a confident wrong one.
 
+HYBRID SEARCH: MEANING *AND* EXACT WORDS
+----------------------------------------
+Semantic search has one blind spot: EXACT terms. "Policy HR-114", a product
+code, a surname -- an embedding captures what a passage is ABOUT, not which
+rare token it contains. Postgres full-text search is the opposite: perfect at
+exact (stemmed) words, useless at paraphrase.
+
+So with RETRIEVAL_HYBRID on (the default) every search runs both:
+
+    vector   ORDER BY embedding <=> question          (meaning)
+    keyword  WHERE to_tsvector(content) @@ query      (words, GIN-indexed)
+
+and merges the two ranked lists with RECIPROCAL RANK FUSION -- see
+reciprocal_rank_fusion() at the bottom of this file. An optional
+cross-encoder reranker (RERANKER, off by default; services/reranker.py) can
+then reorder the merged candidates before the top_k are kept.
+
 NEVER BLOCKING THE SERVER
 -------------------------
 Embedding the question is SYNCHRONOUS work -- a local model crunching numbers,
@@ -82,15 +99,16 @@ duration. `asyncio.to_thread` runs it on a worker thread instead.
 import asyncio
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import case, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
 from app.models.project import Project
+from app.services import reranker
 from app.services.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
@@ -108,26 +126,38 @@ class RetrievalService:
         document_id: Optional[uuid.UUID] = None,
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
+        document_ids: Optional[Sequence[uuid.UUID]] = None,
+        hybrid: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Find the chunks whose meaning is closest to `query`.
+        Find the chunks most relevant to `query`.
 
         Arguments:
-            db          -- the open database session.
-            query       -- the user's question, in plain English.
-            org_id      -- the caller's organization. THE SECURITY BOUNDARY.
-            project_id  -- optional: restrict the search to one project.
-            document_id -- optional: restrict it further to a single document.
-            top_k       -- how many results to return (defaults from settings).
-            min_score   -- discard anything less similar than this.
+            db           -- the open database session.
+            query        -- the user's question, in plain English.
+            org_id       -- the caller's organization. THE SECURITY BOUNDARY.
+            project_id   -- optional: restrict the search to one project.
+            document_id  -- optional: restrict it further to a single document.
+            top_k        -- how many results to return (defaults from settings).
+            min_score    -- discard SEMANTIC matches less similar than this.
+            document_ids -- optional: restrict it to SEVERAL documents (the
+                            "search only these files" filter in the UI). An
+                            empty list means "no filter", not "nothing".
+            hybrid       -- force hybrid search on or off; None follows
+                            RETRIEVAL_HYBRID.
 
-        Returns a list of dictionaries, most similar first, each shaped like:
+        Returns a list of dictionaries, best first, each shaped like:
             {
               "chunk_id": UUID, "document_id": UUID,
               "filename": "handbook.pdf", "page_number": 12,
               "content": "the actual text of the chunk...",
               "score": 0.83, "chunk_index": 4,
+              "match_type": "both",   # "vector" | "keyword" | "both"
             }
+
+        `score` is always the cosine SIMILARITY (0..1), even for a chunk that
+        only the keyword search found, so the UI's "83% match" badge means the
+        same thing for every result. The ORDER comes from the fused ranking.
 
         The function is `async` because it waits on the database. While it
         waits, the server is free to handle other users' requests rather than
@@ -137,6 +167,12 @@ class RetrievalService:
         # a deliberately passed 0 is falsy and would be wrongly replaced.
         top_k = top_k if top_k is not None else settings.RETRIEVAL_TOP_K
         min_score = min_score if min_score is not None else settings.RETRIEVAL_MIN_SCORE
+        hybrid = settings.RETRIEVAL_HYBRID if hybrid is None else hybrid
+
+        # Each half of a hybrid search contributes this many candidates. With
+        # hybrid off and no reranker, exactly top_k is enough.
+        widen = hybrid or settings.RERANKER != "off"
+        candidates = max(top_k, settings.RETRIEVAL_CANDIDATES) if widen else top_k
 
         # ----------------------------------------------------------
         # STEP 1: Turn the question into a vector.
@@ -154,80 +190,123 @@ class RetrievalService:
             logger.warning("Could not embed the query; returning no results")
             return []
 
-        # ----------------------------------------------------------
-        # STEP 2: Ask Postgres for the nearest chunks.
-        # ----------------------------------------------------------
         # `.cosine_distance(...)` is provided by the pgvector package. It
         # compiles to Postgres's `<=>` operator, which is the vector distance
         # operator that the index is built on.
         distance = ChunkEmbedding.embedding.cosine_distance(query_vector)
 
-        statement = (
-            # Select the chunk, its parent document, and the computed distance.
-            # `.label("distance")` names the calculated column so we can read
-            # it back by name from each result row.
-            select(Chunk, Document, distance.label("distance"))
-            # Walk UP the ownership chain, one join per level:
-            .join(ChunkEmbedding, ChunkEmbedding.chunk_id == Chunk.id)
-            .join(Document, Chunk.document_id == Document.id)
-            .join(Project, Document.project_id == Project.id)
-            # >>> THE MULTI-TENANT SECURITY FILTER <<<
-            # Without this line, one company could read another's documents.
-            .where(Project.org_id == org_id)
-            # Only search documents that finished processing. A document still
-            # being chunked has partial embeddings and would give partial answers.
-            .where(Document.status == "completed")
-            # Only vectors from the model that embedded the question -- see
-            # "ONLY VECTORS FROM THE CURRENT MODEL ARE COMPARED" above.
-            .where(ChunkEmbedding.model_name == model_name)
+        def scoped(statement):
+            """
+            The joins and filters EVERY query here shares -- written once, so
+            the keyword query cannot forget the tenant filter the vector
+            query has.
+            """
+            statement = (
+                # Walk UP the ownership chain, one join per level:
+                statement.join(ChunkEmbedding, ChunkEmbedding.chunk_id == Chunk.id)
+                .join(Document, Chunk.document_id == Document.id)
+                .join(Project, Document.project_id == Project.id)
+                # >>> THE MULTI-TENANT SECURITY FILTER <<<
+                # Without this line, one company could read another's documents.
+                .where(Project.org_id == org_id)
+                # Only search documents that finished processing. A document
+                # still being chunked has partial embeddings and would give
+                # partial answers.
+                .where(Document.status == "completed")
+                # Only vectors from the model that embedded the question -- see
+                # "ONLY VECTORS FROM THE CURRENT MODEL ARE COMPARED" above.
+                .where(ChunkEmbedding.model_name == model_name)
+            )
+            # Optional narrowing filters, applied only when the caller supplied them.
+            if project_id is not None:
+                statement = statement.where(Document.project_id == project_id)
+            if document_id is not None:
+                statement = statement.where(Document.id == document_id)
+            if document_ids:
+                statement = statement.where(Document.id.in_(list(document_ids)))
+            return statement
+
+        # ----------------------------------------------------------
+        # STEP 2a: SEMANTIC -- the nearest vectors.
+        # ----------------------------------------------------------
+        vector_statement = (
+            scoped(select(Chunk, Document, distance.label("distance")).select_from(Chunk))
             # Closest first. This is the actual "search".
             .order_by(distance)
-            # Stop after top_k rows. Combined with the index, Postgres does not
-            # even score the rest of the table.
-            .limit(top_k)
+            # Combined with the HNSW index, Postgres does not even score the
+            # rest of the table.
+            .limit(candidates)
         )
+        vector_rows = (await db.execute(vector_statement)).all()
 
-        # Optional narrowing filters, applied only when the caller supplied them.
-        if project_id is not None:
-            statement = statement.where(Document.project_id == project_id)
-        if document_id is not None:
-            statement = statement.where(Document.id == document_id)
-
-        result = await db.execute(statement)
-
-        # ----------------------------------------------------------
-        # STEP 3: Reshape the rows into plain dictionaries.
-        # ----------------------------------------------------------
-        # The API layer and the LLM prompt builder both want simple data, not
-        # live SQLAlchemy objects that are tied to an open session.
-        matches: List[Dict[str, Any]] = []
-
-        for chunk, document, raw_distance in result.all():
+        rows: Dict[Any, Dict[str, Any]] = {}
+        vector_ranking: List[Any] = []
+        for chunk, document, raw_distance in vector_rows:
             # Convert distance into an intuitive similarity score.
             similarity = 1.0 - float(raw_distance)
-
             # Drop weak matches. This is what allows an honest "I don't know":
             # without it, the closest chunk is always returned no matter how
             # irrelevant, and the LLM would try to answer from unrelated text.
             if similarity < min_score:
                 continue
+            rows[chunk.id] = _as_match(chunk, document, similarity)
+            vector_ranking.append(chunk.id)
 
-            matches.append(
-                {
-                    "chunk_id": chunk.id,
-                    "document_id": document.id,
-                    "filename": document.filename,
-                    "page_number": chunk.page_number,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content,
-                    # Rounded for display -- 0.83 reads better than
-                    # 0.8300000000000001 in the UI and in JSON.
-                    "score": round(similarity, 4),
-                    "meta_data": chunk.meta_data,
-                }
+        # ----------------------------------------------------------
+        # STEP 2b: KEYWORD -- Postgres full-text search (hybrid only).
+        # ----------------------------------------------------------
+        keyword_ranking: List[Any] = []
+        if hybrid:
+            # websearch_to_tsquery understands what people type into search
+            # boxes -- quotes for phrases, "or", a leading "-" to exclude --
+            # and, unlike to_tsquery, never raises a syntax error on odd input.
+            tsquery = func.websearch_to_tsquery(FTS_CONFIG, query)
+            rank = func.ts_rank_cd(fts_document(), tsquery)
+            keyword_statement = (
+                scoped(
+                    select(Chunk, Document, distance.label("distance"), rank.label("rank"))
+                    .select_from(Chunk)
+                )
+                # `@@` is "does this text match this query". The left side is
+                # EXACTLY the expression the GIN index was built on (migration
+                # a7b9c1d3e5f8), which is what lets Postgres use the index.
+                .where(fts_document().op("@@")(tsquery))
+                .order_by(rank.desc())
+                .limit(candidates)
             )
+            keyword_rows = (await db.execute(keyword_statement)).all()
+            for chunk, document, raw_distance, _rank in keyword_rows:
+                keyword_ranking.append(chunk.id)
+                # A keyword hit is kept even below min_score: every word of
+                # the query appears in it, which is relevance of a different
+                # kind -- the exact-term case semantic search is bad at.
+                rows.setdefault(chunk.id, _as_match(chunk, document, 1.0 - float(raw_distance)))
 
-        return matches
+        # ----------------------------------------------------------
+        # STEP 3: Fuse the two rankings, optionally rerank, cut to top_k.
+        # ----------------------------------------------------------
+        fused = reciprocal_rank_fusion(
+            [vector_ranking, keyword_ranking], k=settings.RETRIEVAL_RRF_K
+        )
+        in_vector, in_keyword = set(vector_ranking), set(keyword_ranking)
+        ordered = sorted(
+            fused,
+            # Highest fused score first; ties broken by similarity so the
+            # order is stable and sensible.
+            key=lambda chunk_id: (fused[chunk_id], rows[chunk_id]["score"]),
+            reverse=True,
+        )
+        matches: List[Dict[str, Any]] = []
+        for chunk_id in ordered:
+            match = rows[chunk_id]
+            match["match_type"] = match_type(chunk_id in in_vector, chunk_id in in_keyword)
+            matches.append(match)
+
+        if settings.RERANKER != "off" and len(matches) > 1:
+            # A CPU-bound model call: on a thread, like the embedding above.
+            matches = await asyncio.to_thread(reranker.rerank, query, matches)
+
+        return matches[:top_k]
 
     @staticmethod
     async def build_history(
@@ -270,3 +349,79 @@ class RetrievalService:
         rows = list(reversed(rows))
 
         return [{"role": row.role, "content": row.content} for row in rows]
+
+
+# ======================================================================
+# HYBRID SEARCH HELPERS
+# ======================================================================
+
+# The text-search configuration: how words are split, stemmed ("policies"
+# -> "polici", so it also matches "policy") and which stop words are
+# ignored. MUST equal the one in migration a7b9c1d3e5f8's index, or the
+# index is never used.
+FTS_CONFIG = "english"
+
+
+def fts_document():
+    """
+    The tsvector expression for a chunk's text.
+
+    One function, so the WHERE clause in search() is always character for
+    character the expression the GIN index was built on -- Postgres only
+    uses an expression index for the identical expression.
+    """
+    return func.to_tsvector(FTS_CONFIG, Chunk.content)
+
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[Any]], k: int = 60
+) -> Dict[Any, float]:
+    """
+    Merge several ranked lists into one score per item.
+
+        score(item) = sum over the lists of  1 / (k + rank in that list)
+
+    with ranks counted from 1. An item missing from a list gains nothing
+    from it.
+
+    WHY RANKS AND NOT SCORES: the two lists being merged score on scales
+    that cannot be compared -- a cosine similarity of 0.62 and a ts_rank_cd
+    of 0.1 say nothing about each other. RRF ignores the scores and uses only
+    the positions, so it needs no tuning to combine them.
+
+    An item near the top of BOTH lists beats one at the very top of just
+    one, which is what we want: two very different methods agreeing is
+    strong evidence.
+
+        >>> scores = reciprocal_rank_fusion([["a", "b"], ["b", "c"]], k=60)
+        >>> max(scores, key=scores.get)
+        'b'
+    """
+    scores: Dict[Any, float] = {}
+    for ranking in rankings:
+        for position, item in enumerate(ranking, 1):
+            scores[item] = scores.get(item, 0.0) + 1.0 / (k + position)
+    return scores
+
+
+def match_type(in_vector: bool, in_keyword: bool) -> str:
+    """Which search found a result: "both", "vector" or "keyword"."""
+    if in_vector and in_keyword:
+        return "both"
+    return "vector" if in_vector else "keyword"
+
+
+def _as_match(chunk: Chunk, document: Document, similarity: float) -> Dict[str, Any]:
+    """One result row, as the plain dictionary every caller expects."""
+    return {
+        "chunk_id": chunk.id,
+        "document_id": document.id,
+        "filename": document.filename,
+        "page_number": chunk.page_number,
+        "chunk_index": chunk.chunk_index,
+        "content": chunk.content,
+        # Rounded for display -- 0.83 reads better than 0.8300000000000001
+        # in the UI and in JSON.
+        "score": round(similarity, 4),
+        "meta_data": chunk.meta_data,
+    }

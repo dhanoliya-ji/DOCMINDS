@@ -20,16 +20,27 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { FileText, Loader2, Search, SearchX } from "lucide-react";
+import { ExternalLink, FileText, Loader2, Search, SearchX } from "lucide-react";
 import { useState } from "react";
 
-import { SearchResultItem, api, getErrorMessage } from "@/lib/api";
+import DocumentFilter from "@/components/DocumentFilter";
+import SourceViewer, { SourceRef } from "@/components/SourceViewer";
+import { DocumentItem, SearchResultItem, api, getErrorMessage } from "@/lib/api";
 
 interface Props {
   projectId: string;
+  /** The project's searchable documents, for the "only these files" filter. */
+  documents?: DocumentItem[];
 }
 
-export default function SearchPanel({ projectId }: Props) {
+/** What the badge says about which half of hybrid search found a result. */
+const MATCH_LABELS: Record<string, string> = {
+  both: "meaning + words",
+  vector: "meaning",
+  keyword: "exact words",
+};
+
+export default function SearchPanel({ projectId, documents = [] }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResultItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -38,6 +49,11 @@ export default function SearchPanel({ projectId }: Props) {
   // How long the backend took, and whether a search has run at all. The
   // `searched` flag distinguishes "no results" from "you have not searched
   // yet" — two states that should look completely different to the user.
+  // "Only these documents"; empty = the whole project.
+  const [documentIds, setDocumentIds] = useState<string[]>([]);
+  // The result open in the source viewer.
+  const [viewing, setViewing] = useState<SourceRef | null>(null);
+
   const [tookSeconds, setTookSeconds] = useState<number | null>(null);
   const [searched, setSearched] = useState(false);
 
@@ -49,7 +65,13 @@ export default function SearchPanel({ projectId }: Props) {
     setError("");
 
     try {
-      const response = await api.search(trimmed, projectId, 10);
+      // Ignore filter entries for documents no longer listed (deleted, or
+      // being re-indexed), and send the filter only when it is in use.
+      const ids = documentIds.filter((id) => documents.some((d) => d.id === id));
+      const response =
+        ids.length > 0
+          ? await api.search(trimmed, projectId, 10, ids)
+          : await api.search(trimmed, projectId, 10);
       setResults(response.results);
       setTookSeconds(response.took_seconds);
       setSearched(true);
@@ -103,10 +125,13 @@ export default function SearchPanel({ projectId }: Props) {
         </button>
       </div>
 
-      <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
-        This matches meaning rather than keywords — your words do not need to
-        appear in the document at all.
-      </p>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          This matches meaning AND exact words — a paraphrase finds the passage,
+          and so does a policy number or a name.
+        </p>
+        <DocumentFilter documents={documents} selected={documentIds} onChange={setDocumentIds} />
+      </div>
 
       {/* A 429 (rate limit, or the monthly token quota for chat) arrives
           here already worded with WHEN to try again: getErrorMessage in
@@ -162,8 +187,27 @@ export default function SearchPanel({ projectId }: Props) {
                     </span>
                   )}
                 </div>
-                <span className={`${scoreClass(result.score)} shrink-0`}>
-                  {Math.round(result.score * 100)}% match
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className={scoreClass(result.score)}>
+                    {Math.round(result.score * 100)}% match
+                  </span>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs"
+                    style={{ color: "var(--accent-hover)" }}
+                    onClick={() =>
+                      setViewing({
+                        document_id: result.document_id,
+                        chunk_id: result.chunk_id,
+                        filename: result.filename,
+                        page_number: result.page_number,
+                        snippet: result.content,
+                      })
+                    }
+                    aria-label={`View ${result.filename} in context`}
+                  >
+                    <ExternalLink size={12} /> View
+                  </button>
                 </span>
               </div>
 
@@ -184,6 +228,11 @@ export default function SearchPanel({ projectId }: Props) {
                 style={{ color: "var(--text-muted)" }}
               >
                 <span>chunk #{result.chunk_index}</span>
+                {result.match_type && (
+                  <span title="Which half of hybrid search found this passage">
+                    found by {MATCH_LABELS[result.match_type] ?? result.match_type}
+                  </span>
+                )}
                 {result.meta_data?.token_count && (
                   <span>{result.meta_data.token_count} tokens</span>
                 )}
@@ -219,6 +268,7 @@ export default function SearchPanel({ projectId }: Props) {
           </motion.div>
         )}
       </div>
+      {viewing && <SourceViewer source={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }

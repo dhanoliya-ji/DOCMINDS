@@ -29,9 +29,9 @@ polls this shape until `status` reads "completed".
 
 import datetime
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DocumentBase(BaseModel):
@@ -101,3 +101,47 @@ class DocumentOut(DocumentBase):
 
     created_at: datetime.datetime
     updated_at: datetime.datetime
+
+
+class DocumentUpdate(BaseModel):
+    """
+    Body for PATCH /documents/{id} -- rename a document.
+
+    Only the DISPLAY name changes. The bytes stay under their server-chosen
+    storage key, and the name is cleaned exactly like an uploaded filename
+    (services/uploads.py sanitize_filename), so a rename cannot smuggle in
+    a path or control characters that an upload could not.
+    """
+
+    filename: str = Field(..., min_length=1, max_length=255)
+
+
+class ChunkContextOut(BaseModel):
+    """
+    One chunk of a document's text, for the citation viewer.
+
+    GET /documents/{id}/chunks?around=<chunk_id> returns the cited chunk and
+    its neighbours, so a citation from a file the browser cannot render
+    (DOCX, an email, a spreadsheet) can still be shown in context with the
+    cited passage highlighted.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    chunk_index: int
+    page_number: Optional[int] = None
+    content: str
+
+
+class DocumentReindex(BaseModel):
+    """
+    Optional body for POST /documents/{id}/reindex -- new chunking options.
+
+    Every field may be left out, in which case the document keeps the
+    options it was uploaded with. The bounds are the upload endpoint's.
+    """
+
+    chunk_strategy: Optional[Literal["fixed_size", "sentence", "markdown"]] = None
+    chunk_size: Optional[int] = Field(None, ge=50, le=4000)
+    chunk_overlap: Optional[int] = Field(None, ge=0, le=1000)

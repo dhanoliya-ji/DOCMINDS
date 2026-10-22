@@ -468,3 +468,71 @@ class TestOwnershipCascade:
             select(ChunkEmbedding).where(ChunkEmbedding.chunk_id == chunk_id)
         )
         assert remaining.scalar_one_or_none() is None
+
+
+# ======================================================================
+# Hybrid search: the Postgres full-text half
+# ======================================================================
+
+
+class TestHybridSearch:
+    async def test_an_exact_term_is_found_by_keyword_even_below_min_score(self, db):
+        """
+        The case hybrid search exists for: a rare code that an embedding
+        barely registers. With a min_score no semantic match can reach, only
+        the keyword search can find it -- and it must.
+        """
+        corpus = await make(db, "alpha", [
+            "General guidance about travel and accommodation.",
+            "Policy FIN-204 caps hotel costs at 180 euros per night.",
+        ])
+
+        results = await RetrievalService.search(
+            db=db, query="FIN-204", org_id=corpus.org_id, min_score=0.999, hybrid=True
+        )
+
+        assert [r["content"] for r in results] == [corpus.chunks[1].content]
+        assert results[0]["match_type"] in ("keyword", "both")
+
+    async def test_vectors_only_does_not(self, db):
+        corpus = await make(db, "alpha", ["Policy FIN-204 caps hotel costs."])
+        results = await RetrievalService.search(
+            db=db, query="FIN-204", org_id=corpus.org_id, min_score=0.999, hybrid=False
+        )
+        assert results == []
+
+    async def test_keyword_hits_respect_the_tenant_filter(self, db):
+        owner = await make(db, "alpha", ["Policy FIN-204 caps hotel costs."])
+        stranger = await make(db, "beta", ["Nothing relevant here."])
+
+        results = await RetrievalService.search(
+            db=db, query="FIN-204", org_id=stranger.org_id, min_score=0.0, hybrid=True
+        )
+
+        assert all(r["document_id"] != owner.document_id for r in results)
+
+    async def test_a_chunk_found_by_both_is_reported_once(self, db):
+        corpus = await make(db, "alpha", ["Annual leave is twenty five days."])
+        results = await RetrievalService.search(
+            db=db, query="Annual leave is twenty five days.", org_id=corpus.org_id,
+            min_score=0.0, hybrid=True,
+        )
+        assert len(results) == 1 and results[0]["match_type"] == "both"
+
+    async def test_the_document_filter_narrows_both_halves(self, db):
+        corpus = await make(db, "alpha", ["Policy FIN-204 caps hotel costs."])
+        unrelated = await make(db, "beta", ["Policy FIN-204 also appears here."])
+
+        kept = await RetrievalService.search(
+            db=db, query="FIN-204", org_id=corpus.org_id, min_score=0.0, hybrid=True,
+            document_ids=[corpus.document_id],
+        )
+        # A filter naming only a document the search cannot see narrows to
+        # nothing -- it never widens past the tenant filter.
+        narrowed = await RetrievalService.search(
+            db=db, query="FIN-204", org_id=corpus.org_id, min_score=0.0, hybrid=True,
+            document_ids=[unrelated.document_id],
+        )
+
+        assert {r["document_id"] for r in kept} == {corpus.document_id}
+        assert narrowed == []

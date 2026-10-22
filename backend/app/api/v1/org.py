@@ -21,6 +21,7 @@ record of what they did once inside:
     GET    /org/audit-logs              the audit trail, paginated and filtered
 
     GET    /org/usage                   this month's AI usage, estimated cost
+    GET    /org/feedback                thumbs up / down on answers, summarised
                                         and quotas (services/usage.py)
 
 EVERY ENDPOINT IS ADMIN-ONLY, AND SAYS SO ONCE
@@ -72,8 +73,9 @@ from app.schemas.account import (
     MemberOut,
     MemberUpdate,
 )
+from app.schemas.rag import FeedbackSummary
 from app.schemas.usage import UsageSummary
-from app.services import audit, email, sessions, usage
+from app.services import audit, email, feedback, sessions, usage
 
 router = APIRouter(dependencies=[Depends(deps.require_admin)])
 
@@ -517,3 +519,23 @@ async def get_usage(
     the LLM_PRICING setting; the model provider's invoice is the real figure.
     """
     return await usage.usage_summary(db, current_user.org_id)
+
+
+# ======================================================================
+# ANSWER QUALITY: FEEDBACK
+# ======================================================================
+
+
+@router.get("/feedback", response_model=FeedbackSummary)
+async def get_feedback_summary(
+    days: int = Query(30, ge=1, le=365, description="Look back this many days."),
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    """
+    How people rated the organization's answers over the last `days` days:
+    totals, satisfaction, a split by mode and by model, and the most recent
+    thumbs-down answers with their questions. See services/feedback.py.
+    """
+    since = sessions.utcnow() - datetime.timedelta(days=days)
+    return await feedback.summarise(db, current_user.org_id, since=since)

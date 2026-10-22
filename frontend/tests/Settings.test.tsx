@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   revokeApiKey: vi.fn(),
   listAuditLogs: vi.fn(),
   getUsage: vi.fn(),
+  getFeedbackSummary: vi.fn(),
   resendVerification: vi.fn(),
   listProjects: vi.fn(),
   health: vi.fn(),
@@ -91,11 +92,11 @@ describe("settings access", () => {
     expect(mocks.listMembers).not.toHaveBeenCalled();
   });
 
-  it("gives an admin four accessible tabs, Members first", async () => {
+  it("gives an admin five accessible tabs, Members first", async () => {
     render(<SettingsPage />);
 
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Members", "API keys", "Audit log", "Usage"]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Members", "API keys", "Audit log", "Usage", "Feedback"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "tab-members");
   });
@@ -313,6 +314,65 @@ describe("usage", () => {
     // An unlimited quota has nothing to fill.
     expect(screen.queryByRole("progressbar", { name: "Documents" })).not.toBeInTheDocument();
     expect(screen.getByText(/no limit/)).toBeInTheDocument();
+  });
+});
+
+// ======================================================================
+// Feedback: how people rate the answers
+// ======================================================================
+
+describe("feedback tab", () => {
+  const SUMMARY = {
+    total: 4,
+    up: 3,
+    down: 1,
+    satisfaction: 0.75,
+    by_mode: [{ key: "rag", up: 2, down: 1 }, { key: "agent", up: 1, down: 0 }],
+    by_model: [{ key: "gpt-oss", up: 3, down: 1 }],
+    recent_negative: [
+      {
+        message_id: "m1", session_id: "s1", rating: -1, comment: "wrong page",
+        question: "How much leave do contractors get?", answer: "Contractors get 25 days.",
+        mode: "rag", model: "gpt-oss", created_at: "2026-10-20T10:00:00Z",
+      },
+    ],
+  };
+
+  it("summarises satisfaction and lists the unhelpful answers", async () => {
+    mocks.getMe.mockResolvedValue(ADMIN);
+    mocks.getFeedbackSummary.mockResolvedValue(SUMMARY);
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole("tab", { name: "Feedback" }));
+
+    expect(await screen.findByText("75%")).toBeInTheDocument();
+    expect(screen.getByText("Deep research")).toBeInTheDocument();
+    expect(screen.getByText(/How much leave do contractors get\?/)).toBeInTheDocument();
+    expect(screen.getByText(/wrong page/)).toBeInTheDocument();
+    expect(mocks.getFeedbackSummary).toHaveBeenCalledWith(30);
+  });
+
+  it("changes the period", async () => {
+    mocks.getMe.mockResolvedValue(ADMIN);
+    mocks.getFeedbackSummary.mockResolvedValue(SUMMARY);
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole("tab", { name: "Feedback" }));
+    await user.click(await screen.findByRole("button", { name: "Last 7 days" }));
+
+    await waitFor(() => expect(mocks.getFeedbackSummary).toHaveBeenCalledWith(7));
+  });
+
+  it("says so when nothing has been rated", async () => {
+    mocks.getMe.mockResolvedValue(ADMIN);
+    mocks.getFeedbackSummary.mockResolvedValue({
+      ...SUMMARY, total: 0, up: 0, down: 0, satisfaction: null, by_mode: [], by_model: [], recent_negative: [],
+    });
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole("tab", { name: "Feedback" }));
+
+    expect(await screen.findByText(/No answers have been rated/)).toBeInTheDocument();
   });
 });
 

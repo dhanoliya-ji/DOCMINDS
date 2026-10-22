@@ -24,13 +24,15 @@ JWT instead.
 import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectBase(BaseModel):
     """The one field a human actually chooses."""
 
-    name: str
+    # Bounded so an empty or absurdly long name is a 422 at the door rather
+    # than a database error (the column is String(255)).
+    name: str = Field(..., min_length=1, max_length=255)
 
 
 class ProjectCreate(ProjectBase):
@@ -47,7 +49,7 @@ class ProjectCreate(ProjectBase):
 
 
 class ProjectUpdate(ProjectBase):
-    """Body for renaming a project."""
+    """Body for PATCH /projects/{id} -- renaming a project."""
 
     pass
 
@@ -67,3 +69,15 @@ class ProjectOut(ProjectBase):
 
     created_at: datetime.datetime
     updated_at: datetime.datetime
+
+
+class ProjectDetail(ProjectOut):
+    """
+    GET /projects/{id} -- one project, with a summary of what is in it.
+
+    The counts save the workspace page a second request just to print
+    "12 documents, 9 ready".
+    """
+
+    document_count: int = 0
+    ready_count: int = 0

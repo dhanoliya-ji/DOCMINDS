@@ -18,7 +18,8 @@ THE ACTIONS WRITTEN TODAY
     user.email_verified  password.reset_requested  password.reset
     invite.create  invite.revoke  invite.accept
     member.role_change  member.deactivate  member.reactivate  member.remove
-    document.upload  document.delete
+    document.upload  document.delete  document.rename  document.reindex
+    project.create  project.rename  project.delete
     api_key.create  api_key.revoke
 
 The "noun.verb" naming keeps related events together, so the audit endpoint's
