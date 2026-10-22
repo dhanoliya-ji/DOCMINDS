@@ -36,9 +36,9 @@ active user. There is no unauthenticated code path.
 
 from typing import AsyncGenerator, List
 
+import jwt  # PyJWT
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,8 +116,9 @@ async def get_current_user(
                 detail="Could not validate credentials: sub claim missing.",
             )
 
-    except (JWTError, ValueError):
-        # JWTError covers a bad signature, a malformed token and expiry.
+    except (jwt.InvalidTokenError, ValueError):
+        # InvalidTokenError covers a bad signature, a malformed token and
+        # expiry (ExpiredSignatureError is a subclass of it).
         # ValueError covers a payload that does not fit TokenPayload.
         #
         # Note the message is deliberately vague. Telling an attacker WHICH

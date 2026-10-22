@@ -276,7 +276,7 @@ class TestAuthenticationIsRequired:
 
     async def test_a_token_signed_with_the_wrong_key_is_rejected(self, client):
         """The signature is the entire trust model. This is the test that says so."""
-        from jose import jwt
+        import jwt
 
         forged = jwt.encode(
             {"sub": str(uuid.uuid4()), "type": "access"},
