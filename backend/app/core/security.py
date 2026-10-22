@@ -59,7 +59,7 @@ is not forced to log in twice an hour.
 import datetime
 from typing import Any, Optional, Union
 
-from jose import jwt
+import jwt  # PyJWT
 from passlib.context import CryptContext
 
 from app.core.config import settings

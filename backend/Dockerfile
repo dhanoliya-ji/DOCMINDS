@@ -70,13 +70,22 @@ COPY requirements.txt .
 # which would add several hundred wasted megabytes.
 # setuptools and wheel too, not just pip: the base image's copies carry known
 # CVEs (setuptools vendors jaraco.context and wheel), and Trivy flags them.
+#
+# pip itself is REMOVED once everything is installed. Nothing runs pip at
+# runtime, and pip bundles private copies of other packages inside itself
+# (pip/_vendor: urllib3, msgpack, setuptools' pkg_resources). Even the newest
+# pip ships versions of those with known CVEs, which Trivy reports against
+# the image -- and upgrading them in requirements.txt cannot reach pip's own
+# copies. Uninstalling pip is the only fix. To debug inside a running
+# container, `python -m ensurepip` puts it back.
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     if [ "$EMBEDDING_PROVIDER" = "local" ]; then \
         pip install --no-cache-dir -r requirements.txt; \
     else \
         grep -v "^sentence-transformers" requirements.txt > /tmp/requirements.txt && \
         pip install --no-cache-dir -r /tmp/requirements.txt; \
-    fi
+    fi && \
+    python -m pip uninstall -y pip
 
 # ---- Pre-download the embedding model -------------------------------
 # Without this, the model is fetched on the first upload -- meaning the very

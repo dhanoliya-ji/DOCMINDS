@@ -33,9 +33,9 @@ it means the interactive docs at /docs get a working "Authorize" button, and
 any standard OAuth2 client library can talk to this API unmodified.
 """
 
+import jwt  # PyJWT
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -219,7 +219,7 @@ async def refresh_token(
                 detail="Provided token is not a refresh token.",
             )
 
-    except (JWTError, ValueError):
+    except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token.",

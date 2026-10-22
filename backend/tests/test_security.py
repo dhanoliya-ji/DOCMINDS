@@ -20,8 +20,8 @@ TIER 1: no database, no network.
 import uuid
 from datetime import timedelta
 
+import jwt
 import pytest
-from jose import JWTError, jwt
 
 from app.core.config import settings
 from app.core.security import (
@@ -145,7 +145,7 @@ class TestAccessToken:
             algorithm=settings.ALGORITHM,
         )
 
-        with pytest.raises(JWTError):
+        with pytest.raises(jwt.InvalidTokenError):
             decode(forged)
 
     def test_a_tampered_token_is_rejected(self):
@@ -155,7 +155,7 @@ class TestAccessToken:
         # Change one character of the payload, leave the signature alone.
         tampered = f"{head}.{body[:-2]}XY.{signature}"
 
-        with pytest.raises(JWTError):
+        with pytest.raises(jwt.InvalidTokenError):
             decode(tampered)
 
 
