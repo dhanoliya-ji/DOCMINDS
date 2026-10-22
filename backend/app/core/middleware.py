@@ -118,8 +118,21 @@ def _log_request(
     # FastAPI records the matched route in the scope; its `path` is the
     # template ("/documents/{document_id}/preview"). No match (a 404, a CORS
     # preflight) leaves the literal path.
+    #
+    # Newer FastAPI versions give a template RELATIVE to its router's prefix
+    # ("/{document_id}/preview"). The prefix is whatever the literal path has
+    # in front of the template's segments, so we put it back in front.
     route = scope.get("route")
-    path = getattr(route, "path", None) or scope.get("path", "")
+    literal = scope.get("path", "")
+    template = getattr(route, "path", None)
+    if template:
+        literal_parts = literal.rstrip("/").split("/")
+        template_parts = template.rstrip("/").split("/")
+        prefix_len = len(literal_parts) - len(template_parts)
+        prefix = "/".join(literal_parts[: prefix_len + 1]) if prefix_len > 0 else ""
+        path = prefix + template if prefix and not template.startswith(prefix + "/") else template
+    else:
+        path = literal
     method = scope.get("method", "")
 
     if failed or status_code >= 500:
