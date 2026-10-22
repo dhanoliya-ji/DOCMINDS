@@ -29,6 +29,7 @@
 import { Copy, Loader2, Trash2, UserPlus } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
+import HoldToConfirm from "@/components/app/HoldToConfirm";
 import { Notice } from "@/components/AuthCard";
 import { Invite, InviteCreated, Member, RoleInput, api, getErrorMessage } from "@/lib/api";
 import { ROLE_OPTIONS, roleAlias, roleLabel } from "@/lib/roles";
@@ -188,18 +189,13 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                     </td>
                     <td className="py-2 text-right">
                       {!isSelf && (
-                        <button
-                          type="button"
-                          className="btn-ghost"
+                        // Hold to confirm: removing someone is not undoable here.
+                        <HoldToConfirm
                           aria-label={`Remove ${m.email}`}
-                          onClick={() => {
-                            if (window.confirm(`Remove ${m.email} from the organization?`)) {
-                              act(() => api.removeMember(m.id), "Could not remove the member.");
-                            }
-                          }}
+                          onConfirm={() => act(() => api.removeMember(m.id), "Could not remove the member.")}
                         >
                           <Trash2 size={15} aria-hidden="true" />
-                        </button>
+                        </HoldToConfirm>
                       )}
                     </td>
                   </tr>
@@ -222,13 +218,12 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                 <span>
                   {i.email} · {roleLabel(i.role)} · expires {new Date(i.expires_at).toLocaleDateString()}
                 </span>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={() => act(() => api.revokeInvite(i.id), "Could not revoke the invite.")}
+                <HoldToConfirm
+                  aria-label={`Revoke invite for ${i.email}`}
+                  onConfirm={() => act(() => api.revokeInvite(i.id), "Could not revoke the invite.")}
                 >
-                  Revoke
-                </button>
+                  Hold to revoke
+                </HoldToConfirm>
               </li>
             ))}
           </ul>

@@ -23,6 +23,7 @@
 import { KeyRound, Loader2 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
+import HoldToConfirm from "@/components/app/HoldToConfirm";
 import { Notice } from "@/components/AuthCard";
 import { CopyButton } from "@/components/settings/MembersPanel";
 import { ApiKey, ApiKeyCreated, RoleInput, api, getErrorMessage } from "@/lib/api";
@@ -67,8 +68,8 @@ export default function ApiKeysPanel() {
     }
   }
 
+  // Confirmation is the hold itself (see HoldToConfirm), not a dialog.
   async function revoke(key: ApiKey) {
-    if (!window.confirm(`Revoke "${key.name}"? Anything using it will stop working.`)) return;
     setError("");
     try {
       await api.revokeApiKey(key.id);
@@ -172,9 +173,9 @@ export default function ApiKeysPanel() {
                     {revoked ? (
                       <span style={{ color: "var(--text-muted)" }}>Revoked</span>
                     ) : (
-                      <button type="button" className="btn-ghost" onClick={() => revoke(k)} aria-label={`Revoke ${k.name}`}>
-                        Revoke
-                      </button>
+                      <HoldToConfirm onConfirm={() => revoke(k)} aria-label={`Revoke ${k.name}`}>
+                        Hold to revoke
+                      </HoldToConfirm>
                     )}
                   </td>
                 </tr>
