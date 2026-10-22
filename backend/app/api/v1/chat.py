@@ -23,6 +23,24 @@ When a user types "How many leave days do I get?" and presses enter:
       along with the citations, token count and how long it took.
    9. We return both messages so the UI can render the exchange.
 
+TWO MODES (the request's `mode` field)
+--------------------------------------
+The journey above is mode="rag", the default: a FIXED pipeline, one search and
+one model call. Fast, cheap and identical for every question.
+
+mode="agent" swaps steps 4-6 for the Pydantic AI agent in services/agent.py:
+
+   4'. The model is given TOOLS (search_documents, list_documents,
+       read_document_section) instead of a fixed set of excerpts.
+   5'. It decides which tools to call, possibly several times -- e.g. one
+       search per half of a comparison question -- capped at AGENT_MAX_STEPS
+       model calls.
+   6'. Every chunk any tool surfaced gets one GLOBAL citation number, so the
+       model's "[n]" lines up with the citations list we return.
+
+Steps 1-3 and 7-9 are shared. The agent's tool trace is returned to the UI as
+`steps`, but is not stored in the database.
+
 ENDPOINTS DEFINED HERE
 ----------------------
     POST   /chat/sessions                     start a conversation
@@ -45,6 +63,7 @@ from app.models.chat import ChatMessage, ChatSession, Feedback
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.rag import (
+    AgentStep,
     ChatMessageOut,
     ChatRequest,
     ChatResponse,
@@ -53,6 +72,7 @@ from app.schemas.rag import (
     Citation,
     FeedbackCreate,
 )
+from app.services.agent import run_agent
 from app.services.llm import LLMService
 from app.services.retrieval import RetrievalService
 
@@ -239,49 +259,83 @@ async def ask_question(
         # Add an ellipsis only if we actually truncated the text.
         chat_session.title = title + ("..." if len(payload.message) > 60 else "")
 
-    # ---- STEP 3: RETRIEVE --------------------------------------------
-    # Find the passages in this project's documents that are closest in meaning
-    # to the question. This is the "R" of RAG.
-    chunks = await RetrievalService.search(
-        db=db,
-        query=payload.message,
-        org_id=current_user.org_id,
-        project_id=chat_session.project_id,
-        top_k=payload.top_k,
-    )
-
-    # ---- STEP 4: Load conversation history ---------------------------
-    # So the user can ask a follow-up such as "and for part-time staff?" and
-    # have it understood in the context of the previous question.
-    history = await RetrievalService.build_history(db, session_id)
-
-    # ---- STEP 5: AUGMENT + GENERATE ----------------------------------
-    # llm.py pastes the retrieved chunks into the prompt (augment) and asks
-    # GPT-OSS 120B on Groq to answer using only those chunks (generate).
-    llm_result = LLMService.generate_answer(
-        question=payload.message,
-        chunks=chunks,
-        history=history,
-    )
-
-    # ---- STEP 6: Build citations -------------------------------------
-    # Map every excerpt we sent to the model back to its real source, so the
-    # user can click "[2]" and see the exact file and page it came from.
-    # The numbering here MUST match the numbering used in build_context_prompt,
-    # which also enumerates from 1 over the same list in the same order.
-    citations = [
-        Citation(
-            number=index,
-            chunk_id=chunk["chunk_id"],
-            document_id=chunk["document_id"],
-            filename=chunk["filename"],
-            page_number=chunk.get("page_number"),
-            score=chunk["score"],
-            # A short preview for the collapsed citation card in the UI.
-            snippet=chunk["content"][:300],
+    if payload.mode == "agent":
+        # ---- AGENT MODE: steps 3-6 handled by the Pydantic AI agent ---
+        # History first, because the agent needs it before it starts.
+        history = await RetrievalService.build_history(db, session_id)
+        agent_result = await run_agent(
+            db=db,
+            question=payload.message,
+            org_id=current_user.org_id,
+            project_id=chat_session.project_id,
+            top_k=payload.top_k,
+            history=history,
         )
-        for index, chunk in enumerate(chunks, 1)
-    ]
+        # Same dictionary keys as LLMService.generate_answer returns, so
+        # STEP 7 below does not need to know which mode produced the answer.
+        llm_result = agent_result
+
+        # Citations use the GLOBAL numbers the agent's tools assigned, not
+        # enumerate(): the model saw "EXCERPT [7]" and wrote "[7]", so the
+        # citation must be numbered 7 too.
+        citations = [
+            Citation(
+                number=chunk["number"],
+                chunk_id=chunk["chunk_id"],
+                document_id=chunk["document_id"],
+                filename=chunk["filename"],
+                page_number=chunk.get("page_number"),
+                score=chunk["score"],
+                snippet=chunk["content"][:300],
+            )
+            for chunk in agent_result["citations_chunks"]
+        ]
+        steps = [AgentStep(**step) for step in agent_result["steps"]]
+    else:
+        # ---- STEP 3: RETRIEVE --------------------------------------------
+        # Find the passages in this project's documents that are closest in meaning
+        # to the question. This is the "R" of RAG.
+        chunks = await RetrievalService.search(
+            db=db,
+            query=payload.message,
+            org_id=current_user.org_id,
+            project_id=chat_session.project_id,
+            top_k=payload.top_k,
+        )
+
+        # ---- STEP 4: Load conversation history ---------------------------
+        # So the user can ask a follow-up such as "and for part-time staff?" and
+        # have it understood in the context of the previous question.
+        history = await RetrievalService.build_history(db, session_id)
+
+        # ---- STEP 5: AUGMENT + GENERATE ----------------------------------
+        # llm.py pastes the retrieved chunks into the prompt (augment) and asks
+        # GPT-OSS 120B on Groq to answer using only those chunks (generate).
+        llm_result = LLMService.generate_answer(
+            question=payload.message,
+            chunks=chunks,
+            history=history,
+        )
+
+        # ---- STEP 6: Build citations -------------------------------------
+        # Map every excerpt we sent to the model back to its real source, so the
+        # user can click "[2]" and see the exact file and page it came from.
+        # The numbering here MUST match the numbering used in build_context_prompt,
+        # which also enumerates from 1 over the same list in the same order.
+        citations = [
+            Citation(
+                number=index,
+                chunk_id=chunk["chunk_id"],
+                document_id=chunk["document_id"],
+                filename=chunk["filename"],
+                page_number=chunk.get("page_number"),
+                score=chunk["score"],
+                # A short preview for the collapsed citation card in the UI.
+                snippet=chunk["content"][:300],
+            )
+            for index, chunk in enumerate(chunks, 1)
+        ]
+        steps = []
 
     # ---- STEP 7: Save the answer -------------------------------------
     assistant_message = ChatMessage(
@@ -310,6 +364,8 @@ async def ask_question(
         assistant_message=assistant_message,
         citations=citations,
         model=llm_result["model"],
+        mode=payload.mode,
+        steps=steps,
     )
 
 

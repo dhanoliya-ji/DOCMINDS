@@ -2,7 +2,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# There are 356 tests across this repository, and until this file they only
+# There are hundreds of tests across this repository, and until this file they only
 # ran when someone remembered to run them. That is the failure mode CI exists
 # to remove: a suite nobody runs is a suite that quietly stops passing.
 #
@@ -13,9 +13,9 @@
 #
 # A fourth job runs the end-to-end suite, and it is the only thing in the
 # repository that checks the two halves still AGREE. `lib/api.ts` hand-writes
-# nine interfaces mirroring backend/app/schemas/; renaming a field in a
-# Pydantic model leaves all 356 unit tests green while the running app renders
-# nothing. Verified by doing exactly that -- see tests-e2e/README.md.
+# ten interfaces mirroring backend/app/schemas/; renaming a field in a
+# Pydantic model leaves every unit test green while the running app renders
+# nothing. Verified by doing exactly that -- see docs/DEVELOPMENT.md (Testing).
 #
 # The frontend job runs FOUR checks rather than the obvious two, and the extra
 # two are the ones that have actually caught things:
@@ -139,7 +139,7 @@ jobs:
       - name: Run migrations
         # Creates every table, enables the pgvector extension and builds the
         # HNSW index. The Tier 2 tests skip themselves without it, so leaving
-        # this out would turn 69 tests green by not running them.
+        # this out would turn every database test green by not running it.
         run: alembic upgrade head
 
       - name: Run tests
@@ -148,7 +148,7 @@ jobs:
           # embedding API (the provider the free live demo uses). Secrets are
           # never given to Dependabot or fork PRs; there the test skips.
           GEMINI_API_KEY: ${{ secrets.AI_API_KEY }}
-        # One run, then inspect its summary. The suite skips its 69 database
+        # One run, then inspect its summary. The suite skips its database
         # tests when no database is reachable -- correct on a laptop, and
         # dangerous here: a broken service container would present as a pass.
         # So a skip in CI is an error.
@@ -281,7 +281,7 @@ jobs:
       # search for a sentence from a document produces a vector unrelated to
       # the chunk holding it, scores below RETRIEVAL_MIN_SCORE, and no
       # results. Meaning-based retrieval is the product's central claim and
-      # only a real model demonstrates it. See tests-e2e/README.md.
+      # only a real model demonstrates it. See docs/DEVELOPMENT.md (Testing).
       EMBEDDING_PROVIDER: local
       SECRET_KEY: ci-only-secret-not-used-anywhere-else
       NEXT_PUBLIC_API_URL: http://localhost:8000

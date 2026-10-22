@@ -264,12 +264,44 @@ export interface ChatSessionItem {
   updated_at: string;
 }
 
+/**
+ * HOW THE BACKEND SHOULD ANSWER A QUESTION
+ * ----------------------------------------
+ *   "rag"   -- the fixed pipeline: embed the question, fetch the closest
+ *              chunks once, make ONE language-model call. Fast and cheap.
+ *   "agent" -- a Pydantic AI agent that decides for itself which tools to
+ *              call (search, list documents, read a section...) and may search
+ *              several times before answering. Slower, but it copes with
+ *              multi-part and multi-document questions.
+ */
+export type ChatMode = "rag" | "agent";
+
+/**
+ * One tool call the agent made while researching an answer.
+ *
+ * Only ever filled in agent mode, and only on the LIVE response: the backend
+ * does not save steps, so a reloaded conversation has none.
+ */
+export interface AgentStep {
+  // The tool's name, e.g. "search_documents".
+  tool: string;
+  // The arguments the model chose, e.g. { query: "annual leave" }.
+  args: Record<string, unknown>;
+  // A short human-readable result, e.g. "Found 5 excerpts from 2 documents".
+  summary: string;
+}
+
 export interface ChatResponse {
   session_id: string;
   user_message: ChatMessageItem;
   assistant_message: ChatMessageItem;
   citations: CitationItem[];
   model: string;
+  // Which mode actually answered. Optional so an older backend that does not
+  // send it still type-checks; treat a missing value as "rag".
+  mode?: ChatMode;
+  // The agent's tool calls, in order. Empty (or absent) in rag mode.
+  steps?: AgentStep[];
 }
 
 // ======================================================================
@@ -425,11 +457,18 @@ export const api = {
     return apiFetch<ChatMessageItem[]>(`/chat/sessions/${sessionId}/messages`);
   },
 
-  /** Ask a question. This runs the whole RAG pipeline on the backend. */
-  askQuestion(sessionId: string, message: string) {
+  /**
+   * Ask a question. The backend runs the whole pipeline before replying.
+   *
+   * `mode` picks HOW it answers (see ChatMode above). It is added to the body
+   * only when the caller passes one, so a plain call sends exactly
+   * `{ "message": "..." }` -- the request the backend has always accepted, and
+   * which it treats as "rag".
+   */
+  askQuestion(sessionId: string, message: string, mode?: ChatMode) {
     return apiFetch<ChatResponse>(`/chat/sessions/${sessionId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(mode ? { message, mode } : { message }),
     });
   },
 

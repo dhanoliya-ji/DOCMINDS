@@ -97,8 +97,8 @@ class Settings(BaseSettings):
     # `Literal` restricts the value to exactly these three strings, nothing else.
     ENV: Literal["development", "production", "testing"] = "development"
 
-    # When DEBUG is True we print more detail and echo every SQL statement.
-    # Turn this OFF in production: it is slow and leaks internals into logs.
+    # Reported by the /health endpoint as `debug_mode`. Note that SQL echo is
+    # controlled by ENV (it is on only when ENV == "development"), not by this.
     DEBUG: bool = True
 
     # 0.0.0.0 means "listen on every network interface". This is required
@@ -269,9 +269,10 @@ class Settings(BaseSettings):
     # ##################################################################
     GROQ_API_KEY: str = ""
 
-    # The specific model Groq should run for us. 70B means 70 billion
-    # parameters -- large enough to reliably obey an instruction like "answer
-    # ONLY from the provided context and otherwise say you don't know".
+    # The specific model Groq should run for us: OpenAI's open-weight
+    # gpt-oss-120b (120 billion parameters) -- large enough to reliably obey an
+    # instruction like "answer ONLY from the provided context and otherwise say
+    # you don't know", and good at the tool calling agent mode relies on.
     # Groq retires models: llama-3.3-70b-versatile was shut down on
     # 2026-08-16, after which every answer failed. gpt-oss-120b is the
     # replacement Groq recommends. https://console.groq.com/docs/deprecations
@@ -288,6 +289,27 @@ class Settings(BaseSettings):
     # reasoning against this limit too, and a tight cap can cut off the
     # answer itself.
     LLM_MAX_TOKENS: int = 2048
+
+    # ------------------------------------------------------------------
+    # AGENT MODE  (services/agent.py, used when a chat request sends
+    # mode="agent" instead of the default mode="rag")
+    # ------------------------------------------------------------------
+    # In agent mode the model is not handed a fixed set of excerpts. It is
+    # given TOOLS -- search, list documents, read a section -- and decides
+    # for itself which to call and how often before it writes an answer.
+    #
+    # Which Groq model drives the agent. Left EMPTY it simply reuses
+    # GROQ_MODEL above, which is what you want almost always. It exists so you
+    # can try a stronger tool-calling model for agent mode only, without
+    # changing the cheaper model that answers the everyday "rag" questions.
+    AGENT_MODEL: str = ""
+
+    # The hard ceiling on how many times the agent may call the model while
+    # answering ONE question. Every tool round-trip is one more call, so this
+    # is what stops a confused agent from searching in circles until it has
+    # burned through the Groq free-tier rate limit. 6 is enough for "search,
+    # search again, read a section, answer" with room to spare.
+    AGENT_MAX_STEPS: int = 6
 
     # ==================================================================
     # 9. RETRIEVAL -- how the "R" in RAG behaves

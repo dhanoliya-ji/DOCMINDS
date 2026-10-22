@@ -29,7 +29,7 @@ rarely the same as the fields we are willing to RETURN.
 
 import datetime
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -184,6 +184,46 @@ class ChatRequest(BaseModel):
         description="How many document excerpts to give the AI as context."
     )
 
+    # Which of the two answering strategies to use:
+    #
+    #   "rag"   -- the fixed pipeline: embed the question, fetch the top_k
+    #              closest chunks, make ONE model call. Fast, cheap, and the
+    #              same steps every time. This is the default, so every client
+    #              written before agent mode existed keeps working unchanged.
+    #   "agent" -- the Pydantic AI agent in services/agent.py. The model is
+    #              given tools and decides which to call, so it can search
+    #              several times, pick a specific file, or read a whole section.
+    #              Better for multi-part and comparison questions; slower and
+    #              uses several model calls.
+    #
+    # `Literal[...]` means only those exact strings are accepted. Anything else
+    # ("Agent", "deep") is rejected with a 422 before our code runs.
+    mode: Literal["rag", "agent"] = Field(
+        "rag", description='"rag" (fixed pipeline) or "agent" (tool-using agent).'
+    )
+
+
+class AgentStep(BaseModel):
+    """
+    One tool call the agent made while answering, shown in the UI as a trace.
+
+    Agent mode is less predictable than the fixed pipeline -- the model decides
+    what to do -- so we show the user exactly what it did: "searched for X,
+    found 5 excerpts", "read handbook.pdf chunks 0-4". That trace is what makes
+    an agent's answer reviewable instead of a black box.
+
+    Steps are returned in the response only. They are NOT stored in the
+    database, so reloading an old conversation shows the answer and citations
+    but not the trace.
+    """
+
+    # The tool's name, e.g. "search_documents".
+    tool: str
+    # The arguments the model chose, e.g. {"query": "annual leave"}.
+    args: Dict[str, Any] = {}
+    # A short human-readable result, e.g. "Found 5 excerpts from 2 documents".
+    summary: str
+
 
 class ChatMessageOut(BaseModel):
     """One message in a conversation, from either the user or the assistant."""
@@ -224,6 +264,14 @@ class ChatResponse(BaseModel):
     # debugging: it immediately reveals whether a reply came from Groq or from
     # the offline mock fallback.
     model: str
+
+    # Which strategy produced this answer: "rag" or "agent". Echoed back so the
+    # UI can label the bubble without remembering what it sent.
+    mode: str = "rag"
+
+    # The agent's tool calls, in the order they happened. Always empty in
+    # "rag" mode, where the steps are fixed and not worth listing.
+    steps: List[AgentStep] = []
 
 
 class FeedbackCreate(BaseModel):

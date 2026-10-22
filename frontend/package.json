@@ -22,7 +22,6 @@
     "react-markdown": "^10.1.0"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3.3.7",
     "@playwright/test": "^1.64.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.1",

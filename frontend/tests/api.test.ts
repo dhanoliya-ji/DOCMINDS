@@ -378,7 +378,7 @@ describe("uploadDocuments", () => {
 
 describe("request URLs", () => {
   it("defaults to localhost:8000", () => {
-    // Documented in the README as the assumption; pinned here so a change is
+    // Documented in docs/DEVELOPMENT.md as the default; pinned here so a change is
     // deliberate rather than accidental.
     expect(API_BASE).toContain("localhost:8000");
   });
@@ -409,5 +409,59 @@ describe("request URLs", () => {
     expect(JSON.parse(callOptions(mock).body as string).query).toBe(
       "how much annual leave do I get?"
     );
+  });
+});
+
+// ======================================================================
+// askQuestion -- the chat request and its answer mode
+// ======================================================================
+
+describe("askQuestion", () => {
+  it("posts to the session's messages path", async () => {
+    setToken("a-token");
+    const mock = stubFetch(reply(200, {}));
+
+    await api.askQuestion("session-1", "a question");
+
+    expect(callOptions(mock).method).toBe("POST");
+    expect(callUrl(mock)).toContain("/api/v1/chat/sessions/session-1/messages");
+  });
+
+  it("sends only the message when no mode is given", async () => {
+    // Exactly the body the backend has always accepted, which it treats as
+    // "rag". A caller that knows nothing about modes changes nothing.
+    setToken("a-token");
+    const mock = stubFetch(reply(200, {}));
+
+    await api.askQuestion("session-1", "a question");
+
+    expect(JSON.parse(callOptions(mock).body as string)).toEqual({
+      message: "a question",
+    });
+  });
+
+  it.each(["rag", "agent"] as const)("includes mode %s when given", async (mode) => {
+    setToken("a-token");
+    const mock = stubFetch(reply(200, {}));
+
+    await api.askQuestion("session-1", "a question", mode);
+
+    expect(JSON.parse(callOptions(mock).body as string)).toEqual({
+      message: "a question",
+      mode,
+    });
+  });
+
+  it("returns the agent's steps from the response", async () => {
+    setToken("a-token");
+    const steps = [
+      { tool: "search_documents", args: { query: "q" }, summary: "Found 3 excerpts" },
+    ];
+    stubFetch(reply(200, { mode: "agent", steps, citations: [] }));
+
+    const response = await api.askQuestion("session-1", "a question", "agent");
+
+    expect(response.mode).toBe("agent");
+    expect(response.steps).toEqual(steps);
   });
 });

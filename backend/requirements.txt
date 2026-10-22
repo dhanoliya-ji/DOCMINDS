@@ -78,7 +78,7 @@ langdetect==1.0.9
 # ---- OCR (reading text out of scanned pages and images) --------------
 # pytesseract : a thin Python wrapper around the Tesseract OCR program.
 #               NOTE: the Tesseract PROGRAM must also be installed separately --
-#               it is not a Python package. See the README for instructions.
+#               it is not a Python package. See docs/DEVELOPMENT.md for instructions.
 # pillow      : image loading and manipulation, which pytesseract needs.
 pytesseract==0.3.13
 pillow==12.3.0
@@ -94,11 +94,28 @@ tiktoken==0.14.0
 #            It pulls in PyTorch, which is why installation is a large download.
 sentence-transformers==6.1.0
 
-# groq : client for Groq's API, which serves Llama 3.3 70B and writes the final
-#            answers. Free tier, no credit card.
+# groq : client for Groq's API, which serves open models such as
+#            openai/gpt-oss-120b (our default, see GROQ_MODEL) and writes the
+#            final answers. Free tier, no credit card.
 #            >>> Get your key at https://console.groq.com/keys and put it in
 #            >>> backend/.env as   GROQ_API_KEY=gsk_...
 groq==1.7.0
+
+# pydantic-ai : the agent framework behind chat "agent" mode
+#            (app/services/agent.py). It runs the tool-calling loop for us:
+#            turns our typed Python functions into tools the model can call,
+#            validates the arguments the model sends back, and stops the loop
+#            at a usage limit. Same team as pydantic, which we already use.
+#
+#            `-slim` installs ONLY the core plus the providers you name in the
+#            brackets. The full `pydantic-ai` package pulls in the SDK of every
+#            supported AI provider (OpenAI, Anthropic, Google, Mistral, ...),
+#            none of which we use. `[groq]` adds Groq support, which reuses the
+#            `groq` package pinned above (it needs groq>=0.25).
+#
+#            Optional at runtime: if it is missing, the app still starts and
+#            agent mode falls back to its keyless demo answer.
+pydantic-ai-slim[groq]==1.107.9
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
