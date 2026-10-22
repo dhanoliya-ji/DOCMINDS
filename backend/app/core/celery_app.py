@@ -91,6 +91,24 @@ celery_app.conf.update(
     # running is affected.
     worker_prefetch_multiplier=1,
 
+    # With acks_late, a message stays in Redis UNACKNOWLEDGED while its task
+    # runs -- and while a retry waits out its countdown on the worker. If it
+    # is still unacknowledged after the "visibility timeout", Redis decides
+    # the worker died and hands the message to another one. That must never
+    # happen to a job that is merely slow, so the window is kept longer than
+    # the hard time limit plus the longest retry wait. One hour, Celery's own
+    # default, is the floor. (Even if it did happen, the claim in
+    # tasks/ingestion.py would make the second copy skip -- this just avoids
+    # the wasted delivery.)
+    broker_transport_options={
+        "visibility_timeout": max(
+            3600,
+            settings.INGESTION_TIME_LIMIT_SECONDS
+            + settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS
+            + 300,
+        ),
+    },
+
     # ---- Periodic jobs (Celery BEAT) ----
     # Beat is a tiny scheduler process that sends a task on a timer, like
     # cron. Here it sends the sweep that finds documents orphaned by a dead

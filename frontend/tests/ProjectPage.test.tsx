@@ -344,3 +344,56 @@ describe("loading", () => {
     expect(screen.getByText(/second\.docx/)).toBeInTheDocument();
   });
 });
+
+// ======================================================================
+// Why a document failed, or is being retried
+// ======================================================================
+
+describe("failure reasons", () => {
+  it("shows the backend's error_message for a failed document", async () => {
+    listDocuments.mockResolvedValue([
+      doc({
+        status: "failed",
+        error_message: "Rejected by the malware scan: Eicar-Signature",
+        meta_data: { error: "Rejected by the malware scan: Eicar-Signature" },
+      }),
+    ]);
+    renderPage();
+
+    expect(
+      await screen.findByText("Rejected by the malware scan: Eicar-Signature")
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to meta_data.error from an older backend", async () => {
+    // Before `error_message` existed the reason lived only in meta_data.
+    listDocuments.mockResolvedValue([
+      doc({ status: "failed", meta_data: { error: "Unsupported file type: xyz" } }),
+    ]);
+    renderPage();
+
+    expect(await screen.findByText("Unsupported file type: xyz")).toBeInTheDocument();
+  });
+
+  it("explains a pending document that is waiting to be retried", async () => {
+    // A transient failure puts the document back on the queue. Without this
+    // note it would just sit on "Queued" with no hint of why.
+    listDocuments.mockResolvedValue([
+      doc({ status: "pending", error_message: "embedding API unreachable", attempts: 1 }),
+    ]);
+    renderPage();
+
+    expect(
+      await screen.findByText(/Retrying after a temporary problem: embedding API unreachable/)
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing extra about an ordinary queued document", async () => {
+    listDocuments.mockResolvedValue([doc({ status: "pending", error_message: null })]);
+    renderPage();
+
+    await waitFor(() => expect(listDocuments).toHaveBeenCalled());
+    await settle();
+    expect(screen.queryByText(/Retrying/)).not.toBeInTheDocument();
+  });
+});

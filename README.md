@@ -22,7 +22,9 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Two chat modes:** a single-pass RAG pipeline, or a Pydantic AI agent with search, list and read tools.
 - **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search. Existing organisations can only be joined by invite.
 - **Access control:** viewer, editor and admin roles; member management, invites, API keys and an audit log for admins; rotating refresh tokens, server-side logout, password reset and email verification.
-- **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments.
+- **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments. Transient failures are retried with backoff, a database claim stops a job running twice, and a recovery sweep re-queues documents orphaned by a dead worker.
+- **Hardened uploads:** size limits enforced while streaming, an extension allowlist plus content sniffing, sanitised filenames and server-generated storage keys, zip-bomb limits for archives and Office files, and optional ClamAV scanning.
+- **Pluggable file storage:** local disk by default, or any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2).
 - **Runs offline:** deterministic mock providers for OCR, embeddings and the LLM allow development and testing without API keys.
 
 ## Architecture
@@ -39,7 +41,7 @@ flowchart LR
     REDIS[("Redis: Celery broker and result backend")]
     WORKER["Celery worker: process_document_task"]
     PG[("PostgreSQL 16 + pgvector")]
-    DISK[("uploads/ on local disk")]
+    DISK[("File storage: local disk or S3-compatible bucket")]
     GROQ["Groq API: GROQ_MODEL"]
     EMB["Embedding provider: local, openai, gemini or mock"]
 
@@ -144,6 +146,9 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `REDIS_URL_OVERRIDE` | *(empty)* | Redis URL; overrides `REDIS_HOST` / `REDIS_PORT` |
 | `SECRET_KEY` | development value | JWT signing key; must be replaced in any deployment (the app will not start with `ENV=production` and the default) |
 | `SMTP_HOST` | *(empty)* | SMTP server for invite, reset and verification emails; empty writes them to the log |
+| `STORAGE_BACKEND` | `local` | `local` (`backend/uploads`) or `s3` (any S3-compatible bucket; set `S3_BUCKET` and friends) |
+| `MALWARE_SCAN` | `off` | `off` or `clamav` (scan every upload with a clamd daemon before processing) |
+| `MAX_UPLOAD_SIZE_BYTES` | `52428800` | Per-file upload limit (50 MB), enforced while the file streams in |
 
 The complete reference, including OCR, retrieval and chunking settings, is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference).
 
@@ -163,7 +168,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#testing) for test tiers and end-to
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, pipeline and agent diagrams, data model, authentication, API surface, design decisions |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, full configuration reference, testing, linting, troubleshooting, glossary |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Hosted demo on Neon, Render and Vercel; Docker image; production checklist |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Hosted demo on Neon, Render and Vercel; Docker image; workers and failure handling; file storage (S3, R2, MinIO); malware scanning; backups; production checklist |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy |
 
 ## Project structure

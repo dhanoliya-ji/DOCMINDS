@@ -130,7 +130,8 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 | Variable | Default | Description |
 |---|---|---|
 | `INGESTION_MAX_RETRIES` | `3` | Retries for a transient failure (database or network blip, rate limit, storage or scanner unavailable). Permanent failures are not retried |
-| `INGESTION_RETRY_BACKOFF_MAX_SECONDS` | `600` | Cap on the exponential backoff between retries (2 s, 4 s, 8 s, ...) |
+| `INGESTION_RETRY_BACKOFF_SECONDS` | `10` | The first wait before a retry; each later retry doubles it (10 s, 20 s, 40 s). Celery randomises each wait between zero and that value; inline mode waits the full value |
+| `INGESTION_RETRY_BACKOFF_MAX_SECONDS` | `600` | Cap on any single wait between retries |
 | `INGESTION_SOFT_TIME_LIMIT_SECONDS` | `1500` | A job running longer is stopped and the document marked failed (prefork pool only) |
 | `INGESTION_TIME_LIMIT_SECONDS` | `1800` | Hard limit: the worker process running the job is killed |
 | `INGESTION_STALE_AFTER_MINUTES` | `45` | A document `processing` or `pending` for longer is treated as orphaned and re-queued, or failed once it has used every attempt. Must exceed the hard time limit |
@@ -265,7 +266,7 @@ python -m pytest -m "not gemini_live"     # skip the live Gemini test
 |---|---|---|
 | Tier 1 | Nothing | Chunking, extraction dispatch, hashing, security, prompts, embeddings, schemas, database URL handling, the agent (scripted model), roles and password policy (`test_access_control.py`) |
 | Tier 1 + 2 (`test_auth_flows.py`) | Nothing for the `[sqlite]` run; Postgres for the `[postgres]` run | Signup and invites, refresh rotation and logout, password reset, email verification, role enforcement, members admin, API keys, audit log, the locked-down task endpoints |
-| Tier 1 (`test_uploads.py`, `test_storage.py`, `test_zip_safety.py`, `test_malware.py`) | Nothing | Filename sanitizing, content sniffing, the streamed size limit, local and S3 storage (against a fake boto3 client), zip-bomb limits, the clamd protocol (against a fake daemon on a loopback socket) |
+| Tier 1 (`test_uploads.py`, `test_upload_limit.py`, `test_storage.py`, `test_zip_safety.py`, `test_malware.py`) | Nothing | Filename sanitizing, content sniffing, the streamed size limit, the request-size middleware (driven directly as an ASGI app, including chunked bodies with no `Content-Length`), local and S3 storage (against a fake boto3 client, plus the real client's configuration), zip-bomb limits for archives and Office files, the clamd protocol (against a fake daemon on a loopback socket) |
 | Tier 1 + 2 (`test_ingestion_durability.py`, `test_upload_hardening.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | The claim, retries, quarantine, the recovery sweep, inline retries and the Celery task options; the upload and preview endpoints (`413`, `415`, storage keys, queueing after the commit) |
 | Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, tenant isolation, cascades, the HTTP layer |
 | `gemini_live` marker | `GEMINI_API_KEY` | One call to the real Gemini embedding API |
@@ -355,6 +356,10 @@ Alembic uses the synchronous psycopg2 URL. Always review a generated migration: 
 | Documents stay on Queued | No worker is consuming the queue. Start the Celery worker (with `--pool=solo` on Windows), check Redis with `docker ps`, and test the queue with `POST /api/v1/tasks/trigger-add`. A document queued while Redis was down is re-queued by the recovery sweep after `INGESTION_STALE_AFTER_MINUTES` |
 | Upload refused with `413` | A file is over `MAX_UPLOAD_SIZE_BYTES`, or the request is over `MAX_UPLOAD_SIZE_BYTES` x `MAX_FILES_PER_UPLOAD`. Raise the setting or split the upload |
 | Upload refused with `415` | The extension is not one the extractor reads, or the bytes do not match it (for example a renamed file, or a text file saved as UTF-16; save it as UTF-8) |
+| Upload refused with `422` | `chunk_strategy` is not `fixed_size`, `sentence` or `markdown`; `chunk_size` is outside 50-4000; or `chunk_overlap` is negative, over 1000 or not smaller than `chunk_size` |
+| Preview returns `409` | `MALWARE_SCAN=clamav` and the file has not been cleared yet: it is still queued or processing, or it failed before its scan finished (usually because clamd was unreachable). Fix clamd, then re-process the document (see [Re-processing a failed document](DEPLOYMENT.md#re-processing-a-failed-document)) |
+| Preview returns `410` | The malware scan found something; the file was quarantined and deleted. `meta_data.malware_signature` names what was found |
+| A `.docx`, `.pptx` or `.xlsx` fails with "expands to more than ... MB" | The file's parts declare more than `ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES` uncompressed. Real documents rarely approach 500 MB; raise the setting only if you trust the source |
 | Every document fails with "ClamAV returned no verdict" or "Cannot reach ClamAV" | `MALWARE_SCAN=clamav`, but clamd is not running, is still loading definitions, or refused the file as larger than its `StreamMaxLength`. Check `docker compose --profile scan ps` and raise `StreamMaxLength` in `clamd.conf` |
 | `expected 384 dimensions, not 1536` | `EMBEDDING_DIMENSION` does not match the provider, or the provider changed without re-processing. Fix the setting and re-upload affected documents |
 | Search returns nothing | No document is `completed` yet, or all matches score below `RETRIEVAL_MIN_SCORE`. Lower it temporarily (for example `0.05`) and inspect scores in the Search tab |

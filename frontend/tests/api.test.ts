@@ -372,6 +372,29 @@ describe("uploadDocuments", () => {
       api.uploadDocuments("project-1", [new File(["x"], "a.pdf")])
     ).rejects.toThrow(/already been uploaded/);
   });
+
+  it("reports a refused file type in the backend's words", async () => {
+    setToken("a-token");
+    stubFetch(reply(415, { detail: "'setup.exe': file type '.exe' is not supported." }));
+
+    await expect(
+      api.uploadDocuments("project-1", [new File(["x"], "setup.exe")])
+    ).rejects.toThrow(/not supported/);
+  });
+
+  it("unwraps a validation error instead of showing [object Object]", async () => {
+    // FastAPI's 422 carries an ARRAY of problems, not a string.
+    setToken("a-token");
+    stubFetch(
+      reply(422, {
+        detail: [{ loc: ["body", "chunk_size"], msg: "Input should be less than or equal to 4000" }],
+      })
+    );
+
+    const attempt = api.uploadDocuments("project-1", [new File(["x"], "a.txt")]);
+
+    await expect(attempt).rejects.toThrow("Input should be less than or equal to 4000");
+  });
 });
 
 // ======================================================================

@@ -278,9 +278,17 @@ export interface DocumentItem {
   file_type: string;
   file_size: number;
   // "pending" -> "processing" -> "completed" | "failed"
+  // A temporary failure (a network blip, a rate limit) sends a document back
+  // to "pending" to be retried, with the reason in `error_message`.
   status: string;
   version: number;
   meta_data: DocumentMeta;
+  // Why processing failed -- or, while still "pending", why it is being
+  // retried. Null when nothing went wrong. Optional so that responses from an
+  // older backend, which only had meta_data.error, still type-check.
+  error_message?: string | null;
+  // How many times processing has started; above 1 means it was retried.
+  attempts?: number;
   project_id: string;
   created_at: string;
   updated_at: string;
@@ -703,10 +711,19 @@ export const api = {
     }
 
     if (!response.ok) {
+      // The backend says exactly what was wrong: 413 too large, 415 a type it
+      // cannot read or a renamed file, 422 bad chunking options.
       let message = "Upload failed.";
       try {
         const body = await response.json();
-        if (body.detail) message = String(body.detail);
+        if (body.detail) {
+          // Like apiFetch: a validation error is an ARRAY of problems, and
+          // String() of that would show the user "[object Object]".
+          message =
+            typeof body.detail === "string"
+              ? body.detail
+              : body.detail[0]?.msg || message;
+        }
       } catch {
         /* the error body was not JSON */
       }

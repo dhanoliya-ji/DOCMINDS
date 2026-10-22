@@ -20,6 +20,9 @@ record of what they did once inside:
 
     GET    /org/audit-logs              the audit trail, paginated and filtered
 
+    GET    /org/usage                   this month's AI usage, estimated cost
+                                        and quotas (services/usage.py)
+
 EVERY ENDPOINT IS ADMIN-ONLY, AND SAYS SO ONCE
 ----------------------------------------------
 The router is created with `dependencies=[Depends(deps.require_admin)]`, so the
@@ -69,7 +72,8 @@ from app.schemas.account import (
     MemberOut,
     MemberUpdate,
 )
-from app.services import audit, email, sessions
+from app.schemas.usage import UsageSummary
+from app.services import audit, email, sessions, usage
 
 router = APIRouter(dependencies=[Depends(deps.require_admin)])
 
@@ -491,3 +495,25 @@ async def list_audit_logs(
     )
     items = [AuditLogOut.model_validate(row) for row in result.scalars().all()]
     return AuditLogPage(items=items, total=total, limit=limit, offset=offset)
+
+
+# ======================================================================
+# USAGE
+# ======================================================================
+
+
+@router.get("/usage", response_model=UsageSummary)
+async def get_usage(
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    """
+    This calendar month's AI usage for the organization: chat answers,
+    tokens in and out, estimated cost (by model and by mode), and how much
+    of each quota -- tokens, documents, storage -- is used.
+
+    The month is UTC, and resets at midnight UTC on the 1st, which is also
+    when a used-up token quota starts working again. Cost is an estimate from
+    the LLM_PRICING setting; the model provider's invoice is the real figure.
+    """
+    return await usage.usage_summary(db, current_user.org_id)

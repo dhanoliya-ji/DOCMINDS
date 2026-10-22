@@ -12,6 +12,8 @@ build for themselves:
     require_role("editor") ...and confirmed to hold at least that role
     require_viewer / require_editor / require_admin   the three ready-made
     RoleChecker            the older list-based check, kept for compatibility
+    rate_limit_by_ip("login")    at most RATE_LIMIT_LOGIN per client address
+    rate_limit_by_user("chat")   at most RATE_LIMIT_CHAT per signed-in user
 
 WHAT "DEPENDENCY INJECTION" MEANS IN FASTAPI
 --------------------------------------------
@@ -37,22 +39,26 @@ active user. There is no unauthenticated code path.
 """
 
 import datetime
+import logging
 import uuid
 from typing import AsyncGenerator, List, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import roles, security
+from app.core import observability, rate_limit, roles, security
+from app.core.client_ip import client_ip
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.api_key import APIKey
 from app.models.user import User
 from app.schemas.token import TokenPayload
 from app.services import sessions
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
 # HOW THE CREDENTIAL IS READ OFF THE REQUEST
@@ -174,6 +180,9 @@ async def _user_from_api_key(db: AsyncSession, raw_key: str) -> User:
         raise invalid
 
     user.api_key_role = key.role
+    # Every log line from here on says who this was -- and that it was a
+    # program, via which key (the prefix only, never the key).
+    observability.bind(user_id=user.id, org_id=user.org_id, api_key=key.key_prefix)
 
     now = sessions.utcnow()
     last = sessions.as_aware(key.last_used_at)
@@ -230,6 +239,9 @@ async def get_current_user(
         if token_data.iat is None or token_data.iat < changed.timestamp():
             raise _unauthorized("Your password was changed. Please sign in again.")
 
+    # From here every log line of this request -- including the access-log
+    # line the middleware writes at the end -- names the user and tenant.
+    observability.bind(user_id=user.id, org_id=user.org_id)
     return user
 
 
@@ -344,3 +356,79 @@ class RoleChecker:
                 detail="The user does not have enough privileges.",
             )
         return current_user
+
+
+# ----------------------------------------------------------------------
+# RATE LIMITS
+# ----------------------------------------------------------------------
+# Used in an endpoint's decorator, so the check runs before the endpoint's
+# own parameters are resolved -- and reads as a property of the route:
+#
+#     @router.post("/login", dependencies=[Depends(deps.rate_limit_by_ip("login"))])
+#
+# Like require_role, the factory runs at IMPORT time, so a misspelt limit
+# name stops the app from starting instead of failing on the first request.
+# The limits themselves, and why each exists, are in core/rate_limit.py.
+
+
+async def _enforce_rate_limit(name: str, identity: str, response: Response) -> None:
+    decision = await rate_limit.check(name, identity)
+    if decision is None:  # rate limiting, or this one limit, is switched off
+        return
+
+    # Well-behaved clients can pace themselves before they hit the wall.
+    response.headers["X-RateLimit-Limit"] = str(decision.limit)
+    response.headers["X-RateLimit-Remaining"] = str(decision.remaining)
+    if decision.allowed:
+        return
+
+    logger.warning(
+        "Rate limit exceeded",
+        extra={"limit_name": name, "identity": identity, "retry_after": decision.retry_after},
+    )
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=rate_limit.refusal_message(name, decision.retry_after),
+        # Retry-After is the standard answer to "when can I try again?",
+        # in seconds. Browsers, HTTP libraries and well-behaved scripts read it.
+        headers={
+            "Retry-After": str(decision.retry_after),
+            "X-RateLimit-Limit": str(decision.limit),
+            "X-RateLimit-Remaining": "0",
+        },
+    )
+
+
+def rate_limit_by_ip(name: str):
+    """
+    Limit by the client's IP address -- for endpoints used BEFORE anyone is
+    signed in (login, signup, password reset), where there is no user yet.
+    The address comes from core/client_ip.py, which knows about proxies.
+    """
+    rate_limit.require_known(name)
+
+    async def limit_by_ip(request: Request, response: Response) -> None:
+        await _enforce_rate_limit(name, f"ip:{client_ip(request) or 'unknown'}", response)
+
+    limit_by_ip.__name__ = f"rate_limit_{name}_by_ip"
+    return limit_by_ip
+
+
+def rate_limit_by_user(name: str):
+    """
+    Limit by the signed-in user -- for chat, search and upload.
+
+    Depends on get_current_active_user, so an unauthenticated request is
+    refused with 401 first and never touches the counters. FastAPI caches
+    dependencies per request, so the endpoint's own user dependency reuses
+    the same lookup rather than authenticating twice.
+    """
+    rate_limit.require_known(name)
+
+    async def limit_by_user(
+        response: Response, current_user: User = Depends(get_current_active_user)
+    ) -> None:
+        await _enforce_rate_limit(name, f"user:{current_user.id}", response)
+
+    limit_by_user.__name__ = f"rate_limit_{name}_by_user"
+    return limit_by_user

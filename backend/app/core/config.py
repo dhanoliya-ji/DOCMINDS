@@ -36,7 +36,8 @@ this file) and every other module shares it.
 """
 
 import os
-from typing import List, Literal
+import re
+from typing import Dict, List, Literal, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import model_validator
@@ -65,6 +66,51 @@ def _for_asyncpg(url: str) -> str:
         if key != "channel_binding"
     ]
     return urlunsplit(parts._replace(query=urlencode(pairs)))
+
+
+# ----------------------------------------------------------------------
+# RATE LIMIT STRINGS
+# ----------------------------------------------------------------------
+# A limit is written the way people say it: "20/minute", "10/hour",
+# "5/15minutes". One string per limit keeps the settings readable -- the
+# alternative is two numbers per limit (count and window) and twice as many
+# environment variables to get wrong.
+_RATE_UNITS = {
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+    "d": 86400, "day": 86400, "days": 86400,
+}
+_RATE_PATTERN = re.compile(r"^\s*(\d+)\s*/\s*(\d*)\s*([a-z]+)\s*$")
+
+
+def parse_rate_limit(text: str) -> Optional[Tuple[int, int]]:
+    """
+    Turn "20/minute" into (20, 60): at most 20 requests per 60 seconds.
+
+    An empty string or "off" switches that one limit off and returns None.
+    Anything unparseable raises ValueError -- at startup, because Settings
+    validates every RATE_LIMIT_* value -- rather than silently meaning
+    "unlimited" after a typo like "20/minuet".
+
+    It lives here, not in core/rate_limit.py, because the startup validator
+    below needs it, and rate_limit.py itself imports `settings` from this file.
+    """
+    cleaned = (text or "").strip().lower()
+    if cleaned in ("", "off", "none", "disabled"):
+        return None
+    match = _RATE_PATTERN.match(cleaned)
+    if not match or match.group(3) not in _RATE_UNITS:
+        raise ValueError(
+            f"Rate limit {text!r} is not in the form '<count>/<period>', "
+            "for example '20/minute', '10/hour' or '5/15minutes'."
+        )
+    count = int(match.group(1))
+    multiplier = int(match.group(2) or 1)
+    window = multiplier * _RATE_UNITS[match.group(3)]
+    if count < 1 or window < 1:
+        raise ValueError(f"Rate limit {text!r} must allow at least 1 request per period.")
+    return count, window
 
 
 class Settings(BaseSettings):
@@ -368,6 +414,38 @@ class Settings(BaseSettings):
     # search again, read a section, answer" with room to spare.
     AGENT_MAX_STEPS: int = 6
 
+    # ------------------------------------------------------------------
+    # WHEN THE MODEL PROVIDER MISBEHAVES  (services/llm.py)
+    # ------------------------------------------------------------------
+    # A hosted model fails in two very different ways, and they need opposite
+    # treatment:
+    #
+    #   TRANSIENT  a rate limit (429), an overloaded server (5xx), a dropped
+    #              connection. The same request a moment later usually works,
+    #              so it is retried, waiting longer each time.
+    #   PERMANENT  a bad key (401), a malformed request (400). Retrying cannot
+    #              fix it, so it is not retried at all.
+    #
+    # How many times a transient failure is retried on the same model, and the
+    # first wait (doubled for each later retry: 1s, 2s, ...). A server that
+    # says how long to wait (a Retry-After header) is believed instead.
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BACKOFF_SECONDS: float = 1.0
+
+    # How long one model call may take before it is abandoned. A call that
+    # TIMES OUT is not retried on the same model: an overloaded model that did
+    # not answer in 30 seconds rarely answers the second time either, and the
+    # user is already waiting. It goes straight to the fallback model instead.
+    LLM_TIMEOUT_SECONDS: float = 30.0
+
+    # A second Groq model to try when the main one keeps failing -- out of
+    # retries, timed out, or RETIRED. That last case is not hypothetical:
+    # Groq shut llama-3.3-70b-versatile down on 2026-08-16 and every answer
+    # failed until GROQ_MODEL was changed. Groq's rate limits are per model,
+    # so a fallback also rides out one model's limit being exhausted.
+    # Empty = no fallback. e.g. LLM_FALLBACK_MODEL=openai/gpt-oss-20b
+    LLM_FALLBACK_MODEL: str = ""
+
     # ==================================================================
     # 9. RETRIEVAL -- how the "R" in RAG behaves
     # ==================================================================
@@ -471,11 +549,19 @@ class Settings(BaseSettings):
     # 13. INGESTION DURABILITY -- what happens when processing goes wrong
     # ==================================================================
     # A TRANSIENT failure (database blip, embedding API rate limit, object
-    # store timeout) is retried this many times, waiting longer each time:
-    # roughly 2s, 4s, 8s ... capped at the backoff maximum below. A PERMANENT
-    # failure (corrupt file, no text, unsupported type) is not retried at all
-    # -- doing the same thing again would only fail the same way.
+    # store timeout) is retried this many times, waiting longer each time. A
+    # PERMANENT failure (corrupt file, no text, unsupported type) is not
+    # retried at all -- doing the same thing again would only fail the same way.
     INGESTION_MAX_RETRIES: int = 3
+    # The first wait; each retry doubles it -- 10s, 20s, 40s by default --
+    # capped at the maximum below. (With Celery each wait is also randomised
+    # between zero and that value, so a recovered service is not hit by every
+    # waiting document at the same instant.) Ten seconds rather than one or
+    # two because the outages worth retrying last that long: a per-minute
+    # rate limit resetting, ClamAV reloading its definitions, a database
+    # failing over. Retries that are all over in a few seconds would fail the
+    # document before most of them had ended.
+    INGESTION_RETRY_BACKOFF_SECONDS: int = 10
     INGESTION_RETRY_BACKOFF_MAX_SECONDS: int = 600
 
     # Celery kills a task that runs too long. The SOFT limit raises an
@@ -512,6 +598,135 @@ class Settings(BaseSettings):
     CLAMAV_PORT: int = 3310
     CLAMAV_SOCKET: str = ""
     CLAMAV_TIMEOUT_SECONDS: int = 60
+
+    # ==================================================================
+    # 15. RATE LIMITING -- core/rate_limit.py
+    # ==================================================================
+    # Caps how often one caller may hit an expensive or sensitive endpoint.
+    # Over the limit the request is refused with 429 Too Many Requests and a
+    # Retry-After header saying how many seconds to wait.
+    #
+    # Two kinds of "caller":
+    #   per IP ADDRESS  for the sign-in endpoints, where there is no user yet.
+    #                   This is what slows down password guessing and
+    #                   sign-up spam.
+    #   per USER        for chat, search and upload, the endpoints that cost
+    #                   real money (model tokens) or real CPU (OCR, embedding).
+    #
+    # The off switch exists for tests and emergencies; leave it on.
+    RATE_LIMIT_ENABLED: bool = True
+
+    # Where the counters live:
+    #   auto   -> Redis when it is reachable, so every API process shares ONE
+    #             set of counters; otherwise an in-memory store inside each
+    #             process (and Redis is tried again every 30 seconds).
+    #   memory -> always in-memory. Fine for a single process; with several
+    #             (`uvicorn --workers 4`) each keeps its own counters, so the
+    #             effective limit is multiplied by the number of processes.
+    RATE_LIMIT_STORAGE: Literal["auto", "memory"] = "auto"
+
+    # "<count>/<period>": "20/minute", "10/hour", "5/15minutes". Empty or
+    # "off" switches that one limit off. Checked at startup.
+    #
+    # Per IP. Generous enough for an office of people behind one shared
+    # address, tight enough that guessing a 10-character password is hopeless.
+    RATE_LIMIT_LOGIN: str = "20/minute"
+    RATE_LIMIT_SIGNUP: str = "10/hour"
+    # Request AND confirm share this one. The request sends an email, so this
+    # also stops the endpoint being used to flood someone's inbox.
+    RATE_LIMIT_PASSWORD_RESET: str = "10/hour"
+    # Per user.
+    RATE_LIMIT_CHAT: str = "30/minute"
+    RATE_LIMIT_SEARCH: str = "60/minute"
+    RATE_LIMIT_UPLOAD: str = "30/minute"
+
+    # ------------------------------------------------------------------
+    # WHO IS THE CLIENT? (behind a proxy, the TCP peer is the proxy)
+    # ------------------------------------------------------------------
+    # On Render, Heroku, behind nginx or a load balancer, every request
+    # reaches the API FROM THE PROXY. Per-IP limits would then lump every
+    # user together into one bucket. The real address travels in the
+    # X-Forwarded-For header -- but any client can also SEND that header, so
+    # it may only be believed as far as proxies you control wrote it.
+    #
+    # TRUSTED_PROXY_COUNT: how many proxies you control sit in front of the
+    # API. Each appends the address it received the request from, so with N
+    # proxies the client's real address is the Nth entry FROM THE RIGHT --
+    # the leftmost entries are whatever the client claimed. 0 (the default)
+    # ignores the header and uses the TCP peer, which is right when nothing
+    # sits in front of the API.
+    TRUSTED_PROXY_COUNT: int = 0
+
+    # Alternatively, a header your proxy or CDN OVERWRITES with the client's
+    # address, e.g. "CF-Connecting-IP" (Cloudflare) or "True-Client-IP". Wins
+    # over TRUSTED_PROXY_COUNT when present. Only set it if every request
+    # really passes through that proxy -- otherwise a client can send the
+    # header itself and pick any address it likes.
+    CLIENT_IP_HEADER: str = ""
+
+    # ==================================================================
+    # 16. USAGE METERING AND QUOTAS -- services/usage.py
+    # ==================================================================
+    # Every chat answer records a usage event: the model, the tokens it read
+    # (input) and wrote (output), and an estimated cost. Admins see the
+    # month's totals at GET /api/v1/org/usage.
+    #
+    # The quotas below are PER ORGANIZATION. 0 means unlimited. Each can be
+    # overridden for one organization with the matching column on the
+    # `organizations` table (NULL there = use these defaults), which is how
+    # an operator gives one customer a bigger plan without a redeploy -- see
+    # docs/DEPLOYMENT.md, "Quotas".
+    #
+    # AI tokens per calendar month (UTC), across every member. Over it, chat
+    # answers 429 with Retry-After pointing at the 1st of next month.
+    QUOTA_MONTHLY_TOKENS: int = 1_000_000
+    # Documents the organization may hold, and the bytes they may add up to.
+    # An upload that would cross either answers 402 and stores nothing.
+    QUOTA_MAX_DOCUMENTS: int = 1000
+    QUOTA_MAX_STORAGE_BYTES: int = 5 * 1024 * 1024 * 1024
+
+    # What each model costs, in US dollars per MILLION tokens, split into
+    # input (the prompt: excerpts, history, question) and output (the answer).
+    # Used only to ESTIMATE cost on the usage report -- the provider's invoice
+    # is the real number. Prices from https://console.groq.com/docs/models
+    # (October 2026). A model missing from this table is costed at 0 and
+    # logged once, so add your model here if you switch. From the
+    # environment, set it as JSON:
+    #   LLM_PRICING='{"openai/gpt-oss-120b": {"input": 0.15, "output": 0.60}}'
+    LLM_PRICING: Dict[str, Dict[str, float]] = {
+        "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
+        "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30},
+    }
+
+    # ==================================================================
+    # 17. OBSERVABILITY -- core/observability.py, core/middleware.py
+    # ==================================================================
+    # Every log line is one JSON object -- time, level, message, plus the
+    # request id, user and organization it belongs to -- so a log platform
+    # can filter "everything request 3f9c... did" without regular expressions.
+    # "text" prints plain lines instead, easier to read in a local terminal.
+    LOG_FORMAT: Literal["json", "text"] = "json"
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    # Error reporting with Sentry (optional, off by default). Set the DSN
+    # from your Sentry project to switch it on for the API and the worker;
+    # `sentry-sdk` is in requirements.txt but only imported when this is set.
+    SENTRY_DSN: str = ""
+    # Fraction of requests whose performance is traced too (0.0 - 1.0).
+    # Errors are always reported; tracing everything costs Sentry quota.
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
+    # Tags every event; empty means the value of ENV.
+    SENTRY_ENVIRONMENT: str = ""
+
+    # GET /api/v1/health/ready waits at most this long for EACH dependency
+    # (database, Redis, a Celery worker) before reporting it down.
+    READINESS_TIMEOUT_SECONDS: float = 3.0
+
+    # Strict-Transport-Security: tells browsers to use HTTPS for this API for
+    # this many seconds, even if a link says http://. Sent only with
+    # ENV=production -- on localhost over plain HTTP it would be ignored at
+    # best. 0 switches it off.
+    HSTS_MAX_AGE_SECONDS: int = 365 * 24 * 60 * 60
 
     # ==================================================================
     # DERIVED VALUES
@@ -654,6 +869,30 @@ class Settings(BaseSettings):
         """
         if self.STORAGE_BACKEND == "s3" and not self.S3_BUCKET:
             raise ValueError("STORAGE_BACKEND=s3 needs S3_BUCKET to be set.")
+        return self
+
+    @model_validator(mode="after")
+    def _check_rate_limits_and_quotas(self) -> "Settings":
+        """
+        Parse every RATE_LIMIT_* string now, at startup.
+
+        A typo such as "20/minuet" would otherwise be discovered by the first
+        user to log in -- as a 500 -- or, worse, be read as "no limit". Here
+        it stops the app from starting, with the bad value in the message.
+        """
+        for name in (
+            "RATE_LIMIT_LOGIN", "RATE_LIMIT_SIGNUP", "RATE_LIMIT_PASSWORD_RESET",
+            "RATE_LIMIT_CHAT", "RATE_LIMIT_SEARCH", "RATE_LIMIT_UPLOAD",
+        ):
+            try:
+                parse_rate_limit(getattr(self, name))
+            except ValueError as exc:
+                raise ValueError(f"{name}: {exc}") from None
+        for name in ("QUOTA_MONTHLY_TOKENS", "QUOTA_MAX_DOCUMENTS", "QUOTA_MAX_STORAGE_BYTES"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} cannot be negative (0 means unlimited).")
+        if self.TRUSTED_PROXY_COUNT < 0:
+            raise ValueError("TRUSTED_PROXY_COUNT cannot be negative.")
         return self
 
     @property

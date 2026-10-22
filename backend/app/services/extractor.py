@@ -43,10 +43,20 @@ layer, rasterise each page into an image, and run OCR instead.
 
 That single heuristic is what lets a scanned contract become just as searchable
 as a digital one.
+
+ARCHIVES ARE UNTRUSTED
+----------------------
+Two kinds of upload are really zip archives: .zip itself, and the Office
+formats (.docx, .pptx and .xlsx are zips of XML parts). A "zip bomb" -- a few
+kilobytes that expand to gigabytes -- works through either. The ZIP_* settings
+cap what an archive may expand to; see `extract_zip` and
+`_check_office_container` below. A violation raises UnsafeArchiveError, which
+fails the document instead of being indexed as text.
 """
 
 import csv
 import os
+import tempfile
 import uuid
 import zipfile
 from email import message_from_bytes
@@ -74,6 +84,10 @@ SUPPORTED_EXTENSIONS = frozenset(
     }
     | IMAGE_EXTENSIONS
 )
+
+# The Office formats that are zip archives underneath. (.xls is not: it is the
+# older OLE2 "compound file" format.)
+OFFICE_ZIP_EXTENSIONS = frozenset({"docx", "pptx", "xlsx"})
 
 
 class UnsafeArchiveError(ValueError):
@@ -184,6 +198,13 @@ class DocumentExtractor:
         because ZIP extraction also calls this method with raw extensions.
         """
         file_type = file_type.lower()
+
+        # An Office file is checked BEFORE its parser opens it, because the
+        # parsers decompress into memory -- a bomb has done its damage by the
+        # time they return. Outside their try/except on purpose, so the
+        # rejection fails the document rather than becoming its "text".
+        if file_type in OFFICE_ZIP_EXTENSIONS:
+            cls._check_office_container(file_path)
 
         if file_type == "pdf":
             return cls.extract_pdf(file_path)
@@ -642,6 +663,12 @@ class DocumentExtractor:
         to forge. Members are written under random names, so even a member
         that slipped past the path checks could not land outside the temp dir.
 
+        That temp dir is in the SYSTEM temp directory, never next to the
+        archive. With local storage the archive itself sits in the uploads
+        folder, and a worker killed half way through unpacking -- precisely
+        what a bomb is trying to cause -- would otherwise leave its debris
+        there for good. The operating system cleans its own temp directory.
+
         `_depth` and `_budget` are internal: 1 is the uploaded archive itself,
         and the budget is shared with any archive nested inside it.
         """
@@ -651,12 +678,10 @@ class DocumentExtractor:
         temp_dir = None
 
         try:
-            # A uuid in the directory name so two archives extracted at the same
-            # moment by two workers cannot overwrite each other's files.
-            temp_dir = os.path.join(
-                os.path.dirname(file_path), f"zip_temp_{uuid.uuid4().hex}"
-            )
-            os.makedirs(temp_dir, exist_ok=True)
+            # `mkdtemp` creates a brand-new directory with a unique name, so
+            # two archives unpacked at the same moment by two workers cannot
+            # overwrite each other's files. Readable by this user only.
+            temp_dir = tempfile.mkdtemp(prefix="docminds-zip-")
 
             with zipfile.ZipFile(file_path, "r") as archive:
                 members = [info for info in archive.infolist() if not info.is_dir()]
@@ -739,6 +764,47 @@ class DocumentExtractor:
         return ExtractionResult(
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
+
+    @staticmethod
+    def _check_office_container(file_path: str) -> None:
+        """
+        Refuse a .docx, .pptx or .xlsx that would expand into a memory bomb.
+
+        These formats are zip archives of XML parts, and python-docx,
+        python-pptx and openpyxl decompress the parts they read INTO MEMORY.
+        So a zip bomb works through them just as well: a 10 MB "report.docx"
+        whose document.xml expands to 10 GB takes the worker down with it.
+
+        Only the TOTAL expansion is limited, against the same
+        ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES as uploaded archives. The other two
+        archive limits would turn away real documents: a 400-slide deck holds
+        about 1,600 parts, and a document full of identical table cells
+        compresses well past 100:1 (both measured). The total is what a bomb
+        cannot disguise -- being enormous once expanded is its whole purpose.
+
+        The DECLARED sizes are enough here, unlike in `extract_zip`: Python's
+        zipfile, which all three libraries read through, stops a part at its
+        declared size and then fails its checksum. A part that lies about its
+        size therefore cannot yield more than it declared.
+
+        A file that is not a readable zip at all is let through, so its parser
+        can report what is wrong with it in its own words.
+        """
+        try:
+            with zipfile.ZipFile(file_path) as archive:
+                declared = sum(info.file_size for info in archive.infolist())
+        except Exception:
+            # Not a readable zip (BadZipFile, a truncated directory, ...).
+            # Nothing was decompressed, so there is nothing to defend here.
+            return
+
+        limit = settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES
+        if declared > limit:
+            raise UnsafeArchiveError(
+                "Document rejected: it expands to more than "
+                f"{limit // (1024 * 1024)} MB when opened -- this is how zip "
+                "bombs are built."
+            )
 
     @staticmethod
     def _unsafe_member_reason(info: zipfile.ZipInfo) -> "str | None":

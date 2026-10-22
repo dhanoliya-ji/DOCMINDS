@@ -273,3 +273,54 @@ class TestGetStorage:
     def test_the_default_local_dir_is_backend_uploads(self, monkeypatch):
         monkeypatch.setattr(settings, "LOCAL_STORAGE_DIR", "")
         assert settings.local_storage_dir.replace("\\", "/").endswith("backend/uploads")
+
+
+# ======================================================================
+# The real boto3 client's configuration (built, never used: no network)
+# ======================================================================
+
+
+class TestS3ClientConfiguration:
+    """
+    Creating a boto3 client makes no network call, so the configuration
+    `_make_client` produces can be inspected directly.
+    """
+
+    @pytest.fixture
+    def s3_settings(self, monkeypatch):
+        pytest.importorskip("boto3")
+        monkeypatch.setattr(settings, "S3_BUCKET", "docs")
+        monkeypatch.setattr(settings, "S3_ACCESS_KEY_ID", "test-key")
+        monkeypatch.setattr(settings, "S3_SECRET_ACCESS_KEY", "test-secret")
+        return monkeypatch
+
+    def test_an_s3_compatible_endpoint_only_sends_required_checksums(self, s3_settings):
+        """
+        boto3 1.36+ adds a CRC checksum to every upload by default, which
+        several S3-compatible stores reject. A custom endpoint means "not
+        AWS", so the old behaviour is restored there.
+        """
+        s3_settings.setattr(settings, "S3_ENDPOINT_URL", "http://localhost:9000")
+        s3_settings.setattr(settings, "S3_REGION", "auto")
+
+        client = S3Storage._make_client()
+
+        assert client.meta.endpoint_url == "http://localhost:9000"
+        assert client.meta.region_name == "auto"
+        assert client.meta.config.request_checksum_calculation == "when_required"
+        assert client.meta.config.response_checksum_validation == "when_required"
+
+    def test_aws_keeps_boto3s_defaults(self, s3_settings):
+        s3_settings.setattr(settings, "S3_ENDPOINT_URL", "")
+        s3_settings.setattr(settings, "S3_REGION", "eu-west-1")
+
+        client = S3Storage._make_client()
+
+        assert "amazonaws.com" in client.meta.endpoint_url
+        assert client.meta.config.request_checksum_calculation == "when_supported"
+
+    def test_boto3_retries_throttling_itself(self, s3_settings):
+        s3_settings.setattr(settings, "S3_ENDPOINT_URL", "")
+        s3_settings.setattr(settings, "S3_REGION", "us-east-1")
+        client = S3Storage._make_client()
+        assert client.meta.config.retries["mode"] == "standard"

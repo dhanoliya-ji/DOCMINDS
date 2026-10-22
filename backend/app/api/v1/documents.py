@@ -50,18 +50,26 @@ WHAT THE UPLOAD REFUSES, AND WITH WHICH STATUS
          ceiling, which middleware in main.py refuses before it is parsed
     415  an extension extractor.py cannot read, or bytes that do not match
          the extension (a renamed .exe called report.pdf)
+    422  chunking options out of range (an unknown strategy, a chunk size
+         outside 50-4000 tokens, an overlap not smaller than the size)
     503  the storage backend is unreachable
 
 One bad file refuses the whole request, and nothing is stored: every file is
 validated before any of them is written. See services/uploads.py for the
 checks and services/storage.py for where the bytes go.
+
+WHAT THE PREVIEW REFUSES
+------------------------
+    409  malware scanning is on and this file has not been cleared by it yet
+         (still queued, or it failed before the scan could finish)
+    410  the scan found malware; the file was deleted ("quarantined")
 """
 
 import asyncio
 import mimetypes
 import os
 import uuid
-from typing import List
+from typing import List, Literal
 from urllib.parse import quote
 
 from fastapi import (
@@ -99,6 +107,48 @@ from app.tasks.ingestion import process_document_task, run_inline_ingestion
 router = APIRouter()
 
 
+# File types a browser would RUN rather than display: HTML executes its
+# scripts. The preview serves them as plain text instead -- the bytes are
+# exactly the same, but nothing the uploader wrote can execute in the browser
+# of whoever opens it, whether directly or through a blob URL in the frontend.
+_SERVE_AS_TEXT = {"html", "htm"}
+
+
+def _preview_media_type(document: Document) -> str:
+    """The Content-Type a preview is served with."""
+    if document.file_type in _SERVE_AS_TEXT:
+        return "text/plain; charset=utf-8"
+    if document.file_type not in uploads.ALLOWED_EXTENSIONS:
+        # Only rows from before the upload allowlist existed can get here --
+        # back then any extension was stored, .svg and .xhtml (which can carry
+        # script) included. Opaque bytes, to be saved rather than rendered.
+        return "application/octet-stream"
+    return mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
+
+
+def _not_yet_cleared_by_scan(document: Document) -> bool:
+    """
+    True when malware scanning is on and this file has not passed it.
+
+    The scan runs in the ingestion worker, AFTER the upload is stored. Until
+    it has passed, the file must not be handed to anybody: otherwise the gap
+    between upload and scan -- or a scan that never happened because ClamAV
+    was down until the retries ran out -- would let one user pass another a
+    malicious file through the preview link.
+
+    The pipeline records meta_data["malware_scan"] (the scanner's name) once
+    a scan passes, on success and on later failures alike. Completed
+    documents are served regardless: they were processed before scanning was
+    switched on, and blocking the whole existing library on the day ClamAV
+    is enabled would help nobody.
+    """
+    if settings.MALWARE_SCAN == "off":
+        return False
+    if (document.meta_data or {}).get("malware_scan") not in (None, "off"):
+        return False
+    return document.status != "completed"
+
+
 @router.post(
     "/upload",
     response_model=List[DocumentOut],
@@ -115,9 +165,15 @@ async def upload_documents(
     files: List[UploadFile] = File(...),
     # Chunking options, with sensible defaults so a simple upload needs nothing
     # extra. Stashed in meta_data and read later by the worker.
-    chunk_strategy: str = Form("fixed_size"),
-    chunk_size: int = Form(500),
-    chunk_overlap: int = Form(50),
+    #
+    # Bounded HERE, at the door, so a bad value is a 422 the caller sees at
+    # once -- not a document that sits in the queue and then fails in the
+    # worker with "Unsupported chunking strategy". The size is in tokens:
+    # under ~50 a chunk is a sentence fragment that embeds as noise, and over
+    # a few thousand it exceeds what the embedding models read at all.
+    chunk_strategy: Literal["fixed_size", "sentence", "markdown"] = Form("fixed_size"),
+    chunk_size: int = Form(500, ge=50, le=4000),
+    chunk_overlap: int = Form(50, ge=0, le=1000),
     db: AsyncSession = Depends(deps.get_db),
     # Uploading changes what everyone in the organization searches, so it
     # needs the editor role (Manager) or above. Viewers get 403.
@@ -129,6 +185,17 @@ async def upload_documents(
     Returns immediately with the created Document rows, each showing
     status "pending".
     """
+    # The one rule about the chunking options that involves two of them, so
+    # it cannot be written as a bound on either. An overlap as large as the
+    # chunk would mean the window never moves forward.
+    if chunk_overlap >= chunk_size:
+        raise HTTPException(
+            # A bare 422: Starlette renamed its constant for this status
+            # (..._ENTITY -> ..._CONTENT), and the number means the same in both.
+            status_code=422,
+            detail="chunk_overlap must be smaller than chunk_size.",
+        )
+
     # ------------------------------------------------------------------
     # 1. TENANT CHECK -- does this project exist, and is it MINE?
     # ------------------------------------------------------------------
@@ -423,7 +490,18 @@ async def preview_document(
             detail="This file was quarantined by the malware scan and cannot be downloaded.",
         )
 
+    # With scanning on, nothing is served until the scan has cleared it.
+    if _not_yet_cleared_by_scan(document):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This file has not passed the malware scan yet. Try again once "
+                "it has finished processing."
+            ),
+        )
+
     storage = get_storage(document.storage_backend)
+    media_type = _preview_media_type(document)
     headers = {
         # Never let a browser second-guess the type and render, say, an
         # uploaded .html file as a live page on this API's origin.
@@ -446,7 +524,9 @@ async def preview_document(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="File has been deleted from server storage.",
             )
-        return FileResponse(path, filename=document.filename, headers=headers)
+        return FileResponse(
+            path, filename=document.filename, media_type=media_type, headers=headers
+        )
 
     # OBJECT STORAGE: streamed through the API in 1 MB pieces. Proxying,
     # rather than redirecting the browser to a pre-signed S3 URL, keeps the
@@ -465,7 +545,6 @@ async def preview_document(
             detail="File storage is temporarily unavailable. Please try again.",
         ) from exc
 
-    media_type = mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
     # RFC 6266 / 5987: `filename*` carries a UTF-8 name safely, whatever
     # characters it contains.
     headers["Content-Disposition"] = (

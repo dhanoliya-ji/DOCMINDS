@@ -105,8 +105,18 @@ class TestClassification:
         assert not is_transient(exc)
 
     def test_backoff_grows_and_is_capped(self, monkeypatch):
+        monkeypatch.setattr(settings, "INGESTION_RETRY_BACKOFF_SECONDS", 2)
         monkeypatch.setattr(settings, "INGESTION_RETRY_BACKOFF_MAX_SECONDS", 10)
         assert [retry_delay_seconds(n) for n in range(5)] == [2, 4, 8, 10, 10]
+
+    def test_the_default_retries_outlast_a_short_outage(self):
+        """
+        The point of retrying is to ride out an outage: a rate limit that
+        resets each minute, ClamAV reloading its definitions. Waits that are
+        all over within a few seconds would fail the document first.
+        """
+        total = sum(retry_delay_seconds(n) for n in range(settings.INGESTION_MAX_RETRIES))
+        assert total >= 60
 
     def test_messages_are_for_people(self):
         from celery.exceptions import SoftTimeLimitExceeded
@@ -124,7 +134,12 @@ class TestCeleryConfiguration:
     def test_it_retries_only_transient_failures(self):
         assert process_document_task.autoretry_for == (TransientIngestionError,)
         assert process_document_task.max_retries == settings.INGESTION_MAX_RETRIES
-        assert process_document_task.retry_backoff
+
+    def test_celery_waits_as_long_as_inline_mode_does(self):
+        """Both use base x 2^retries, so the two modes behave alike."""
+        assert process_document_task.retry_backoff == settings.INGESTION_RETRY_BACKOFF_SECONDS
+        assert process_document_task.retry_backoff_max == settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS
+        assert process_document_task.retry_jitter is True
 
     def test_it_has_time_limits(self):
         assert process_document_task.soft_time_limit == settings.INGESTION_SOFT_TIME_LIMIT_SECONDS
@@ -141,6 +156,18 @@ class TestCeleryConfiguration:
 
     def test_one_message_at_a_time(self):
         assert celery_app.conf.worker_prefetch_multiplier == 1
+
+    def test_redis_does_not_redeliver_a_job_that_is_merely_slow(self):
+        """
+        With acks_late, Redis re-delivers any message still unacknowledged
+        after the visibility timeout. A job may legitimately run up to the
+        hard time limit after waiting out its longest retry delay.
+        """
+        timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
+        assert timeout >= 3600
+        assert timeout > (
+            settings.INGESTION_TIME_LIMIT_SECONDS + settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS
+        )
 
 
 # ======================================================================
@@ -419,7 +446,37 @@ class TestQuarantine:
 
         with pytest.raises(TransientIngestionError):
             await async_process_document(str(document_id), final_attempt=False)
-        assert (await db.get(document_id)).status == "pending"
+        document = await db.get(document_id)
+        assert document.status == "pending"
+        # Never scanned, so never recorded as scanned: the preview endpoint
+        # keeps the file locked away until a scan passes.
+        assert "malware_scan" not in document.meta_data
+
+    async def test_a_clean_scan_is_remembered_when_a_later_stage_fails(self, db, monkeypatch):
+        """
+        The scan passed, then extraction found no text. The document fails
+        -- but the record that its bytes were scanned clean must survive,
+        or a failed file could never be previewed while scanning is on.
+        """
+        document_id = await db.document(content=b"   \n  ")
+        monkeypatch.setattr(
+            malware, "scan_file", lambda path: malware.ScanResult(clean=True, scanner="clamav")
+        )
+
+        assert await async_process_document(str(document_id)) == "failed"
+
+        document = await db.get(document_id)
+        assert "No text could be extracted" in document.error_message
+        assert document.meta_data["malware_scan"] == "clamav"
+
+    async def test_a_clean_scan_is_recorded_on_success(self, db, monkeypatch):
+        document_id = await db.document()
+        monkeypatch.setattr(
+            malware, "scan_file", lambda path: malware.ScanResult(clean=True, scanner="clamav")
+        )
+
+        assert await async_process_document(str(document_id)) == "completed"
+        assert (await db.get(document_id)).meta_data["malware_scan"] == "clamav"
 
 
 # ======================================================================
@@ -483,6 +540,36 @@ class TestRecovery:
 
         await recover_stuck_documents()
         assert await async_process_document(str(document_id)) == "completed"
+
+    async def test_one_failed_dispatch_does_not_stop_the_sweep(self, db, monkeypatch):
+        """
+        The queue refusing ONE document (Redis restarting under the API at
+        startup) must not abort the sweep -- or the API start it runs in.
+        """
+        stale = minutes_ago(settings.INGESTION_STALE_AFTER_MINUTES + 5)
+        first = await db.document(status="pending")
+        second = await db.document(status="pending")
+        for document_id in (first, second):
+            await db.set(document_id, updated_at=stale)
+        attempted: list[str] = []
+
+        def flaky_dispatch(document_id):
+            attempted.append(document_id)
+            if document_id == str(first):
+                raise ConnectionError("Redis is restarting")
+
+        monkeypatch.setattr(ingestion, "dispatch", flaky_dispatch)
+
+        # Membership, not equality: on the shared Postgres the sweep may
+        # also find other tests' rows.
+        result = await recover_stuck_documents()
+
+        assert str(first) in attempted and str(second) in attempted
+        assert str(first) in result["requeued"] and str(second) in result["requeued"]
+        # Both are back on "pending", so a later sweep retries the one the
+        # queue refused.
+        assert (await db.get(first)).status == "pending"
+        assert (await db.get(second)).status == "pending"
 
 
 # ======================================================================

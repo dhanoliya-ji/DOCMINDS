@@ -244,21 +244,31 @@ class S3Storage(Storage):
                 "STORAGE_BACKEND=s3 needs the boto3 package: pip install boto3"
             ) from exc
 
-        kwargs = {
+        config_options: dict = {
             # boto3's own retries, with backoff, for throttling and 5xx. Our
             # ingestion retries sit on top of these for longer outages.
-            "config": Config(retries={"max_attempts": 5, "mode": "standard"}),
+            "retries": {"max_attempts": 5, "mode": "standard"},
         }
+        kwargs: dict = {}
         # Every one of these is optional; an empty setting means "let boto3
         # work it out" (IAM role, AWS_* variables, ~/.aws/config).
         if settings.S3_REGION:
             kwargs["region_name"] = settings.S3_REGION
         if settings.S3_ENDPOINT_URL:
             kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL
+            # NOT AWS, then. Since boto3 1.36 every upload carries a new
+            # CRC checksum header by default. AWS understands it; several
+            # S3-compatible stores do not, and refuse every upload. Asking
+            # for checksums only where the API requires them -- boto3's old
+            # behaviour -- works everywhere. (A custom endpoint is also
+            # addressed path-style, "<endpoint>/<bucket>/<key>", which is
+            # what MinIO needs; boto3 does that on its own.)
+            config_options["request_checksum_calculation"] = "when_required"
+            config_options["response_checksum_validation"] = "when_required"
         if settings.S3_ACCESS_KEY_ID:
             kwargs["aws_access_key_id"] = settings.S3_ACCESS_KEY_ID
             kwargs["aws_secret_access_key"] = settings.S3_SECRET_ACCESS_KEY
-        return boto3.client("s3", **kwargs)
+        return boto3.client("s3", config=Config(**config_options), **kwargs)
 
     def _object_key(self, key: str) -> str:
         return f"{self.prefix}{key}"

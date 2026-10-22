@@ -348,13 +348,28 @@ export default function ProjectPage({
                             )}
                           </div>
                           {/* Show the real reason a document failed, rather
-                              than leaving the user to guess. */}
-                          {doc.status === "failed" && doc.meta_data?.error && (
+                              than leaving the user to guess. `error_message`
+                              is the backend's field for it; meta_data.error
+                              is the older copy of the same text. */}
+                          {doc.status === "failed" &&
+                            (doc.error_message || doc.meta_data?.error) && (
+                              <div
+                                className="mt-1 text-xs"
+                                style={{ color: "var(--danger)" }}
+                              >
+                                {doc.error_message || doc.meta_data?.error}
+                              </div>
+                            )}
+                          {/* A temporary failure (a network blip, a rate
+                              limit) sends the document back to the queue to
+                              be retried. Saying so explains why a "Queued"
+                              document is taking its time. */}
+                          {doc.status === "pending" && doc.error_message && (
                             <div
                               className="mt-1 text-xs"
-                              style={{ color: "var(--danger)" }}
+                              style={{ color: "var(--warning)" }}
                             >
-                              {doc.meta_data.error}
+                              Retrying after a temporary problem: {doc.error_message}
                             </div>
                           )}
                         </div>

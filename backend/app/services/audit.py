@@ -40,22 +40,23 @@ from typing import Any, Dict, Optional
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.client_ip import client_ip as resolve_client_ip
 from app.models.audit import AuditLog
 
 
 def client_ip(request: Optional[Request]) -> Optional[str]:
     """
-    The caller's IP address, as the server saw it.
+    The caller's IP address.
 
-    Behind a reverse proxy (Render, a load balancer) this is the proxy's
-    address unless uvicorn runs with `--proxy-headers`, which rewrites it from
-    X-Forwarded-For. We deliberately do NOT read X-Forwarded-For here
-    ourselves: any client can send that header, so trusting it blindly would
-    let an attacker write whatever IP they liked into the audit trail.
+    Behind a reverse proxy (Render, a load balancer) the TCP peer is the
+    proxy, not the user. X-Forwarded-For is NOT read blindly -- any client can
+    send that header, so trusting it would let an attacker write whatever IP
+    they liked into the audit trail. It is read only as far as the operator
+    has declared proxies trustworthy (TRUSTED_PROXY_COUNT, CLIENT_IP_HEADER);
+    see core/client_ip.py, which the rate limiter and the access log share so
+    all three always agree on who a request came from.
     """
-    if request is None or request.client is None:
-        return None
-    return request.client.host[:45]
+    return resolve_client_ip(request)
 
 
 async def record(

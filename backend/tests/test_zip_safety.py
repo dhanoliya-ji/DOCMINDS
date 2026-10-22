@@ -13,6 +13,10 @@ archive that breaks exactly one rule:
     symlinks                    -> skipped
     zips inside zips            -> followed to ZIP_MAX_NESTING_DEPTH, then skipped
 
+And the Office formats, which are zip archives underneath: a .docx, .pptx or
+.xlsx that expands past the total cap is rejected before its parser opens it
+-- but is NOT judged on member count or ratio, which real documents exceed.
+
 The limits are set low with monkeypatch so the archives stay tiny -- a real
 zip bomb is not needed to prove the counting works.
 
@@ -21,12 +25,25 @@ TIER 1: pytest's tmp_path only.
 
 import io
 import os
+import tempfile
 import zipfile
 
 import pytest
 
 from app.core.config import settings
 from app.services.extractor import DocumentExtractor, UnsafeArchiveError
+
+
+@pytest.fixture
+def scratch_temp(monkeypatch, tmp_path):
+    """
+    Point the SYSTEM temp directory at an empty folder of our own, so a test
+    can see exactly what extraction left behind there.
+    """
+    folder = tmp_path / "system-temp"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
 
 
 def make_zip(path, members: dict, compression=zipfile.ZIP_DEFLATED) -> str:
@@ -127,12 +144,41 @@ class TestUnsafeMembers:
         assert result.metadata["files_extracted"] == ["good.txt"]
         assert any("symbolic link" in entry for entry in result.metadata["skipped_entries"])
 
-    def test_the_temp_folder_is_always_removed(self, tmp_path, monkeypatch):
+    def test_the_temp_folder_is_always_removed(self, tmp_path, monkeypatch, scratch_temp):
         monkeypatch.setattr(settings, "ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES", 10)
         archive = make_zip(tmp_path / "big.zip", {"a.txt": "a" * 100})
         with pytest.raises(UnsafeArchiveError):
             DocumentExtractor.extract(archive, "zip")
-        assert sorted(os.listdir(tmp_path)) == ["big.zip"]
+        assert list(scratch_temp.iterdir()) == []
+
+    def test_unpacking_happens_in_the_system_temp_dir_not_beside_the_archive(
+        self, tmp_path, scratch_temp, monkeypatch
+    ):
+        """
+        With local storage the archive sits in the uploads folder. A worker
+        killed mid-extraction would leave its debris there for good; in the
+        system temp dir the operating system clears it up.
+        """
+        uploads = tmp_path / "uploads"
+        uploads.mkdir()
+        inner = zip_bytes({"inner.txt": "inner text"})
+        archive = make_zip(uploads / "a.zip", {"inner.zip": inner, "b.txt": "b text"})
+        seen: list[str] = []
+        real_copy = DocumentExtractor._copy_member
+
+        def spy(archive_file, info, destination, budget):
+            seen.append(os.path.dirname(destination))
+            return real_copy(archive_file, info, destination, budget)
+
+        monkeypatch.setattr(DocumentExtractor, "_copy_member", staticmethod(spy))
+
+        result = DocumentExtractor.extract(archive, "zip")
+
+        assert "inner text" in result.text and "b text" in result.text
+        assert seen and all(path.startswith(str(scratch_temp)) for path in seen)
+        # Nothing left anywhere: not beside the archive, not in temp.
+        assert sorted(os.listdir(uploads)) == ["a.zip"]
+        assert list(scratch_temp.iterdir()) == []
 
 
 class TestNesting:
@@ -171,6 +217,82 @@ class TestNesting:
         monkeypatch.setattr(settings, "ZIP_MAX_ENTRIES", 6)
         inner = zip_bytes({f"f{i}.txt": "x" for i in range(3)})
         archive = make_zip(tmp_path / "outer.zip", {"a.zip": inner, "b.zip": inner})
+
+        with pytest.raises(UnsafeArchiveError):
+            DocumentExtractor.extract(archive, "zip")
+
+
+# ======================================================================
+# Office files -- zip archives under another name
+# ======================================================================
+
+
+def office_file(path, extension: str, body: str = "<w:document>hello</w:document>") -> str:
+    """A minimal zip shaped like an Office file, with one main XML part."""
+    part = {"docx": "word/document.xml", "pptx": "ppt/presentation.xml", "xlsx": "xl/workbook.xml"}
+    return make_zip(path, {"[Content_Types].xml": "<Types/>", part[extension]: body})
+
+
+class TestOfficeContainers:
+    @pytest.mark.parametrize("extension", ["docx", "pptx", "xlsx"])
+    def test_a_document_that_expands_past_the_cap_is_rejected(self, tmp_path, monkeypatch, extension):
+        """A few KB on disk, megabytes once its parser opens it."""
+        monkeypatch.setattr(settings, "ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES", 1024 * 1024)
+        path = office_file(tmp_path / f"bomb.{extension}", extension, body="<p/>" * 400_000)
+        assert os.path.getsize(path) < 50_000
+
+        with pytest.raises(UnsafeArchiveError, match="expands to more than"):
+            DocumentExtractor.extract(path, extension)
+
+    def test_the_parser_never_sees_a_rejected_document(self, tmp_path, monkeypatch):
+        """The check has to come first: the parser decompresses into memory."""
+        monkeypatch.setattr(settings, "ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES", 1024)
+        path = office_file(tmp_path / "bomb.docx", "docx", body="x" * 5000)
+        opened = []
+        monkeypatch.setattr(DocumentExtractor, "extract_docx", classmethod(lambda cls, p: opened.append(p)))
+
+        with pytest.raises(UnsafeArchiveError):
+            DocumentExtractor.extract(path, "docx")
+        assert opened == []
+
+    def test_a_real_document_is_not_judged_on_count_or_ratio(self, tmp_path, monkeypatch):
+        """
+        Legitimate Office files break both archive limits: a 400-slide deck
+        holds ~1,600 parts, and a document of identical table cells compresses
+        past 100:1. Only the total expansion applies to them.
+        """
+        import docx
+
+        monkeypatch.setattr(settings, "ZIP_MAX_ENTRIES", 1)
+        monkeypatch.setattr(settings, "ZIP_MAX_COMPRESSION_RATIO", 2)
+        document = docx.Document()
+        for _ in range(200):
+            document.add_paragraph("The same boilerplate sentence, over and over again.")
+        path = tmp_path / "real.docx"
+        document.save(path)
+
+        result = DocumentExtractor.extract(str(path), "docx")
+
+        assert "boilerplate sentence" in result.text
+
+    def test_a_file_that_is_not_a_zip_is_left_to_its_parser(self, tmp_path):
+        """No UnsafeArchiveError: the parser reports what is wrong in its own words."""
+        path = tmp_path / "broken.docx"
+        path.write_bytes(b"this was never a zip archive")
+
+        result = DocumentExtractor.extract(str(path), "docx")
+
+        assert "DOCX extraction failed" in result.text
+
+    def test_a_bomb_inside_an_uploaded_zip_fails_the_whole_archive(self, tmp_path, monkeypatch):
+        """
+        The docx is SMALL inside the outer zip, so the outer archive's own
+        budget never notices it -- the Office check catches it on the way in.
+        """
+        monkeypatch.setattr(settings, "ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES", 1024 * 1024)
+        bomb = office_file(tmp_path / "inner.docx", "docx", body="<p/>" * 400_000)
+        with open(bomb, "rb") as handle:
+            archive = make_zip(tmp_path / "outer.zip", {"report.docx": handle.read(), "a.txt": "fine"})
 
         with pytest.raises(UnsafeArchiveError):
             DocumentExtractor.extract(archive, "zip")

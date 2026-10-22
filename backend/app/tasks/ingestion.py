@@ -56,10 +56,10 @@ Failures come in two kinds, and treating them the same is the classic mistake:
                 type. Trying again does exactly the same thing. -> "failed"
                 at once, with the reason in `error_message`.
     TRANSIENT   the database dropped a connection, the embedding API said
-                "rate limited", S3 timed out, ClamAV restarted. Trying again in
-                a few seconds very likely works. -> back to "pending" and
-                RETRIED with exponential backoff (2s, 4s, 8s ... capped), up to
-                INGESTION_MAX_RETRIES times; only then "failed".
+                "rate limited", S3 timed out, ClamAV restarted. Trying again a
+                little later very likely works. -> back to "pending" and
+                RETRIED with exponential backoff (10s, 20s, 40s ... capped, by
+                default), up to INGESTION_MAX_RETRIES times; only then "failed".
 
 And for failures that never get the chance to be recorded at all -- the worker
 is OOM-killed, the machine reboots, the API restarts mid-job in inline mode --
@@ -192,8 +192,17 @@ def describe_failure(exc: BaseException) -> str:
 
 
 def retry_delay_seconds(retries_so_far: int) -> int:
-    """Exponential backoff: 2, 4, 8, 16 ... capped at the configured maximum."""
-    return min(2 ** (retries_so_far + 1), settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS)
+    """
+    Exponential backoff: the base, then double it each time -- 10, 20, 40 ...
+    seconds with the defaults -- capped at the configured maximum.
+
+    The same formula Celery applies for `retry_backoff` (factor x 2^retries),
+    so inline mode waits as long as the worker would, minus the jitter.
+    """
+    return min(
+        settings.INGESTION_RETRY_BACKOFF_SECONDS * 2**retries_so_far,
+        settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS,
+    )
 
 
 def _utcnow() -> datetime.datetime:
@@ -259,19 +268,29 @@ async def claim_document(db, document_id, *, force: bool = False) -> Optional[Do
     return await db.get(Document, document_id, populate_existing=True)
 
 
-def _fetch_scan_and_extract(storage_name: str, key: str, file_type: str):
+def _fetch_scan_and_extract(
+    storage_name: str, key: str, file_type: str, progress: Optional[dict] = None
+):
     """
     Stages 1 and 2, in one blocking function run on a thread.
 
     Grouped because they share the local copy: with S3 the object is
     downloaded once, scanned, extracted, and the temporary file deleted --
     all inside the `with` block.
+
+    `progress` is filled in with {"malware_scan": <scanner>} the moment the
+    scan passes. The caller reads it if a LATER stage fails, so a document
+    that failed for an unrelated reason (no text in it, say) is still on
+    record as scanned clean -- which is what the preview endpoint checks
+    before it will serve the file back.
     """
     storage = get_storage(storage_name)
     with storage.local_copy(key) as local_path:
         verdict = malware.scan_file(local_path)
         if not verdict.clean:
             raise MalwareDetected(verdict.signature or "unknown")
+        if progress is not None:
+            progress["malware_scan"] = verdict.scanner
         return verdict, DocumentExtractor.extract(local_path, file_type)
 
 
@@ -327,6 +346,10 @@ async def async_process_document(
             f"(attempt {document.attempts}) ==="
         )
 
+        # Filled in by stage 1 once the malware scan passes; read by the
+        # failure handler (see `_fetch_scan_and_extract`).
+        progress: dict = {}
+
         try:
             # ==========================================================
             # STAGES 1-2: fetch from storage, scan, EXTRACT
@@ -349,6 +372,7 @@ async def async_process_document(
                 document.storage_backend,
                 document.file_path,
                 document.file_type,
+                progress,
             )
             if not extraction.text or not extraction.text.strip():
                 raise ValueError(
@@ -547,15 +571,35 @@ async def async_process_document(
             return "completed"
 
         except Exception as exc:
-            return await _handle_failure(db, claimed_id, exc, started_at, final_attempt)
+            return await _handle_failure(
+                db,
+                claimed_id,
+                exc,
+                started_at,
+                final_attempt,
+                scanned_by=progress.get("malware_scan"),
+            )
 
 
-async def _handle_failure(db, document_id, exc: Exception, started_at: float, final_attempt: bool) -> str:
+async def _handle_failure(
+    db,
+    document_id,
+    exc: Exception,
+    started_at: float,
+    final_attempt: bool,
+    scanned_by: Optional[str] = None,
+) -> str:
     """
     FAILURE HANDLING -- record what went wrong, and decide whether to retry.
 
     Any failure ends with the reason ON THE DOCUMENT, so the UI can show the
     user a real explanation instead of leaving it stuck on "processing".
+
+    `scanned_by` is set when the malware scan PASSED before the failure; it
+    is recorded as meta_data["malware_scan"], exactly as a success records
+    it. A failure before the scan finished (ClamAV unreachable, the file
+    missing) records nothing -- and while scanning is on, the preview
+    endpoint will not serve a failed file without that record.
     """
     transient = is_transient(exc)
     retrying = transient and not final_attempt
@@ -583,6 +627,8 @@ async def _handle_failure(db, document_id, exc: Exception, started_at: float, fi
         # existed read the reason from here.
         error_metadata["error"] = message
         error_metadata["failed_at_seconds"] = round(time.perf_counter() - started_at, 2)
+        if scanned_by is not None:
+            error_metadata["malware_scan"] = scanned_by
 
         if isinstance(exc, MalwareDetected):
             # QUARANTINE: the bytes are deleted from storage so the preview
@@ -748,7 +794,14 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
     # says "pending" and find nothing to claim.
     if requeue:
         for document_id in requeued:
-            dispatch(document_id)
+            try:
+                dispatch(document_id)
+            except Exception as exc:
+                # The queue is unreachable -- most likely Redis is restarting
+                # alongside the API. The row already says "pending", so a
+                # later sweep queues it; one failure must not stop the rest
+                # from being queued, or abort the API's startup.
+                print(f"[Recovery] Could not queue {document_id}; a later sweep will retry: {exc}")
 
     if requeued or failed:
         print(f"[Recovery] Re-queued {len(requeued)} and failed {len(failed)} stuck document(s).")
@@ -766,7 +819,8 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
     # ---- retries for TRANSIENT failures only ----
     autoretry_for=(TransientIngestionError,),
     max_retries=settings.INGESTION_MAX_RETRIES,
-    retry_backoff=2,  # first wait ~2s, then 4, 8 ...
+    # A number here is the FIRST wait in seconds; Celery doubles it per retry.
+    retry_backoff=settings.INGESTION_RETRY_BACKOFF_SECONDS,
     retry_backoff_max=settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS,
     retry_jitter=True,  # spread retries out so a recovered API is not stampeded
     # ---- surviving a dead worker ----

@@ -47,7 +47,8 @@
 #    is no worker and no Redis.
 #  Uploaded files live on the container's disk, which a free service loses
 #  on restart. Their text and embeddings are in Neon and stay searchable;
-#  only the original-file preview is lost.
+#  only the original-file preview is lost -- unless the files go to an
+#  S3-compatible bucket instead (the commented block at the end of envVars).
 # ======================================================================
 
 services:
@@ -127,4 +128,24 @@ services:
       # from the frontend with a CORS error.
       - key: FRONTEND_ORIGIN
         sync: false
+
+      # ---- OPTIONAL: keep the original files across restarts ----
+      # Left commented out so a first deploy asks for nothing extra. To keep
+      # uploads when the container restarts, store them in an S3-compatible
+      # bucket (Cloudflare R2 has a free tier): uncomment these, and Render
+      # asks for the `sync: false` values. See docs/DEPLOYMENT.md, "File
+      # storage". The API refuses to start with STORAGE_BACKEND=s3 and no
+      # S3_BUCKET, so a half-finished setup fails loudly, not silently.
+      # - key: STORAGE_BACKEND
+      #   value: s3
+      # - key: S3_BUCKET
+      #   sync: false
+      # - key: S3_REGION
+      #   value: auto
+      # - key: S3_ENDPOINT_URL
+      #   sync: false
+      # - key: S3_ACCESS_KEY_ID
+      #   sync: false
+      # - key: S3_SECRET_ACCESS_KEY
+      #   sync: false
 

@@ -6,13 +6,17 @@ WHAT THIS FILE TESTS
 The upload and preview endpoints over real HTTP requests, after hardening:
 
     413   a file over MAX_UPLOAD_SIZE_BYTES, and a whole request over the
-          ceiling (refused by middleware before the body is parsed)
+          ceiling (refused by middleware before the body is parsed) --
+          including a chunked request that declares no length at all
     415   an extension extractor.py cannot read; bytes that do not match
+    422   chunking options out of range
     safe  the client's filename is cleaned for display and NEVER used in
           the storage path; nothing is stored when a request is refused
     queue the job is queued after the commit, and a dead Redis does not
           lose the upload
-    preview  streamed from storage; a quarantined file is 410 Gone
+    preview  streamed from storage; a quarantined file is 410 Gone; with
+          scanning on, a file the scan has not cleared is 409; uploaded
+          HTML comes back as plain text, never as a live page
 
 HOW IT RUNS
 -----------
@@ -143,14 +147,25 @@ class Env:
         assert project.status_code == 201, project.text
         self.project_id = project.json()["id"]
 
-    async def upload(self, *files, headers=None):
-        """Each file is (name, bytes)."""
+    async def upload(self, *files, headers=None, options=None):
+        """Each file is (name, bytes). `options` adds form fields (chunking)."""
         return await self.client.post(
             UPLOAD,
             headers={**self.headers, **(headers or {})},
-            data={"project_id": self.project_id},
+            data={"project_id": self.project_id, **(options or {})},
             files=[("files", (name, data, "application/octet-stream")) for name, data in files],
         )
+
+    async def update_document(self, document_id: str, **values) -> None:
+        """Change a stored row directly -- standing in for the worker."""
+        async with self.factory() as session:
+            document = await session.get(Document, uuid.UUID(document_id))
+            for name, value in values.items():
+                setattr(document, name, value)
+            await session.commit()
+
+    async def preview(self, document_id: str):
+        return await self.client.get(f"{API}/documents/{document_id}/preview", headers=self.headers)
 
     async def documents(self) -> list[Document]:
         async with self.factory() as session:
@@ -249,6 +264,74 @@ class TestRefused:
         assert response.status_code == 413
         assert "per request" in response.json()["detail"]
 
+    async def test_a_chunked_request_with_no_length_is_cut_off(self, env, queued, monkeypatch):
+        """
+        Transfer-Encoding: chunked declares no Content-Length, so there is
+        nothing to check up front. The middleware counts the bytes as the
+        multipart parser pulls them in, and stops the request mid-stream.
+        """
+        monkeypatch.setattr(settings, "MAX_UPLOAD_SIZE_BYTES", 1000)
+        monkeypatch.setattr(settings, "MAX_FILES_PER_UPLOAD", 1)
+        boundary = "docminds-test-boundary"
+        head = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="project_id"\r\n\r\n'
+            f"{env.project_id}\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="huge.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+        ).encode()
+        sent = {"bytes": 0}
+
+        async def body():
+            yield head
+            for _ in range(16):  # 2 MB, about twice the ceiling
+                sent["bytes"] += 128 * 1024
+                yield b"a" * (128 * 1024)
+            yield f"\r\n--{boundary}--\r\n".encode()
+
+        response = await env.client.post(
+            UPLOAD,
+            headers={**env.headers, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+            content=body(),
+        )
+
+        assert response.status_code == 413
+        assert "per request" in response.json()["detail"]
+        # Cut off part-way, not after reading the whole 2 MB.
+        assert sent["bytes"] < 2 * 1024 * 1024
+        assert await env.documents() == []
+        assert env.stored_files() == []
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"chunk_strategy": "by_vibes"},
+            {"chunk_size": "10"},
+            {"chunk_size": "100000"},
+            {"chunk_overlap": "-1"},
+            {"chunk_size": "200", "chunk_overlap": "200"},
+        ],
+        ids=["unknown-strategy", "size-too-small", "size-too-large", "negative-overlap", "overlap-not-smaller"],
+    )
+    async def test_out_of_range_chunk_options_are_422(self, env, queued, options):
+        """Refused at the door, instead of failing later in the worker."""
+        response = await env.upload(("a.txt", TEXT), options=options)
+
+        assert response.status_code == 422, response.text
+        assert await env.documents() == []
+        assert env.stored_files() == []
+
+    async def test_chunk_options_in_range_are_kept_for_the_worker(self, env, queued):
+        response = await env.upload(
+            ("a.txt", TEXT),
+            options={"chunk_strategy": "sentence", "chunk_size": "400", "chunk_overlap": "60"},
+        )
+
+        assert response.status_code == 202, response.text
+        meta = response.json()[0]["meta_data"]
+        assert (meta["chunk_strategy"], meta["chunk_size"], meta["chunk_overlap"]) == ("sentence", 400, 60)
+
     async def test_an_unsupported_type_is_415(self, env, queued):
         response = await env.upload(("setup.exe", b"MZ\x90\x00"))
         assert response.status_code == 415
@@ -314,6 +397,35 @@ class TestPreview:
         response = await env.client.get(f"{API}/documents/{document_id}/preview", headers=env.headers)
         assert response.status_code == 410
 
+    async def test_uploaded_html_is_served_as_plain_text(self, env, queued):
+        """
+        The same bytes -- but labelled text/plain, so a browser shows the
+        source instead of running the uploader's script, however the file
+        is opened (directly, or as a blob URL in the frontend).
+        """
+        page = b"<html><body><script>alert('hi')</script>Policy</body></html>"
+        document_id = (await env.upload(("page.html", page))).json()[0]["id"]
+
+        response = await env.preview(document_id)
+
+        assert response.status_code == 200
+        assert response.content == page
+        assert response.headers["content-type"].startswith("text/plain")
+        assert "page.html" in response.headers["content-disposition"]
+
+    async def test_a_type_from_before_the_allowlist_is_served_as_opaque_bytes(self, env, queued):
+        """
+        Before the allowlist any extension was stored -- an .svg, which can
+        carry script, included. Such a legacy row is downloaded, never shown.
+        """
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        await env.update_document(document_id, filename="drawing.svg", file_type="svg")
+
+        response = await env.preview(document_id)
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/octet-stream"
+
     async def test_a_missing_file_is_404(self, env, queued):
         document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
         for name in env.stored_files():
@@ -338,3 +450,70 @@ class TestPreview:
         assert response.status_code == 200
         assert response.content == b"# Notes\n\nhello"
         assert "UTF-8''notes.md" in response.headers["content-disposition"]
+
+
+# ======================================================================
+# Preview while malware scanning is on
+# ======================================================================
+
+
+class TestPreviewWithScanning:
+    """
+    The scan runs in the worker, after the upload is stored. Until it has
+    passed, the file must not be handed to anybody -- or the gap between
+    upload and scan, or a scan that never ran because ClamAV was down until
+    the retries ran out, would let one user pass another a malicious file.
+    """
+
+    @pytest.fixture
+    def scanning(self, monkeypatch):
+        monkeypatch.setattr(settings, "MALWARE_SCAN", "clamav")
+
+    async def test_a_file_still_waiting_for_its_scan_is_409(self, env, queued, scanning):
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+
+        response = await env.preview(document_id)
+
+        assert response.status_code == 409
+        assert "malware scan" in response.json()["detail"]
+
+    async def test_a_file_the_scan_cleared_is_served(self, env, queued, scanning):
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        await env.update_document(
+            document_id, status="completed", meta_data={"malware_scan": "clamav"}
+        )
+
+        assert (await env.preview(document_id)).status_code == 200
+
+    async def test_a_failure_after_a_clean_scan_is_still_served(self, env, queued, scanning):
+        """It failed for another reason (no text, say) -- but it IS clean."""
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        await env.update_document(
+            document_id, status="failed", meta_data={"malware_scan": "clamav", "error": "No text"}
+        )
+
+        assert (await env.preview(document_id)).status_code == 200
+
+    async def test_a_failure_before_any_scan_is_409(self, env, queued, scanning):
+        """ClamAV was unreachable until the retries ran out: never scanned."""
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        await env.update_document(
+            document_id, status="failed", meta_data={"error": "Cannot reach ClamAV"}
+        )
+
+        assert (await env.preview(document_id)).status_code == 409
+
+    async def test_documents_from_before_scanning_was_enabled_stay_available(
+        self, env, queued, monkeypatch
+    ):
+        """Switching ClamAV on must not lock the whole existing library."""
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        await env.update_document(document_id, status="completed", meta_data={})
+
+        monkeypatch.setattr(settings, "MALWARE_SCAN", "clamav")
+
+        assert (await env.preview(document_id)).status_code == 200
+
+    async def test_with_scanning_off_nothing_is_held_back(self, env, queued):
+        document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
+        assert (await env.preview(document_id)).status_code == 200

@@ -90,16 +90,31 @@ To run with background ingestion (`INGESTION_MODE=celery`, the default):
 - Run exactly one Celery beat process: `celery -A app.core.celery_app beat --loglevel=info` (or add `-B` to a single worker). It sends the recovery sweep every `INGESTION_RECOVERY_INTERVAL_MINUTES`. Without beat the sweep still runs once whenever the API starts.
 - The API and worker exchange only the document id; the worker reads the file through the storage backend. With `STORAGE_BACKEND=local` they must share a filesystem (same host or a shared volume, at `LOCAL_STORAGE_DIR`); with `STORAGE_BACKEND=s3` they need only the same bucket settings.
 - The embedding provider, `EMBEDDING_DIMENSION` and the storage and malware-scan settings must be identical in both processes.
+- Redis's visibility timeout (how long an unacknowledged message waits before Redis hands it to another worker) is set automatically to at least `INGESTION_TIME_LIMIT_SECONDS` + `INGESTION_RETRY_BACKOFF_MAX_SECONDS` + 5 minutes, and never below Celery's one-hour default, so a slow job is not started twice.
 
 ### What happens when ingestion fails
 
 | Failure | Behaviour |
 |---|---|
 | Permanent (corrupt or empty file, unsupported content, zip bomb, malware) | The document is marked `failed` at once with `error_message` set (also copied to `meta_data.error`) |
-| Transient (database or network blip, rate limit, storage or ClamAV unavailable) | The document returns to `pending` and the task is retried with exponential backoff, up to `INGESTION_MAX_RETRIES` times, then marked `failed` |
+| Transient (database or network blip, rate limit, storage or ClamAV unavailable) | The document returns to `pending` with the reason in `error_message`, and the task is retried with exponential backoff (waits of up to 10, 20 and 40 s by default: `INGESTION_RETRY_BACKOFF_SECONDS`, doubling), up to `INGESTION_MAX_RETRIES` times, then marked `failed` |
 | The worker dies mid-job | `acks_late` and `reject_on_worker_lost` return the message to the queue. A claim on the document (one conditional `UPDATE`) makes sure only one run processes it |
 | Redis lost the message, or the API restarted mid-job in inline mode | The recovery sweep re-queues any document `processing` or `pending` for longer than `INGESTION_STALE_AFTER_MINUTES`, or fails it once it has used every attempt |
 | Redis is down at upload time | The upload still succeeds (`202`, status `pending`); the sweep queues it once Redis is back |
+
+#### Re-processing a failed document
+
+There is no endpoint for this yet, and uploading the same file again is refused as a duplicate (the content hash is unique per project). Once the cause is fixed (clamd running again, an API key corrected), an operator can re-run the pipeline for one document. `force` lets the run claim a `failed` or `completed` document; re-running replaces its chunks instead of duplicating them.
+
+```bash
+# INGESTION_MODE=celery: queue it for a worker
+celery -A app.core.celery_app call app.tasks.ingestion.process_document_task \n  --args='["<document-id>"]' --kwargs='{"force": true}'
+
+# INGESTION_MODE=inline (no worker): run it in place, from the backend directory or the API container
+python -c "import asyncio; from app.tasks.ingestion import run_inline_ingestion; print(asyncio.run(run_inline_ingestion('<document-id>', force=True)))"
+```
+
+A quarantined document cannot be re-processed: its file was deleted.
 
 ## File storage
 
@@ -111,6 +126,8 @@ To run with background ingestion (`INGESTION_MODE=celery`, the default):
 | Cloudflare R2 | As above with `S3_REGION=auto` and `S3_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com` |
 | MinIO, Backblaze B2 | As above with the provider's `S3_ENDPOINT_URL` |
 
+With `S3_ENDPOINT_URL` set (anything but AWS), the client sends upload checksums only where the S3 API requires them, as boto3 did before 1.36. Several S3-compatible stores reject the checksum headers newer boto3 adds by default. Custom endpoints are also addressed path-style (`<endpoint>/<bucket>/<key>`), which MinIO needs without a wildcard DNS setup. Neither needs configuring.
+
 Keep the bucket private: previews are streamed through the API after its ownership check, so the bucket needs no public access and no CORS rules. The credentials need `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` (for `HeadObject` to report a missing object as 404 rather than 403). Turn on the bucket's default encryption.
 
 ## Malware scanning
@@ -119,6 +136,7 @@ Set `MALWARE_SCAN=clamav` and point `CLAMAV_HOST` / `CLAMAV_PORT` (or `CLAMAV_SO
 
 - **Infected**: the document is marked `failed` with `meta_data.quarantined = true` and the signature name, its bytes are deleted from storage, and the preview endpoint returns `410 Gone`.
 - **clamd unreachable or no verdict**: treated as transient and retried; after the last retry the document fails. A file is never processed unscanned while scanning is on.
+- **Preview**: while scanning is on, the preview endpoint returns `409` for a file the scan has not cleared, meaning one still queued or processing, or one that failed before its scan finished. Documents completed before scanning was switched on are still served; they are not rescanned.
 - Set clamd's `StreamMaxLength` at least as high as `MAX_UPLOAD_SIZE_BYTES` (clamd's default is 25 MB); larger files otherwise get no verdict and fail.
 
 ## Backups
