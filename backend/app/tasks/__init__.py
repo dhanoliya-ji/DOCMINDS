@@ -25,6 +25,7 @@ This file is imported by the worker because `core/celery_app.py` sets
 
 from app.tasks.ingestion import process_document_task, recover_stuck_documents_task
 from app.tasks.test import add_numbers_task, dummy_process_document_task
+from app.tasks.webhooks import deliver_webhook_task, sweep_webhooks_task
 
 # `__all__` documents the public surface of this package and tells linters that
 # these imports are intentional re-exports rather than unused leftovers.
@@ -37,4 +38,8 @@ __all__ = [
     # Diagnostic tasks, used by the /tasks endpoints to prove the queue works.
     "add_numbers_task",
     "dummy_process_document_task",
+    # Outgoing webhooks: one delivery attempt (retrying itself with backoff),
+    # and the beat sweep that re-queues deliveries whose message was lost.
+    "deliver_webhook_task",
+    "sweep_webhooks_task",
 ]

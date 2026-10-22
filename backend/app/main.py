@@ -60,8 +60,10 @@ from app.api.v1.documents import router as documents_router
 from app.api.v1.org import router as org_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.search import router as search_router
+from app.api.v1.sso import router as sso_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.users import router as users_router
+from app.api.v1.webhooks import router as webhooks_router
 from app.core import health, observability
 from app.core.config import settings
 from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
@@ -225,6 +227,9 @@ app.include_router(
     auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["Authentication"]
 )
 app.include_router(
+    sso_router, prefix=f"{settings.API_V1_STR}/auth/sso", tags=["Single sign-on"]
+)
+app.include_router(
     users_router, prefix=f"{settings.API_V1_STR}/users", tags=["Users"]
 )
 app.include_router(
@@ -233,6 +238,11 @@ app.include_router(
 # Members, invites, API keys and the audit log. Admin-only, every endpoint.
 app.include_router(
     org_router, prefix=f"{settings.API_V1_STR}/org", tags=["Organization admin"]
+)
+
+# Outgoing webhooks (admin-only; every route 404s unless WEBHOOKS_ENABLED).
+app.include_router(
+    webhooks_router, prefix=f"{settings.API_V1_STR}/webhooks", tags=["Webhooks"]
 )
 
 # --- Document ingestion ---

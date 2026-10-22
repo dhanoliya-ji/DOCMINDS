@@ -51,12 +51,14 @@ is then a one-line change in .env, and no other file in the project notices.
 """
 
 import hashlib
+import json
 import logging
 import math
 import random
 import threading
 import time
-from typing import List
+from collections import OrderedDict
+from typing import List, Optional, Tuple
 
 from app.core.config import settings
 
@@ -150,11 +152,25 @@ class EmbeddingService:
         wrapping it in a one-item list and unwrapping the result keeps the
         calling code in retrieval.py readable.
         """
+        # The QUERY CACHE (off unless EMBEDDING_CACHE_ENABLED): the same
+        # question asked again reuses the vector instead of re-running the
+        # model. See QueryEmbeddingCache at the bottom of this file.
+        cache_key = None
+        if settings.EMBEDDING_CACHE_ENABLED:
+            cache_key = query_cache.key(cls.current_model_name(), text)
+            cached = query_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         results = cls.get_embeddings([text], for_query=True)
         # `results[0] if results else []` guards against the (unlikely) case of
         # a provider returning nothing, so we return an empty list rather than
         # raising an IndexError.
-        return results[0] if results else []
+        vector = results[0] if results else []
+
+        if cache_key is not None and vector:
+            query_cache.set(cache_key, vector)
+        return vector
 
     # ==================================================================
     # PROVIDER 1: LOCAL MODEL (the default -- free, no API key needed)
@@ -193,13 +209,13 @@ class EmbeddingService:
 
                 logger.info(
                     f"Loading local model "
-                    f"'{settings.LOCAL_EMBEDDING_MODEL}' (first use only, "
+                    f"'{settings.local_embedding_model}' (first use only, "
                     f"this can take ~10s)..."
                 )
                 # On the very first run this downloads the model from
                 # HuggingFace and caches it on disk (~/.cache/huggingface).
                 # Every later start reads from that cache and is much faster.
-                _local_model = SentenceTransformer(settings.LOCAL_EMBEDDING_MODEL)
+                _local_model = SentenceTransformer(settings.local_embedding_model)
                 logger.info("Local model ready.")
 
         return _local_model
@@ -444,7 +460,7 @@ class EmbeddingService:
         """
         provider = settings.EMBEDDING_PROVIDER.lower()
         if provider == "local":
-            return settings.LOCAL_EMBEDDING_MODEL
+            return settings.local_embedding_model
         elif provider == "openai":
             return settings.OPENAI_EMBEDDING_MODEL
         elif provider == "gemini":
@@ -452,3 +468,132 @@ class EmbeddingService:
             # size produces vectors that are not comparable.
             return f"{settings.GEMINI_EMBEDDING_MODEL}@{settings.EMBEDDING_DIMENSION}"
         return f"mock-embedding-{settings.EMBEDDING_DIMENSION}"
+
+
+# ======================================================================
+# THE QUERY-EMBEDDING CACHE
+# ======================================================================
+# WHY ONLY QUESTIONS
+#   A document chunk is embedded once, at upload, and the vector is stored in
+#   Postgres -- it is never asked for again. A QUESTION is embedded on every
+#   search, and real users repeat themselves a lot. That is where a cache pays.
+#
+# TWO STORES, ONE INTERFACE
+#   Redis   shared by every API process, survives a restart of one of them.
+#   memory  an LRU ("least recently used") dictionary inside this process:
+#           when it is full, the entry untouched for longest is dropped.
+#
+#   With EMBEDDING_CACHE_BACKEND=auto, Redis is used when it answers, and the
+#   in-memory LRU otherwise -- the same "degrade, don't fail" rule as the rate
+#   limiter (core/rate_limit.py). A cache that is down must never take search
+#   down with it, so every Redis error simply means "cache miss".
+#
+# THE KEY
+#   sha256(model name + text). The model name is in the key because vectors
+#   from two models are not comparable: after switching model (say, to the
+#   multilingual one) every old entry simply stops matching. Hashing keeps
+#   the question text itself out of Redis -- a cache key should not be a
+#   readable log of what people searched for.
+# ======================================================================
+
+
+class QueryEmbeddingCache:
+    """A small TTL + LRU cache for question vectors, Redis-backed when possible."""
+
+    # After a Redis failure, wait this long before trying Redis again, so a
+    # down Redis does not add a connection timeout to every single search.
+    _REDIS_RETRY_SECONDS = 30.0
+    _PREFIX = "docminds:qemb:"
+
+    def __init__(self) -> None:
+        # key -> (expires_at monotonic seconds, vector)
+        self._memory: "OrderedDict[str, Tuple[float, List[float]]]" = OrderedDict()
+        self._lock = threading.Lock()
+        self._redis = None
+        self._redis_down_until = 0.0
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def key(model_name: str, text: str) -> str:
+        digest = hashlib.sha256(f"{model_name}\x00{text}".encode("utf-8")).hexdigest()
+        return QueryEmbeddingCache._PREFIX + digest
+
+    # ---- Redis (best effort) ----------------------------------------
+    def _redis_client(self):
+        """The Redis client, or None when Redis is not in use right now."""
+        if settings.EMBEDDING_CACHE_BACKEND != "auto":
+            return None
+        if time.monotonic() < self._redis_down_until:
+            return None
+        if self._redis is None:
+            try:
+                import redis  # already a dependency, for Celery
+
+                # Short timeouts: a cache that makes search slower is worse
+                # than no cache.
+                self._redis = redis.Redis.from_url(
+                    settings.REDIS_URL, socket_timeout=0.25, socket_connect_timeout=0.25
+                )
+            except Exception as exc:  # pragma: no cover - import/config failure
+                self._mark_redis_down(exc)
+                return None
+        return self._redis
+
+    def _mark_redis_down(self, exc: Exception) -> None:
+        logger.info("Query-embedding cache: Redis unavailable, using memory (%s)", exc)
+        self._redis = None
+        self._redis_down_until = time.monotonic() + self._REDIS_RETRY_SECONDS
+
+    # ---- Public API ---------------------------------------------------
+    def get(self, key: str) -> Optional[List[float]]:
+        client = self._redis_client()
+        if client is not None:
+            try:
+                raw = client.get(key)
+                if raw is not None:
+                    self.hits += 1
+                    return json.loads(raw)
+            except Exception as exc:
+                self._mark_redis_down(exc)
+
+        with self._lock:
+            entry = self._memory.get(key)
+            if entry is not None:
+                expires_at, vector = entry
+                if expires_at > time.monotonic():
+                    # Touch: move to the "recently used" end.
+                    self._memory.move_to_end(key)
+                    self.hits += 1
+                    return vector
+                del self._memory[key]
+        self.misses += 1
+        return None
+
+    def set(self, key: str, vector: List[float]) -> None:
+        ttl = max(1, settings.EMBEDDING_CACHE_TTL_SECONDS)
+        client = self._redis_client()
+        if client is not None:
+            try:
+                client.set(key, json.dumps(vector), ex=ttl)
+                return
+            except Exception as exc:
+                self._mark_redis_down(exc)
+
+        with self._lock:
+            self._memory[key] = (time.monotonic() + ttl, list(vector))
+            self._memory.move_to_end(key)
+            # Evict the least recently used entries beyond the size limit.
+            while len(self._memory) > max(1, settings.EMBEDDING_CACHE_MAX_ENTRIES):
+                self._memory.popitem(last=False)
+
+    def clear(self) -> None:
+        """Empty the in-memory store (tests; Redis entries simply expire)."""
+        with self._lock:
+            self._memory.clear()
+        self.hits = 0
+        self.misses = 0
+
+
+# One cache per process, shared by every request.
+query_cache = QueryEmbeddingCache()

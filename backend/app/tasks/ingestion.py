@@ -563,6 +563,13 @@ async def async_process_document(
             document.status = "completed"
             document.error_message = None
 
+            # WEBHOOK "document.processed" (off unless WEBHOOKS_ENABLED):
+            # staged in this same transaction, sent only after the commit.
+            await _emit_document_event(
+                db, document, "document.processed",
+                {"chunk_count": len(chunk_objects), "processing_seconds": elapsed},
+            )
+
             # One commit writes the chunks, the vectors and the status change
             # together as a single transaction. Either all of it lands or none
             # of it does -- there is no state where chunks exist but the
@@ -584,6 +591,37 @@ async def async_process_document(
                 final_attempt,
                 scanned_by=progress.get("malware_scan"),
             )
+
+
+async def _emit_document_event(db, document: Document, event_type: str, extra: dict) -> None:
+    """
+    Stage a document webhook (services/webhooks.py). A no-op unless
+    WEBHOOKS_ENABLED; never raises -- a webhook problem must not change what
+    happens to the document itself.
+    """
+    if not settings.WEBHOOKS_ENABLED:
+        return
+    try:
+        from app.models.project import Project
+        from app.services import webhooks
+
+        project = await db.get(Project, document.project_id)
+        if project is None:
+            return
+        await webhooks.emit(
+            db,
+            project.org_id,
+            event_type,
+            {
+                "document_id": str(document.id),
+                "project_id": str(document.project_id),
+                "filename": document.filename,
+                "status": document.status,
+                **extra,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not stage document webhook", extra={"error": repr(exc)})
 
 
 async def _handle_failure(
@@ -658,6 +696,8 @@ async def _handle_failure(
             document.processing_started_at = None
         else:
             document.status = "failed"
+            # Only the FINAL failure is an event -- a retry is not news.
+            await _emit_document_event(db, document, "document.failed", {"error": message})
         await db.commit()
     except Exception as record_error:
         # Could not even record the failure -- most likely the database is the

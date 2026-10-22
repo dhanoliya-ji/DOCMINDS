@@ -14,6 +14,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import AnalyticsConsent from "@/components/AnalyticsConsent";
+
 /**
  * `metadata` is picked up by Next.js and turned into <head> tags at build
  * time. This drives the browser tab title, search engine snippets, and the
@@ -51,7 +53,13 @@ export default function RootLayout({
     <html lang="en">
       {/* `antialiased` smooths font rendering, which noticeably improves the
           look of light text on a dark background. */}
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        {children}
+        {/* Optional PostHog analytics: renders nothing unless
+            NEXT_PUBLIC_POSTHOG_KEY is set, and sends nothing until the
+            visitor accepts (lib/analytics.ts). */}
+        <AnalyticsConsent />
+      </body>
     </html>
   );
 }
