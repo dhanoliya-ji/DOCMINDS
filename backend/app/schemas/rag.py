@@ -64,6 +64,14 @@ class SearchRequest(BaseModel):
         None, description="Restrict the search to a single document."
     )
 
+    # The "only these files" filter. Up to 50 ids; omitted or empty means the
+    # whole project (or organization). Ids from another organization simply
+    # match nothing -- the tenant filter in retrieval.py still applies.
+    document_ids: Optional[List[uuid.UUID]] = Field(
+        None, max_length=50,
+        description="Restrict the search to these documents.",
+    )
+
     # ge/le = "greater than or equal" / "less than or equal". These bounds stop
     # a client requesting 10,000 results and exhausting the server's memory.
     top_k: Optional[int] = Field(
@@ -96,6 +104,13 @@ class SearchResult(BaseModel):
 
     # Extra facts recorded at chunk time: token count, markdown header, etc.
     meta_data: Dict[str, Any] = {}
+
+    # Which half of hybrid search found it: "vector" (meaning), "keyword"
+    # (exact words) or "both". None when hybrid search is switched off.
+    match_type: Optional[str] = None
+
+    # The cross-encoder's relevance score, when RERANKER is on.
+    rerank_score: Optional[float] = None
 
 
 class SearchResponse(BaseModel):
@@ -150,6 +165,13 @@ class ChatSessionOut(BaseModel):
     updated_at: datetime.datetime
 
 
+class ChatSessionUpdate(BaseModel):
+    """Body for PATCH /api/v1/chat/sessions/{id} -- rename a conversation."""
+
+    title: str = Field(..., min_length=1, max_length=255,
+                       description="The new name shown in the history sidebar.")
+
+
 class Citation(BaseModel):
     """
     A pointer back to the exact passage that supports one part of the answer.
@@ -202,6 +224,14 @@ class ChatRequest(BaseModel):
         "rag", description='"rag" (fixed pipeline) or "agent" (tool-using agent).'
     )
 
+    # The "only these files" filter. Up to 50 ids; omitted or empty means the
+    # whole project (or organization). Ids from another organization simply
+    # match nothing -- the tenant filter in retrieval.py still applies.
+    document_ids: Optional[List[uuid.UUID]] = Field(
+        None, max_length=50,
+        description="Answer only from these documents.",
+    )
+
 
 class AgentStep(BaseModel):
     """
@@ -212,9 +242,9 @@ class AgentStep(BaseModel):
     found 5 excerpts", "read handbook.pdf chunks 0-4". That trace is what makes
     an agent's answer reviewable instead of a black box.
 
-    Steps are returned in the response only. They are NOT stored in the
-    database, so reloading an old conversation shows the answer and citations
-    but not the trace.
+    Steps are returned in the response AND saved on the assistant message
+    (ChatMessage.steps), so reopening a conversation from the history sidebar
+    shows the trace too.
     """
 
     # The tool's name, e.g. "search_documents".
@@ -243,6 +273,13 @@ class ChatMessageOut(BaseModel):
     tokens_used: Optional[int] = None
     latency: Optional[float] = None
     citations: List[Dict[str, Any]] = []
+
+    # How the answer was produced (assistant messages saved after migration
+    # a7b9c1d3e5f8; None otherwise): "rag" or "agent", the model that
+    # actually answered, and the agent's tool trace.
+    mode: Optional[str] = None
+    model: Optional[str] = None
+    steps: List[Dict[str, Any]] = []
 
     created_at: datetime.datetime
 
@@ -273,6 +310,12 @@ class ChatResponse(BaseModel):
     # "rag" mode, where the steps are fixed and not worth listing.
     steps: List[AgentStep] = []
 
+    # The query retrieval ACTUALLY searched with. Differs from the question
+    # when a follow-up was rewritten into a standalone query
+    # (services/query_rewrite.py); None in agent mode, which searches with
+    # queries of its own choosing.
+    search_query: Optional[str] = None
+
 
 class FeedbackCreate(BaseModel):
     """
@@ -288,3 +331,49 @@ class FeedbackCreate(BaseModel):
     comment: Optional[str] = Field(
         None, max_length=1000, description="Optional written feedback."
     )
+
+
+# ======================================================================
+# FEEDBACK SUMMARY -- the admin view of thumbs up / down
+# ======================================================================
+
+
+class FeedbackBreakdown(BaseModel):
+    """Up and down votes for one slice: a mode, or a model."""
+
+    key: str
+    up: int
+    down: int
+
+
+class FeedbackItem(BaseModel):
+    """One rated answer, with the question that led to it."""
+
+    message_id: uuid.UUID
+    session_id: uuid.UUID
+    rating: int
+    comment: Optional[str] = None
+    question: Optional[str] = None
+    answer: str
+    mode: Optional[str] = None
+    model: Optional[str] = None
+    created_at: datetime.datetime
+
+
+class FeedbackSummary(BaseModel):
+    """
+    GET /api/v1/org/feedback -- how the organization rates its answers.
+
+    `satisfaction` is up / (up + down), or None before anyone has voted. The
+    `recent_negative` list is the useful part: the actual questions people
+    were unhappy with, which usually point straight at a badly chunked or
+    badly OCR'd document.
+    """
+
+    total: int
+    up: int
+    down: int
+    satisfaction: Optional[float] = None
+    by_mode: List[FeedbackBreakdown] = []
+    by_model: List[FeedbackBreakdown] = []
+    recent_negative: List[FeedbackItem] = []

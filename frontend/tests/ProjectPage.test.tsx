@@ -27,14 +27,19 @@
  * under the test's control rather than the wall clock's.
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ProjectPage from "@/app/project/[id]/page";
 import { pushMock } from "./setup";
 
 const listDocuments = vi.fn();
-const listProjects = vi.fn();
+const getProject = vi.fn();
+const renameProject = vi.fn();
+const deleteProject = vi.fn();
+const renameDocument = vi.fn();
+const deleteDocument = vi.fn();
+const reindexDocument = vi.fn();
 const getToken = vi.fn();
 // The signed-in user; drives whether the upload zone is offered.
 const getMe = vi.fn();
@@ -42,7 +47,13 @@ const getMe = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: {
     listDocuments: (...a: unknown[]) => listDocuments(...a),
-    listProjects: (...a: unknown[]) => listProjects(...a),
+    getProject: (...a: unknown[]) => getProject(...a),
+    renameProject: (...a: unknown[]) => renameProject(...a),
+    deleteProject: (...a: unknown[]) => deleteProject(...a),
+    renameDocument: (...a: unknown[]) => renameDocument(...a),
+    deleteDocument: (...a: unknown[]) => deleteDocument(...a),
+    reindexDocument: (...a: unknown[]) => reindexDocument(...a),
+    listProjectChatSessions: vi.fn().mockResolvedValue([]),
     createChatSession: vi.fn().mockResolvedValue({ id: "s1" }),
     search: vi.fn().mockResolvedValue({ results: [], took_seconds: 0 }),
     uploadDocuments: vi.fn().mockResolvedValue([]),
@@ -118,7 +129,12 @@ beforeEach(() => {
   getToken.mockReturnValue("a-valid-token");
   getMe.mockReset().mockResolvedValue({ id: "u1", email: "ed@example.com", role: "Manager", is_verified: true });
   listDocuments.mockReset().mockResolvedValue([doc()]);
-  listProjects.mockReset().mockResolvedValue([{ id: "project-1", name: "HR Handbook" }]);
+  getProject.mockReset().mockResolvedValue({ id: "project-1", name: "HR Handbook", document_count: 1, ready_count: 1 });
+  renameProject.mockReset().mockResolvedValue({ id: "project-1", name: "Policies" });
+  deleteProject.mockReset().mockResolvedValue({});
+  renameDocument.mockReset().mockResolvedValue({});
+  deleteDocument.mockReset().mockResolvedValue({});
+  reindexDocument.mockReset().mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -322,7 +338,7 @@ describe("loading", () => {
   it("survives a failure to load the project name", async () => {
     // A missing heading is cosmetic. The documents are the page's purpose and
     // must still arrive.
-    listProjects.mockRejectedValue(new Error("Could not list projects"));
+    getProject.mockRejectedValue(new Error("Could not load the project"));
     renderPage();
 
     await waitFor(() => expect(listDocuments).toHaveBeenCalled());
@@ -422,5 +438,85 @@ describe("role gating", () => {
 
     expect(await screen.findByText(/view-only access/i)).toBeInTheDocument();
     expect(container.querySelector('input[type="file"]')).toBeNull();
+  });
+});
+
+// ======================================================================
+// Managing the project and its documents (editor+)
+// ======================================================================
+
+describe("managing documents", () => {
+  it("offers no document actions to a viewer", async () => {
+    getMe.mockResolvedValue({ id: "u2", email: "v@example.com", role: "Employee", is_verified: true });
+    renderPage();
+
+    await screen.findByText(/view-only access/i);
+    expect(screen.queryByRole("button", { name: /delete handbook\.pdf/i })).not.toBeInTheDocument();
+  });
+
+  it("deletes a document only after a second click, then reloads", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /delete handbook\.pdf/i }));
+    expect(deleteDocument).not.toHaveBeenCalled();
+
+    const before = listDocuments.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: /^delete\?$/i }));
+
+    await waitFor(() => expect(deleteDocument).toHaveBeenCalledWith("doc-1"));
+    await waitFor(() => expect(listDocuments.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("re-indexes a document", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /re-index handbook\.pdf/i }));
+    await waitFor(() => expect(reindexDocument).toHaveBeenCalledWith("doc-1"));
+  });
+
+  it("does not offer re-indexing while a document is still processing", async () => {
+    listDocuments.mockResolvedValue([doc({ status: "processing" })]);
+    renderPage();
+    expect(await screen.findByRole("button", { name: /re-index handbook\.pdf/i })).toBeDisabled();
+  });
+
+  it("renames a document inline", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /rename handbook\.pdf/i }));
+    const box = screen.getByRole("textbox", { name: /document name/i });
+    fireEvent.change(box, { target: { value: "Staff handbook.pdf" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => expect(renameDocument).toHaveBeenCalledWith("doc-1", "Staff handbook.pdf"));
+  });
+
+  it("shows why an action failed", async () => {
+    deleteDocument.mockRejectedValue(new Error("This action requires the Manager role or higher."));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /delete handbook\.pdf/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete\?$/i }));
+
+    expect(await screen.findByText(/requires the Manager role/)).toBeInTheDocument();
+  });
+});
+
+describe("managing the project", () => {
+  it("renames the project", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /rename project/i }));
+    const box = screen.getByRole("textbox", { name: /project name/i });
+    fireEvent.change(box, { target: { value: "Policies" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith("project-1", "Policies"));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Policies"));
+  });
+
+  it("deletes the project after confirming, then returns to the dashboard", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /delete project/i }));
+    expect(deleteProject).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /delete the project, its documents/i }));
+
+    await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("project-1"));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/dashboard"));
   });
 });

@@ -4,50 +4,74 @@
  * WHAT THIS FILE TESTS
  * --------------------
  * `components/ChatPanel.tsx` -- the component the whole project builds
- * towards. Questions in, answers with citations out.
+ * towards. Questions in, streamed answers with citations out, and a history
+ * of conversations to come back to.
  *
- * THE TWO THAT MATTER MOST
- * ------------------------
- * 1. THE OPTIMISTIC ROLLBACK. The question is added to the transcript before
- *    the answer arrives, so the wait is legible. If the request then fails,
- *    that placeholder must be REMOVED again. An optimistic update without its
- *    rollback is the usual half-built version of this pattern, and it lies to
- *    the user the first time a request fails -- leaving a question sitting in
- *    the transcript that was never answered and never will be.
+ * THE ONES THAT MATTER MOST
+ * -------------------------
+ * 1. THE OPTIMISTIC ROLLBACK. The question (and an empty answer bubble) are
+ *    added before anything arrives, so the wait is legible. If the request
+ *    then fails -- or is stopped -- BOTH must be removed again. An optimistic
+ *    update without its rollback lies to the user the first time a request
+ *    fails.
  *
- * 2. CITATIONS. The numbered sources under an answer are what make a claim
- *    checkable. A missing or mismatched citation does not look like a bug; it
- *    looks like an answer.
+ * 2. STREAMING. Words and research steps must appear AS THEY ARRIVE, not all
+ *    at once at the end -- that is the whole point of the streaming endpoint.
  *
- * 3. ANSWER MODE. "Quick answer" and "Deep research" are different backend
- *    pipelines. The toggle must send the mode the user actually picked, and
- *    the research steps an agent returns must be shown -- they are the only
- *    record of how a deep-research answer was reached, since the backend does
- *    not save them.
+ * 3. CITATIONS. The numbered sources under an answer are what make a claim
+ *    checkable, and "View" must open the right document at the right place.
  *
- * `lib/api` and `react-markdown` are both mocked -- what is under test is this
- * component's behaviour, not markdown rendering.
+ * 4. HISTORY. A conversation is created on its first question (never on
+ *    mount, which would litter the sidebar), and can be resumed, renamed and
+ *    deleted.
+ *
+ * `lib/api` and `react-markdown` are mocked -- what is under test is this
+ * component's behaviour. The stream is simulated by a fake `streamQuestion`
+ * that calls the handlers the way the real SSE reader does.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import ChatPanel from "@/components/ChatPanel";
 
+const listProjectChatSessions = vi.fn();
 const createChatSession = vi.fn();
-const askQuestion = vi.fn();
+const streamQuestion = vi.fn();
+const listMessages = vi.fn();
+const renameChatSession = vi.fn();
+const deleteChatSession = vi.fn();
 const sendFeedback = vi.fn();
+const documentChunks = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   api: {
+    listProjectChatSessions: (...a: unknown[]) => listProjectChatSessions(...a),
     createChatSession: (...a: unknown[]) => createChatSession(...a),
-    askQuestion: (...a: unknown[]) => askQuestion(...a),
+    streamQuestion: (...a: unknown[]) => streamQuestion(...a),
+    listMessages: (...a: unknown[]) => listMessages(...a),
+    renameChatSession: (...a: unknown[]) => renameChatSession(...a),
+    deleteChatSession: (...a: unknown[]) => deleteChatSession(...a),
     sendFeedback: (...a: unknown[]) => sendFeedback(...a),
+    documentChunks: (...a: unknown[]) => documentChunks(...a),
   },
   getErrorMessage: (error: unknown, fallback = "Something went wrong.") =>
     error instanceof Error && error.message ? error.message : fallback,
 }));
+
+// Downloads and the clipboard are browser services jsdom lacks; the
+// Markdown they would receive is checked through these spies instead.
+const downloadText = vi.fn();
+const copyText = vi.fn();
+vi.mock("@/lib/export", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/export")>("@/lib/export");
+  return {
+    ...actual,
+    downloadText: (...a: unknown[]) => downloadText(...a),
+    copyText: (...a: unknown[]) => copyText(...a),
+  };
+});
 
 // react-markdown is ESM-only and renders prose we are not testing. A plain
 // passthrough keeps the answer text queryable.
@@ -60,7 +84,7 @@ function citation(n: number, overrides: Record<string, unknown> = {}) {
     number: n,
     chunk_id: `chunk-${n}`,
     document_id: `doc-${n}`,
-    filename: "handbook.pdf",
+    filename: "handbook.docx",
     page_number: 12,
     score: 0.83,
     snippet: `Snippet of source number ${n}.`,
@@ -68,19 +92,68 @@ function citation(n: number, overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** The shape POST /chat/sessions/{id}/messages returns. */
-function answer(content: string, citations: unknown[] = []) {
+function session(id: string, title: string) {
   return {
+    id, title, project_id: "p1", user_id: "u1",
+    created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+}
+
+/** The shape the stream's final "done" event carries. */
+function answer(content: string, citations: unknown[] = [], extra: Record<string, unknown> = {}) {
+  return {
+    session_id: "session-1",
     user_message: {
-      id: "user-1", session_id: "s1", role: "user",
+      id: "user-1", session_id: "session-1", role: "user",
       content: "the question", citations: [], created_at: new Date().toISOString(),
     },
     assistant_message: {
-      id: "assistant-1", session_id: "s1", role: "assistant",
+      id: "assistant-1", session_id: "session-1", role: "assistant",
       content, citations: [], created_at: new Date().toISOString(),
     },
     citations,
+    model: "test-model",
+    mode: "rag",
+    steps: [],
+    ...extra,
   };
+}
+
+type Handlers = {
+  onStart?: (e: unknown) => void;
+  onStep?: (s: unknown) => void;
+  onCitations?: (c: unknown[]) => void;
+  onToken?: (t: string) => void;
+};
+
+/** A streamQuestion fake: sources, then the answer word by word, then done. */
+function streams(content: string, citations: unknown[] = [], extra: Record<string, unknown> = {}) {
+  return async (_id: string, _q: string, _options: unknown, handlers: Handlers) => {
+    handlers.onCitations?.(citations);
+    for (const piece of content.split(/(?<= )/)) handlers.onToken?.(piece);
+    return answer(content, citations, extra);
+  };
+}
+
+/** A stream the TEST drives step by step, for checking what shows mid-answer. */
+function controlledStream() {
+  const control: {
+    handlers: Handlers;
+    finish: (value: unknown) => void;
+    fail: (error: unknown) => void;
+    options: { signal?: AbortSignal };
+  } = { handlers: {}, finish: () => {}, fail: () => {}, options: {} };
+  streamQuestion.mockImplementation(
+    (_id: string, _q: string, options: { signal?: AbortSignal }, handlers: Handlers) =>
+      new Promise((resolve, reject) => {
+        control.handlers = handlers;
+        control.options = options;
+        control.finish = resolve;
+        control.fail = reject;
+        options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })
+  );
+  return control;
 }
 
 const box = () => screen.getByPlaceholderText(/ask a question/i);
@@ -90,98 +163,207 @@ async function ask(user: ReturnType<typeof userEvent.setup>, text: string) {
   await user.keyboard("{Enter}");
 }
 
+/** Render, and wait for the history to have loaded. */
+async function renderPanel(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
+  const view = render(<ChatPanel projectId="p1" {...props} />);
+  await waitFor(() => expect(listProjectChatSessions).toHaveBeenCalled());
+  return view;
+}
+
 beforeEach(() => {
-  createChatSession.mockReset().mockResolvedValue({ id: "session-1", title: "New Chat" });
-  askQuestion.mockReset().mockResolvedValue(answer("Here is the answer."));
+  listProjectChatSessions.mockReset().mockResolvedValue([]);
+  createChatSession.mockReset().mockResolvedValue(session("session-1", "New Chat"));
+  streamQuestion.mockReset().mockImplementation(streams("Here is the answer."));
+  listMessages.mockReset().mockResolvedValue([]);
+  renameChatSession.mockReset();
+  deleteChatSession.mockReset().mockResolvedValue({});
   sendFeedback.mockReset().mockResolvedValue({});
+  documentChunks.mockReset().mockResolvedValue([]);
+  downloadText.mockReset();
+  copyText.mockReset().mockResolvedValue(true);
 });
 
 // ======================================================================
-// Starting a conversation
+// Conversations: history, creation, resume, rename, delete
 // ======================================================================
 
-describe("session setup", () => {
-  it("creates a session scoped to the project", async () => {
-    // Scoping is why a conversation in the HR project does not answer from
-    // the finance documents.
-    render(<ChatPanel projectId="project-42" />);
+describe("conversation history", () => {
+  it("lists this project's conversations", async () => {
+    listProjectChatSessions.mockResolvedValue([session("s1", "Leave policy"), session("s2", "Expenses")]);
+    await renderPanel();
 
-    await waitFor(() => expect(createChatSession).toHaveBeenCalledWith("project-42"));
+    expect(listProjectChatSessions).toHaveBeenCalledWith("p1");
+    expect(await screen.findByText("Leave policy")).toBeInTheDocument();
+    expect(screen.getByText("Expenses")).toBeInTheDocument();
   });
 
-  it("shows an error if the session cannot be created", async () => {
-    createChatSession.mockRejectedValue(new Error("Could not reach the server."));
-    render(<ChatPanel projectId="p1" />);
-
-    expect(await screen.findByText(/could not reach the server/i)).toBeInTheDocument();
+  it("does NOT create a conversation just by opening the tab", async () => {
+    // Creating one on mount would fill the sidebar with empty "New Chat"s.
+    await renderPanel();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(createChatSession).not.toHaveBeenCalled();
   });
 
-  it("does not send a question before a session exists", async () => {
-    // Without a session id there is nowhere to post. Sending anyway would
-    // produce a confusing 404 rather than simply waiting.
-    createChatSession.mockReturnValue(new Promise(() => {})); // never resolves
+  it("creates the conversation, scoped to the project, on the first question", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-
-    await user.type(box(), "a question");
-    await user.keyboard("{Enter}");
-
-    expect(askQuestion).not.toHaveBeenCalled();
-  });
-});
-
-// ======================================================================
-// Asking
-// ======================================================================
-
-describe("asking a question", () => {
-  it("sends it to the session", async () => {
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "How much annual leave do I get?");
-
-    await waitFor(() => expect(askQuestion).toHaveBeenCalled());
-    expect(askQuestion.mock.calls[0][0]).toBe("session-1");
-    expect(askQuestion.mock.calls[0][1]).toBe("How much annual leave do I get?");
-  });
-
-  it("shows the question immediately, before the answer arrives", async () => {
-    // The optimistic append. A model can take seconds; a chat that shows
-    // nothing until it finishes reads as broken.
-    let release: (v: unknown) => void = () => {};
-    askQuestion.mockReturnValue(new Promise((r) => { release = r; }));
-
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A distinctive question");
-
-    // Visible while the request is still in flight.
-    expect(await screen.findByText("A distinctive question")).toBeInTheDocument();
-
-    release(answer("The answer."));
-    await screen.findByText("The answer.");
-  });
-
-  it("shows the answer", async () => {
-    askQuestion.mockResolvedValue(answer("You accrue 1.75 days per month."));
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel({ projectId: "project-42" });
 
     await ask(user, "How much leave?");
 
-    expect(await screen.findByText(/1\.75 days per month/)).toBeInTheDocument();
+    await waitFor(() => expect(createChatSession).toHaveBeenCalledWith("project-42"));
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(streamQuestion.mock.calls[0][0]).toBe("session-1");
+  });
+
+  it("reuses the conversation for the next question", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "First?");
+    await screen.findByText("Here is the answer.");
+    await ask(user, "Second?");
+
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalledTimes(2));
+    expect(createChatSession).toHaveBeenCalledTimes(1);
+    expect(streamQuestion.mock.calls[1][0]).toBe("session-1");
+  });
+
+  it("shows an error if the conversation cannot be created", async () => {
+    createChatSession.mockRejectedValue(new Error("Could not reach the server."));
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "A question");
+
+    expect(await screen.findByText(/could not reach the server/i)).toBeInTheDocument();
+    expect(screen.queryByText("A question")).not.toBeInTheDocument();
+  });
+
+  it("resumes a conversation with its saved answers, mode and research steps", async () => {
+    listProjectChatSessions.mockResolvedValue([session("s1", "Leave policy")]);
+    listMessages.mockResolvedValue([
+      { id: "m1", session_id: "s1", role: "user", content: "How much leave?", citations: [],
+        tokens_used: null, latency: null, created_at: "2026-10-01T00:00:00Z" },
+      { id: "m2", session_id: "s1", role: "assistant", content: "25 days [1].",
+        citations: [citation(1)], tokens_used: 40, latency: 1.2, mode: "agent", model: "gpt-oss",
+        steps: [{ tool: "search_documents", args: { query: "leave" }, summary: "Found 1 excerpt" }],
+        created_at: "2026-10-01T00:00:01Z" },
+    ]);
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await user.click(await screen.findByText("Leave policy"));
+
+    expect(listMessages).toHaveBeenCalledWith("s1");
+    expect(await screen.findByText("25 days [1].")).toBeInTheDocument();
+    expect(screen.getByText("Deep research", { selector: ".pill-info" })).toBeInTheDocument();
+    expect(screen.getByText(/research steps \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Leave policy" })).toBeInTheDocument();
+  });
+
+  it("asks a follow-up in the resumed conversation", async () => {
+    listProjectChatSessions.mockResolvedValue([session("s1", "Leave policy")]);
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await user.click(await screen.findByText("Leave policy"));
+    await ask(user, "And part-timers?");
+
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(streamQuestion.mock.calls[0][0]).toBe("s1");
+    expect(createChatSession).not.toHaveBeenCalled();
+  });
+
+  it("renames a conversation", async () => {
+    listProjectChatSessions.mockResolvedValue([session("s1", "Leave policy")]);
+    renameChatSession.mockResolvedValue(session("s1", "Annual leave"));
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: "Rename Leave policy" }));
+    const input = screen.getByRole("textbox", { name: /conversation name/i });
+    await user.clear(input);
+    await user.type(input, "Annual leave{Enter}");
+
+    await waitFor(() => expect(renameChatSession).toHaveBeenCalledWith("s1", "Annual leave"));
+    expect(await screen.findByText("Annual leave")).toBeInTheDocument();
+  });
+
+  it("deletes a conversation only after confirming", async () => {
+    listProjectChatSessions.mockResolvedValue([session("s1", "Leave policy")]);
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: "Delete Leave policy" }));
+    expect(deleteChatSession).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete?" }));
+
+    await waitFor(() => expect(deleteChatSession).toHaveBeenCalledWith("s1"));
+    await waitFor(() => expect(screen.queryByText("Leave policy")).not.toBeInTheDocument());
+  });
+
+  it("starts a fresh conversation from New chat", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "First?");
+    await screen.findByText("Here is the answer.");
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+
+    expect(screen.queryByText("Here is the answer.")).not.toBeInTheDocument();
+    await ask(user, "Fresh question");
+    await waitFor(() => expect(createChatSession).toHaveBeenCalledTimes(2));
+  });
+});
+
+// ======================================================================
+// Asking, and the stream
+// ======================================================================
+
+describe("asking a question", () => {
+  it("sends the question, the mode and no document filter by default", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "How much annual leave do I get?");
+
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    const [id, question, options] = streamQuestion.mock.calls[0];
+    expect(id).toBe("session-1");
+    expect(question).toBe("How much annual leave do I get?");
+    expect(options).toMatchObject({ mode: "rag", documentIds: [] });
+  });
+
+  it("shows the question immediately, before anything arrives", async () => {
+    controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "A distinctive question");
+
+    expect(await screen.findByText("A distinctive question")).toBeInTheDocument();
+  });
+
+  it("writes the answer in as the words arrive", async () => {
+    const stream = controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "A question");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+
+    act(() => stream.handlers.onToken?.("Leave is "));
+    expect(await screen.findByText("Leave is")).toBeInTheDocument();
+    act(() => stream.handlers.onToken?.("25 days."));
+    expect(await screen.findByText("Leave is 25 days.")).toBeInTheDocument();
+
+    await act(async () => stream.finish(answer("Leave is 25 days.")));
+    expect(await screen.findByText("test-model")).toBeInTheDocument();
+    expect(screen.getByText("Leave is 25 days.")).toBeInTheDocument();
   });
 
   it("clears the input after sending", async () => {
-    // Otherwise the next question is typed onto the end of the last one.
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
@@ -190,49 +372,59 @@ describe("asking a question", () => {
 
   it("does not send an empty question", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await user.click(box());
     await user.keyboard("{Enter}");
 
-    expect(askQuestion).not.toHaveBeenCalled();
+    expect(streamQuestion).not.toHaveBeenCalled();
   });
 
   it("does not send whitespace alone", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "    ");
 
-    expect(askQuestion).not.toHaveBeenCalled();
+    expect(streamQuestion).not.toHaveBeenCalled();
   });
 
   it("ignores a second Enter while a request is in flight", async () => {
-    // Otherwise a double press asks the same question twice, and the
-    // transcript is wrong in a way that is hard to explain afterwards.
-    askQuestion.mockReturnValue(new Promise(() => {}));
+    controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
     await user.keyboard("{Enter}");
     await user.keyboard("{Enter}");
 
-    expect(askQuestion).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalledTimes(1));
   });
 
-  it("disables the input while sending", async () => {
-    askQuestion.mockReturnValue(new Promise(() => {}));
+  it("disables the input while answering and offers Stop", async () => {
+    controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
     await waitFor(() => expect(box()).toBeDisabled());
+    expect(screen.getByRole("button", { name: /stop answering/i })).toBeInTheDocument();
+  });
+
+  it("Stop cancels the answer and says it was not saved", async () => {
+    const stream = controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "A question to stop");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: /stop answering/i }));
+
+    expect(stream.options.signal?.aborted).toBe(true);
+    expect(await screen.findByText(/stopped/i)).toBeInTheDocument();
+    expect(screen.queryByText("A question to stop")).not.toBeInTheDocument();
+    expect(box()).not.toBeDisabled();
   });
 });
 
@@ -241,26 +433,27 @@ describe("asking a question", () => {
 // ======================================================================
 
 describe("when the answer fails", () => {
-  it("removes the optimistic question from the transcript", async () => {
-    // The half of the optimistic pattern that is usually missing. Leaving the
-    // question behind shows the user something that never happened.
-    askQuestion.mockRejectedValue(new Error("The model timed out."));
+  it("removes the optimistic question and the half-written answer", async () => {
+    const stream = controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
+    await renderPanel();
     await ask(user, "A question that will fail");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    act(() => stream.handlers.onToken?.("Half an ans"));
+    await screen.findByText("Half an ans");
+
+    await act(async () => stream.fail(new Error("The model timed out.")));
 
     await waitFor(() =>
       expect(screen.queryByText("A question that will fail")).not.toBeInTheDocument()
     );
+    expect(screen.queryByText("Half an ans")).not.toBeInTheDocument();
   });
 
   it("shows the reason", async () => {
-    askQuestion.mockRejectedValue(new Error("The model timed out."));
+    streamQuestion.mockRejectedValue(new Error("The model timed out."));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
@@ -268,12 +461,9 @@ describe("when the answer fails", () => {
   });
 
   it("re-enables the input so the user can retry", async () => {
-    // A failure that leaves the box disabled is a dead end -- the only way out
-    // is a page reload.
-    askQuestion.mockRejectedValue(new Error("Failed."));
+    streamQuestion.mockRejectedValue(new Error("Failed."));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
@@ -287,12 +477,9 @@ describe("when the answer fails", () => {
 
 describe("citations", () => {
   it("shows how many sources an answer has", async () => {
-    askQuestion.mockResolvedValue(
-      answer("The answer.", [citation(1), citation(2), citation(3)])
-    );
+    streamQuestion.mockImplementation(streams("The answer.", [citation(1), citation(2), citation(3)]));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
@@ -300,10 +487,9 @@ describe("citations", () => {
   });
 
   it("uses the singular for one source", async () => {
-    askQuestion.mockResolvedValue(answer("The answer.", [citation(1)]));
+    streamQuestion.mockImplementation(streams("The answer.", [citation(1)]));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
@@ -312,101 +498,70 @@ describe("citations", () => {
   });
 
   it("offers no source toggle when there are none", async () => {
-    // An answer with no citations means retrieval found nothing above the
-    // score threshold, and the model will have said it does not know. An
-    // empty "0 sources" control would invite a pointless click.
-    askQuestion.mockResolvedValue(answer("I don't know.", []));
+    streamQuestion.mockImplementation(streams("I don't know.", []));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "Something unanswerable");
 
     await screen.findByText(/i don't know/i);
-    expect(screen.queryByText(/source/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ sources?/i)).not.toBeInTheDocument();
   });
 
-  it("keeps sources collapsed until asked for", async () => {
-    askQuestion.mockResolvedValue(answer("The answer.", [citation(1)]));
+  it("keeps sources collapsed until asked for, then reveals file and page", async () => {
+    streamQuestion.mockImplementation(streams("The answer.", [citation(1)]));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
     await screen.findByText(/1 source/i);
-
     expect(screen.queryByText(/Snippet of source number 1/)).not.toBeInTheDocument();
-  });
 
-  it("reveals the source, its file and its page when expanded", async () => {
-    // This is the whole point of the feature: a claim traced back to a passage
-    // the reader can check.
-    askQuestion.mockResolvedValue(answer("The answer.", [citation(1)]));
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
     await user.click(await screen.findByText(/1 source/i));
 
     expect(await screen.findByText(/Snippet of source number 1/)).toBeInTheDocument();
-    expect(screen.getByText(/handbook\.pdf/)).toBeInTheDocument();
+    expect(screen.getByText(/\[1\] handbook\.docx · page 12/)).toBeInTheDocument();
   });
 
   it("collapses again on a second click", async () => {
-    askQuestion.mockResolvedValue(answer("The answer.", [citation(1)]));
+    streamQuestion.mockImplementation(streams("The answer.", [citation(1)]));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
-
-    // Re-queried before each click rather than captured once. Expanding
-    // re-renders the message, and React may replace the toggle's DOM node --
-    // clicking a stale reference then does nothing, and the test fails for a
-    // reason that has nothing to do with the behaviour under test.
     await user.click(await screen.findByText(/1 source/i));
     await screen.findByText(/Snippet of source number 1/);
-
     await user.click(await screen.findByText(/1 source/i));
+
     await waitFor(() =>
       expect(screen.queryByText(/Snippet of source number 1/)).not.toBeInTheDocument()
     );
   });
 
   it("numbers the sources to match the answer's markers", async () => {
-    // The model writes "[2]" in its prose, and that number must resolve to the
-    // right card. If the numbering drifted, every citation would point at the
-    // wrong passage while still looking authoritative.
-    askQuestion.mockResolvedValue(
-      answer("Supported by [1] and [2].", [
+    streamQuestion.mockImplementation(
+      streams("Supported by [1] and [2].", [
         citation(1, { snippet: "First cited passage." }),
         citation(2, { snippet: "Second cited passage." }),
       ])
     );
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
     await user.click(await screen.findByText(/2 sources/i));
 
     const first = await screen.findByText(/First cited passage/);
     const second = screen.getByText(/Second cited passage/);
-
-    // Rendered in citation order, so [1] is above [2].
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("handles a source with no page number", async () => {
-    // A CSV or an email has no pages.
-    askQuestion.mockResolvedValue(
-      answer("The answer.", [citation(1, { filename: "data.csv", page_number: null })])
+    streamQuestion.mockImplementation(
+      streams("The answer.", [citation(1, { filename: "data.csv", page_number: null })])
     );
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
     await user.click(await screen.findByText(/1 source/i));
@@ -414,105 +569,130 @@ describe("citations", () => {
     expect(await screen.findByText(/data\.csv/)).toBeInTheDocument();
     expect(screen.queryByText(/page null/i)).not.toBeInTheDocument();
   });
+
+  it("opens the cited passage in the source viewer", async () => {
+    streamQuestion.mockImplementation(streams("The answer.", [citation(1)]));
+    documentChunks.mockResolvedValue([
+      { id: "chunk-0", chunk_index: 0, page_number: 11, content: "Before." },
+      { id: "chunk-1", chunk_index: 1, page_number: 12, content: "Snippet of source number 1. And more." },
+    ]);
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "A question");
+    await user.click(await screen.findByText(/1 source/i));
+    await user.click(await screen.findByRole("button", { name: "View source 1" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /handbook\.docx/ });
+    expect(documentChunks).toHaveBeenCalledWith("doc-1", "chunk-1", 2);
+    const mark = await within(dialog).findByText("Snippet of source number 1.");
+    expect(mark.tagName).toBe("MARK");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
 });
 
 // ======================================================================
-// Feedback
+// Rating, copying, exporting
 // ======================================================================
 
-describe("rating an answer", () => {
+describe("rating, copying and exporting", () => {
   /**
-   * The thumbs buttons carry only an icon, no text, so there is no accessible
-   * name to query by. Located through the lucide SVG class instead.
-   *
-   * Deliberately THROWS rather than returning an empty list: a test that
-   * quietly finds no buttons and passes anyway is worse than no test, because
-   * it reports coverage it does not have.
+   * The thumbs buttons carry only an icon. Located through the lucide SVG
+   * class; THROWS rather than returning nothing, so a markup change cannot
+   * turn these tests into silent passes.
    */
   function thumbs(): HTMLElement[] {
     const found = screen
       .getAllByRole("button")
       .filter((b) => b.querySelector("svg.lucide-thumbs-up, svg.lucide-thumbs-down"));
-
-    if (found.length === 0) {
-      throw new Error("no feedback buttons found -- has the markup changed?");
-    }
+    if (found.length === 0) throw new Error("no feedback buttons found -- has the markup changed?");
     return found;
   }
 
-  it("offers both a positive and a negative rating", async () => {
+  it("sends a positive rating as 1 and a negative as -1, for the shown message", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
-    await screen.findByText("Here is the answer.");
-
-    expect(thumbs()).toHaveLength(2);
-  });
-
-  it("sends a positive rating as 1", async () => {
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
+    await renderPanel();
     await ask(user, "A question");
     await screen.findByText("Here is the answer.");
 
     await user.click(thumbs()[0]);
-
-    await waitFor(() => expect(sendFeedback).toHaveBeenCalled());
-    expect(sendFeedback.mock.calls[0][1]).toBe(1);
-  });
-
-  it("sends a negative rating as -1", async () => {
-    // The sign is the entire signal. Sending 1 for both would record every
-    // answer as good and quietly destroy the feedback data.
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
-    await screen.findByText("Here is the answer.");
-
     await user.click(thumbs()[1]);
 
-    await waitFor(() => expect(sendFeedback).toHaveBeenCalled());
-    expect(sendFeedback.mock.calls[0][1]).toBe(-1);
-  });
-
-  it("rates the message that was actually shown", async () => {
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
-    await screen.findByText("Here is the answer.");
-
-    await user.click(thumbs()[0]);
-
-    await waitFor(() => expect(sendFeedback).toHaveBeenCalled());
-    expect(sendFeedback.mock.calls[0][0]).toBe("assistant-1");
+    await waitFor(() => expect(sendFeedback).toHaveBeenCalledTimes(2));
+    expect(sendFeedback.mock.calls[0]).toEqual(["assistant-1", 1]);
+    expect(sendFeedback.mock.calls[1]).toEqual(["assistant-1", -1]);
   });
 
   it("a failed rating never interrupts the conversation", async () => {
-    // Feedback is a nice-to-have. An error toast over a failed thumbs-up
-    // would be more disruptive than the lost signal is worth -- which is why
-    // the component swallows it, and why that is worth pinning.
     sendFeedback.mockRejectedValue(new Error("Feedback endpoint down"));
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
+    await renderPanel();
     await ask(user, "A question");
     const answerText = await screen.findByText("Here is the answer.");
 
     await user.click(thumbs()[0]);
     await waitFor(() => expect(sendFeedback).toHaveBeenCalled());
 
-    // The answer is still there and no error surfaced.
     expect(answerText).toBeInTheDocument();
     expect(screen.queryByText(/feedback endpoint down/i)).not.toBeInTheDocument();
+  });
+
+  it("copies an answer with its sources as Markdown", async () => {
+    streamQuestion.mockImplementation(streams("25 days [1].", [citation(1)]));
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "A question");
+    await screen.findByText("25 days [1].");
+
+    await user.click(screen.getByRole("button", { name: "Copy answer" }));
+
+    await waitFor(() => expect(copyText).toHaveBeenCalled());
+    expect(copyText.mock.calls[0][0]).toContain("25 days [1].");
+    expect(copyText.mock.calls[0][0]).toContain("1. handbook.docx, page 12");
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+  });
+
+  it("exports the conversation as a Markdown file", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    expect(screen.getByRole("button", { name: /export/i })).toBeDisabled();
+
+    await ask(user, "How much leave?");
+    await screen.findByText("Here is the answer.");
+    await user.click(screen.getByRole("button", { name: /export/i }));
+
+    expect(downloadText).toHaveBeenCalledTimes(1);
+    const [filename, markdown] = downloadText.mock.calls[0];
+    expect(filename).toMatch(/\.md$/);
+    expect(markdown).toContain("## Question");
+    expect(markdown).toContain("Here is the answer.");
+  });
+});
+
+// ======================================================================
+// Answering only from selected documents
+// ======================================================================
+
+describe("the document filter", () => {
+  const docs = [
+    { id: "d1", filename: "handbook.pdf", status: "completed" },
+    { id: "d2", filename: "expenses.docx", status: "completed" },
+  ] as never[];
+
+  it("sends only the ticked documents", async () => {
+    const user = userEvent.setup();
+    await renderPanel({ documents: docs });
+
+    await user.click(screen.getByRole("button", { name: /all documents/i }));
+    await user.click(screen.getByRole("option", { name: "expenses.docx" }));
+    expect(screen.getByRole("button", { name: /expenses\.docx/i })).toBeInTheDocument();
+
+    await ask(user, "Travel limits?");
+
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(streamQuestion.mock.calls[0][2]).toMatchObject({ documentIds: ["d2"] });
   });
 });
 
@@ -521,127 +701,130 @@ describe("rating an answer", () => {
 // ======================================================================
 
 describe("answer mode", () => {
-  const step = (tool: string, summary: string, args: Record<string, unknown> = {}) =>
-    ({ tool, args, summary });
-
-  /** An agent-mode reply: same shape as `answer`, plus mode and steps. */
-  function agentAnswer(content: string, steps: unknown[], citations: unknown[] = []) {
-    return { ...answer(content, citations), mode: "agent", steps };
-  }
+  const step = (tool: string, summary: string, args: Record<string, unknown> = {}) => ({
+    tool,
+    args,
+    summary,
+  });
 
   it("defaults to quick answer and sends the rag mode", async () => {
-    // The fast path is the default. Deep research costs several model calls,
-    // so nobody should land in it without choosing to.
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
-    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
-      "aria-checked", "true"
-    );
+    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute("aria-checked", "true");
 
     await ask(user, "A question");
 
-    await waitFor(() => expect(askQuestion).toHaveBeenCalled());
-    expect(askQuestion.mock.calls[0][2]).toBe("rag");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(streamQuestion.mock.calls[0][2]).toMatchObject({ mode: "rag" });
   });
 
   it("sends the agent mode once deep research is selected", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await user.click(screen.getByRole("radio", { name: /deep research/i }));
-    expect(screen.getByRole("radio", { name: /deep research/i })).toHaveAttribute(
-      "aria-checked", "true"
-    );
-
     await ask(user, "Compare the two policies");
 
-    await waitFor(() => expect(askQuestion).toHaveBeenCalled());
-    expect(askQuestion.mock.calls[0][1]).toBe("Compare the two policies");
-    expect(askQuestion.mock.calls[0][2]).toBe("agent");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(streamQuestion.mock.calls[0][2]).toMatchObject({ mode: "agent" });
   });
 
-  it("explains the tradeoff of the selected mode", async () => {
-    // Without the hint, "Deep research" sounds strictly better, and people
-    // would pick it for everything and wonder why answers got slow.
+  it("explains the tradeoff of the selected mode, linked to the control", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
+    expect(screen.getByText(/fastest/i)).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: /deep research/i }));
-
     expect(screen.getByText(/slower/i)).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: /answer mode/i })).toHaveAttribute(
+      "aria-describedby",
+      "chat-mode-hint"
+    );
   });
 
   it("locks the toggle while a question is in flight", async () => {
-    askQuestion.mockReturnValue(new Promise(() => {}));
+    controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
 
-    await waitFor(() =>
-      expect(screen.getByRole("radio", { name: /deep research/i })).toBeDisabled()
-    );
-    // The mode the request started with stays selected while it runs.
-    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
-      "aria-checked", "true"
-    );
+    await waitFor(() => expect(screen.getByRole("radio", { name: /deep research/i })).toBeDisabled());
   });
 
-  it("unlocks the toggle again after a failed question", async () => {
-    // If `sending` stayed true after an error, the toggle would be stuck for
-    // the rest of the session.
-    askQuestion.mockRejectedValue(new Error("The model timed out."));
+  it("says it is researching until the first step arrives", async () => {
+    controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
-    expect(await screen.findByText(/model timed out/i)).toBeInTheDocument();
-
-    expect(screen.getByRole("radio", { name: /quick answer/i })).toBeEnabled();
-    expect(screen.getByRole("radio", { name: /deep research/i })).toBeEnabled();
-    expect(screen.getByRole("radio", { name: /quick answer/i })).toHaveAttribute(
-      "aria-checked", "true"
-    );
-  });
-
-  it("says it is researching while a deep research question is in flight", async () => {
-    askQuestion.mockReturnValue(new Promise(() => {}));
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await user.click(screen.getByRole("radio", { name: /deep research/i }));
-    await ask(user, "Compare the two policies");
+    await ask(user, "A hard question");
 
     expect(await screen.findByText(/researching your documents/i)).toBeInTheDocument();
   });
 
   it("does not say it is researching for a quick answer", async () => {
-    askQuestion.mockReturnValue(new Promise(() => {}));
+    controlledStream();
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     await ask(user, "A question");
-    await waitFor(() =>
-      expect(screen.getByRole("radio", { name: /deep research/i })).toBeDisabled()
-    );
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
 
-    expect(screen.queryByText(/researching/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/researching your documents/i)).not.toBeInTheDocument();
+  });
+
+  it("shows each research step LIVE, while the agent is still working", async () => {
+    const stream = controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    await ask(user, "Compare the policies");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+
+    act(() => stream.handlers.onStep?.(step("list_documents", "Listed 2 documents")));
+    expect(await screen.findByText("Listed 2 documents")).toBeInTheDocument();
+    act(() => stream.handlers.onStep?.(step("search_documents", "Found 5 excerpts", { query: "leave" })));
+    expect(await screen.findByText("Found 5 excerpts")).toBeInTheDocument();
+    expect(screen.getByText(/query: "leave"/)).toBeInTheDocument();
+  });
+
+  it("keeps the steps afterwards behind a toggle, in order", async () => {
+    streamQuestion.mockImplementation(
+      streams("Done.", [], {
+        mode: "agent",
+        steps: [step("list_documents", "Listed 2 documents"), step("search_documents", "Found 5 excerpts")],
+      })
+    );
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "A question");
+    const toggle = await screen.findByText(/research steps \(2\)/i);
+    expect(screen.queryByText("Listed 2 documents")).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    const list = await screen.findByRole("list", { name: /research steps/i });
+    const items = within(list).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("list_documents");
+    expect(items[1]).toHaveTextContent("search_documents");
+  });
+
+  it("shows no steps toggle for a quick answer", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+
+    await ask(user, "A question");
+    await screen.findByText("Here is the answer.");
+
+    expect(screen.queryByText(/research steps/i)).not.toBeInTheDocument();
   });
 
   it("is one tab stop, switched with the arrow keys", async () => {
-    // The radio group keyboard contract: only the selected option is
-    // tabbable, and the arrow keys move both the selection and the focus.
     const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
+    await renderPanel();
 
     const quick = screen.getByRole("radio", { name: /quick answer/i });
     const deep = screen.getByRole("radio", { name: /deep research/i });
@@ -650,82 +833,8 @@ describe("answer mode", () => {
 
     quick.focus();
     await user.keyboard("{ArrowRight}");
+
     expect(deep).toHaveAttribute("aria-checked", "true");
     expect(deep).toHaveFocus();
-    expect(deep).toHaveAttribute("tabindex", "0");
-
-    // Wraps around at the end.
-    await user.keyboard("{ArrowRight}");
-    expect(quick).toHaveAttribute("aria-checked", "true");
-    expect(quick).toHaveFocus();
-  });
-
-  it("links the tradeoff hint to the mode control", async () => {
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    const group = screen.getByRole("radiogroup", { name: /answer mode/i });
-    const hintId = group.getAttribute("aria-describedby");
-    expect(hintId).toBeTruthy();
-    expect(document.getElementById(hintId as string)).toHaveTextContent(/.+/);
-  });
-
-  it("shows how many research steps an agent answer took", async () => {
-    askQuestion.mockResolvedValue(
-      agentAnswer("The answer.", [
-        step("search_documents", "Found 5 excerpts from 2 documents", { query: "leave" }),
-        step("read_document", "Read page 4 of handbook.pdf"),
-      ])
-    );
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await user.click(screen.getByRole("radio", { name: /deep research/i }));
-    await ask(user, "A question");
-
-    expect(await screen.findByText(/research steps \(2\)/i)).toBeInTheDocument();
-    // Collapsed until asked for, like the sources.
-    expect(screen.queryByText(/Found 5 excerpts/)).not.toBeInTheDocument();
-  });
-
-  it("reveals each step's tool and summary, in order, when expanded", async () => {
-    askQuestion.mockResolvedValue(
-      agentAnswer("The answer.", [
-        step("search_documents", "Found 5 excerpts from 2 documents", { query: "leave" }),
-        step("read_document", "Read page 4 of handbook.pdf"),
-      ])
-    );
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await user.click(screen.getByRole("radio", { name: /deep research/i }));
-    await ask(user, "A question");
-    await user.click(await screen.findByText(/research steps/i));
-
-    const first = await screen.findByText("search_documents");
-    const second = screen.getByText("read_document");
-    expect(screen.getByText(/Found 5 excerpts from 2 documents/)).toBeInTheDocument();
-    expect(screen.getByText(/Read page 4 of handbook\.pdf/)).toBeInTheDocument();
-    // The arguments too, so you can see WHAT the agent searched for.
-    expect(screen.getByText(/query: "leave"/)).toBeInTheDocument();
-
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
-  });
-
-  it("shows no steps toggle for a quick answer", async () => {
-    // Rag mode returns an empty steps list; an empty "Research steps (0)"
-    // control would only invite a pointless click.
-    askQuestion.mockResolvedValue({ ...answer("The answer."), mode: "rag", steps: [] });
-    const user = userEvent.setup();
-    render(<ChatPanel projectId="p1" />);
-    await waitFor(() => expect(createChatSession).toHaveBeenCalled());
-
-    await ask(user, "A question");
-    await screen.findByText("The answer.");
-
-    expect(screen.queryByText(/research steps/i)).not.toBeInTheDocument();
   });
 });

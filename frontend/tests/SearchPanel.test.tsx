@@ -337,3 +337,40 @@ describe("when the search fails", () => {
     );
   });
 });
+
+// ======================================================================
+// Batch 2: the document filter and hybrid-search labels
+// ======================================================================
+
+describe("limiting the search to some documents", () => {
+  const docs = [
+    { id: "d1", filename: "handbook.pdf", status: "completed" },
+    { id: "d2", filename: "expenses.docx", status: "completed" },
+  ] as never[];
+
+  it("sends no filter until documents are ticked, then only those", async () => {
+    const user = userEvent.setup();
+    render(<SearchPanel projectId="p1" documents={docs} />);
+
+    await user.type(box(), "travel{Enter}");
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    expect(search.mock.calls[0]).toEqual(["travel", "p1", 10]);
+
+    await user.click(screen.getByRole("button", { name: /all documents/i }));
+    await user.click(screen.getByRole("option", { name: "handbook.pdf" }));
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+    expect(search.mock.calls[1]).toEqual(["travel", "p1", 10, ["d1"]]);
+  });
+
+  it("says which half of hybrid search found a result", async () => {
+    search.mockResolvedValue(response([result({ match_type: "keyword" })]));
+    const user = userEvent.setup();
+    render(<SearchPanel projectId="p1" />);
+
+    await user.type(box(), "FIN-204{Enter}");
+
+    expect(await screen.findByText(/found by exact words/i)).toBeInTheDocument();
+  });
+});

@@ -1,7 +1,8 @@
 /**
  * settings/page.tsx  (served at "/settings")
  * ==========================================
- * The organization's admin area: Members, API keys, Audit log and Usage.
+ * The organization's admin area: Members, API keys, Audit log, Usage and
+ * Feedback (how people rate the answers).
  *
  * WHO SEES WHAT
  * -------------
@@ -32,6 +33,7 @@ import LogoLoader from "@/components/app/LogoLoader";
 import { Notice } from "@/components/AuthCard";
 import ApiKeysPanel from "@/components/settings/ApiKeysPanel";
 import AuditLogPanel from "@/components/settings/AuditLogPanel";
+import FeedbackPanel from "@/components/settings/FeedbackPanel";
 import MembersPanel from "@/components/settings/MembersPanel";
 import UsagePanel from "@/components/settings/UsagePanel";
 import VerifyBanner from "@/components/VerifyBanner";
@@ -44,6 +46,7 @@ const TABS = [
   { id: "api-keys", label: "API keys" },
   { id: "audit", label: "Audit log" },
   { id: "usage", label: "Usage" },
+  { id: "feedback", label: "Feedback" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -87,7 +90,7 @@ export default function SettingsPage() {
             </div>
             {!isAdmin(user.role) && (
               <p className="mt-2" style={{ color: "var(--text-secondary)" }}>
-                Members, API keys, the audit log and usage are managed by your
+                Members, API keys, the audit log, usage and answer feedback are managed by your
                 organization&apos;s admins.
               </p>
             )}
@@ -125,6 +128,7 @@ export default function SettingsPage() {
                 {tab === "api-keys" && <ApiKeysPanel />}
                 {tab === "audit" && <AuditLogPanel />}
                 {tab === "usage" && <UsagePanel />}
+                {tab === "feedback" && <FeedbackPanel />}
               </div>
             </>
           )}

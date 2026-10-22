@@ -461,6 +461,42 @@ class Settings(BaseSettings):
     # inventing something from text that merely happened to be closest.
     RETRIEVAL_MIN_SCORE: float = 0.15
 
+    # ---- Hybrid search (services/retrieval.py) ----
+    # Semantic search alone is weak at EXACT terms: a policy number, a product
+    # code, a surname. Postgres full-text search is strong at exactly those
+    # and weak at paraphrase. With this on, every search runs BOTH and merges
+    # the two rankings with reciprocal rank fusion (RRF). Off = vectors only,
+    # the original behaviour.
+    RETRIEVAL_HYBRID: bool = True
+
+    # How many candidates EACH of the two searches contributes before fusion.
+    # Larger finds more, at the cost of a bigger sort. Never below top_k.
+    RETRIEVAL_CANDIDATES: int = 20
+
+    # The constant in RRF's 1 / (k + rank). 60 is the value from the original
+    # paper (Cormack et al., 2009) and almost everyone's default: large enough
+    # that rank 1 does not utterly dominate rank 2, small enough that the top
+    # of each list still counts most.
+    RETRIEVAL_RRF_K: int = 60
+
+    # ---- Optional reranker ----
+    # "off" (default) or "cross-encoder". A cross-encoder reads the question
+    # and each candidate TOGETHER and scores how well one answers the other --
+    # far more accurate than comparing two independent embeddings, but it
+    # needs sentence-transformers and a model download, and costs ~20-100 ms
+    # of CPU per search. Only the fused candidates are reranked.
+    RERANKER: Literal["off", "cross-encoder"] = "off"
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # ---- Follow-up query rewriting (services/query_rewrite.py) ----
+    # "and for part-time staff?" embeds to a vector about part-time staff in
+    # general -- not about LEAVE for part-time staff, which is what the user
+    # means. With this on, a follow-up is rewritten into a standalone search
+    # query using the conversation so far (by the model when a key is set, by
+    # a simple heuristic otherwise). Only the SEARCH uses the rewrite; the
+    # model still sees the user's own words.
+    QUERY_REWRITE_ENABLED: bool = True
+
     # ==================================================================
     # 10. CHUNKING DEFAULTS -- how documents get cut into pieces
     # ==================================================================

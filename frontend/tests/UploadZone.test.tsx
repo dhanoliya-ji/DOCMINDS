@@ -26,14 +26,14 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import UploadZone, { uploadErrorMessage } from "@/components/UploadZone";
+import UploadZone, { runPool, uploadErrorMessage } from "@/components/UploadZone";
 import { ApiError } from "@/lib/api";
 
 // Hoisted so the tests can assert on the calls.
-const uploadDocuments = vi.fn();
+const uploadFile = vi.fn();
 
 vi.mock("@/lib/api", () => ({
-  api: { uploadDocuments: (...args: unknown[]) => uploadDocuments(...args) },
+  api: { uploadFile: (...args: unknown[]) => uploadFile(...args) },
   // A minimal stand-in with the same shape as the real class: the component
   // only reads `status` to word the message.
   ApiError: class ApiError extends Error {
@@ -80,8 +80,8 @@ function zone(container: HTMLElement): HTMLElement {
 }
 
 beforeEach(() => {
-  uploadDocuments.mockReset();
-  uploadDocuments.mockResolvedValue([{ filename: "handbook.pdf", id: "1" }]);
+  uploadFile.mockReset();
+  uploadFile.mockResolvedValue([{ filename: "handbook.pdf", id: "1" }]);
 
   // The component clears its success message with `setTimeout(..., 4000)`.
   // On real timers that fires long after the test has finished and the
@@ -151,13 +151,13 @@ describe("dropping files", () => {
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
 
-    await waitFor(() => expect(uploadDocuments).toHaveBeenCalledTimes(1));
-    expect(uploadDocuments.mock.calls[0][0]).toBe("project-42");
-    expect(uploadDocuments.mock.calls[0][1]).toHaveLength(1);
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1));
+    expect(uploadFile.mock.calls[0][0]).toBe("project-42");
+    expect(uploadFile.mock.calls[0][1]).toBeInstanceOf(File);
   });
 
-  it("uploads several files in one call", async () => {
-    // One request carrying many, rather than one request per file.
+  it("uploads each file separately", async () => {
+    // One request per file, so one bad file cannot sink the whole batch.
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(
@@ -165,8 +165,59 @@ describe("dropping files", () => {
       dropEvent([makeFile("a.pdf"), makeFile("b.pdf"), makeFile("c.pdf")])
     );
 
-    await waitFor(() => expect(uploadDocuments).toHaveBeenCalledTimes(1));
-    expect(uploadDocuments.mock.calls[0][1]).toHaveLength(3);
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(3));
+    expect(uploadFile.mock.calls.map((call) => (call[1] as File).name)).toEqual([
+      "a.pdf",
+      "b.pdf",
+      "c.pdf",
+    ]);
+  });
+
+  it("sends at most three at a time", async () => {
+    uploadFile.mockReturnValue(new Promise(() => {})); // never finishes
+    const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+
+    fireEvent.drop(zone(container), dropEvent(["1", "2", "3", "4", "5"].map((n) => makeFile(`${n}.pdf`))));
+
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(3));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(uploadFile).toHaveBeenCalledTimes(3);
+    expect(screen.getAllByText("queued")).toHaveLength(2);
+  });
+
+  it("one failed file does not stop the others", async () => {
+    uploadFile.mockImplementation(async (_project: string, file: File) => {
+      if (file.name === "bad.exe") throw new ApiError("bad.exe: this file type is not supported.", 415);
+      return [{ filename: file.name, id: file.name }];
+    });
+    const onUploaded = vi.fn();
+    const { container } = render(<UploadZone projectId="p1" onUploaded={onUploaded} />);
+
+    fireEvent.drop(zone(container), dropEvent([makeFile("good.pdf"), makeFile("bad.exe"), makeFile("also-good.pdf")]));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Unsupported file: bad\.exe/);
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/2 of 3 uploaded · 1 failed/)).toBeInTheDocument();
+  });
+
+  it("shows each file's progress", async () => {
+    let report: (fraction: number) => void = () => {};
+    uploadFile.mockImplementation(
+      (_project: string, _file: File, onProgress: (fraction: number) => void) => {
+        report = onProgress;
+        return new Promise(() => {});
+      }
+    );
+    const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+
+    fireEvent.drop(zone(container), dropEvent([makeFile("big.pdf")]));
+    await waitFor(() => expect(uploadFile).toHaveBeenCalled());
+    act(() => report(0.42));
+
+    expect(await screen.findByRole("progressbar", { name: /uploading big\.pdf/i })).toHaveAttribute(
+      "aria-valuenow",
+      "42"
+    );
   });
 
   it("does nothing when the drop carries no files", async () => {
@@ -177,7 +228,7 @@ describe("dropping files", () => {
     fireEvent.drop(zone(container), dropEvent([]));
 
     await new Promise((r) => setTimeout(r, 20));
-    expect(uploadDocuments).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
   });
 
   it("notifies the parent after a successful upload", async () => {
@@ -193,15 +244,14 @@ describe("dropping files", () => {
   });
 
   it("does NOT notify the parent when the upload failed", async () => {
-    // Otherwise the list refreshes as though something arrived, and the user
-    // is left looking for a document that was never created.
-    uploadDocuments.mockRejectedValue(new Error("This file has already been uploaded."));
+    uploadFile.mockRejectedValue(new Error("This file has already been uploaded."));
     const onUploaded = vi.fn();
     const { container } = render(<UploadZone projectId="p1" onUploaded={onUploaded} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
 
-    await waitFor(() => expect(uploadDocuments).toHaveBeenCalled());
+    await waitFor(() => expect(uploadFile).toHaveBeenCalled());
+    await screen.findByRole("alert");
     expect(onUploaded).not.toHaveBeenCalled();
   });
 });
@@ -212,9 +262,7 @@ describe("dropping files", () => {
 
 describe("feedback", () => {
   it("shows the backend's reason when an upload fails", async () => {
-    // The specific reason, not a generic message. "Already uploaded" tells the
-    // user what to do; "Upload failed" does not.
-    uploadDocuments.mockRejectedValue(new Error("This file has already been uploaded."));
+    uploadFile.mockRejectedValue(new Error("This file has already been uploaded."));
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
@@ -223,7 +271,7 @@ describe("feedback", () => {
   });
 
   it("falls back to a readable message when the error has none", async () => {
-    uploadDocuments.mockRejectedValue(new Error(""));
+    uploadFile.mockRejectedValue(new Error(""));
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
@@ -231,45 +279,65 @@ describe("feedback", () => {
     expect(await screen.findByText(/upload failed/i)).toBeInTheDocument();
   });
 
-  it("confirms the filenames after a successful upload", async () => {
-    uploadDocuments.mockResolvedValue([{ filename: "quarterly-report.pdf", id: "1" }]);
+  it("lists the file while it uploads and when it is done", async () => {
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile("quarterly-report.pdf")]));
 
-    expect(await screen.findByText(/quarterly-report\.pdf/)).toBeInTheDocument();
+    expect(await screen.findByText("quarterly-report.pdf")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Uploaded")).toBeInTheDocument();
   });
 
-  it("clears the confirmation after a few seconds", async () => {
-    // A success message that never goes away turns into permanent furniture,
-    // and the next upload's confirmation is indistinguishable from the last.
-    uploadDocuments.mockResolvedValue([{ filename: "report.pdf", id: "1" }]);
+  it("clears finished uploads after a few seconds", async () => {
+    // A success row that never goes away turns into permanent furniture.
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile("report.pdf")]));
-    expect(await screen.findByText(/report\.pdf/)).toBeInTheDocument();
+    await screen.findByLabelText("Uploaded");
 
     await act(async () => {
       vi.advanceTimersByTime(4500);
     });
 
-    expect(screen.queryByText(/report\.pdf/)).not.toBeInTheDocument();
+    expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
   });
 
-  it("clears a previous error when a new upload starts", async () => {
-    // A stale error next to a running upload is actively misleading.
-    uploadDocuments.mockRejectedValueOnce(new Error("First attempt failed."));
+  it("keeps a failure until it is dismissed", async () => {
+    // A failure that vanished on its own could be missed entirely.
+    uploadFile.mockRejectedValueOnce(new Error("First attempt failed."));
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
     expect(await screen.findByText(/first attempt failed/i)).toBeInTheDocument();
 
-    uploadDocuments.mockResolvedValue([{ filename: "ok.pdf", id: "2" }]);
-    fireEvent.drop(zone(container), dropEvent([makeFile("ok.pdf")]));
+    await act(async () => {
+      vi.advanceTimersByTime(10000);
+    });
+    expect(screen.getByText(/first attempt failed/i)).toBeInTheDocument();
 
-    await waitFor(() =>
-      expect(screen.queryByText(/first attempt failed/i)).not.toBeInTheDocument()
-    );
+    fireEvent.click(screen.getByRole("button", { name: /clear errors/i }));
+    expect(screen.queryByText(/first attempt failed/i)).not.toBeInTheDocument();
+  });
+});
+
+// ======================================================================
+// The worker pool
+// ======================================================================
+
+describe("runPool", () => {
+  it("runs every item, never more than the limit at once", async () => {
+    let running = 0;
+    let peak = 0;
+    const seen: number[] = [];
+    await runPool([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 1));
+      seen.push(n);
+      running -= 1;
+    });
+    expect(seen.sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(peak).toBe(3);
   });
 });
 
@@ -286,7 +354,7 @@ describe("upload refusals", () => {
     [429, "Too many uploads. Please try again in 40 seconds.", /^Too many uploads: .*40 seconds/],
     [402, "Your organization has reached its document quota.", /^Quota reached: /],
   ])("words a %i clearly, keeping the backend's reason", async (status, detail, expected) => {
-    uploadDocuments.mockRejectedValueOnce(new ApiError(detail, status));
+    uploadFile.mockRejectedValueOnce(new ApiError(detail, status));
     const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
 
     fireEvent.drop(zone(container), dropEvent([makeFile()]));
@@ -341,6 +409,6 @@ describe("the file input", () => {
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(input, makeFile());
 
-    await waitFor(() => expect(uploadDocuments).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1));
   });
 });

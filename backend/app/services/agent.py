@@ -74,7 +74,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -195,6 +195,17 @@ class AgentDeps:
     # The trace of tool calls, returned to the UI as AgentStep objects.
     steps: List[Dict[str, Any]] = field(default_factory=list)
 
+    # OPTIONAL: restrict every tool to these documents -- the "only search
+    # the files I ticked" filter. None (or empty) means the whole project.
+    # Like org_id, it comes from the request, never from the model, so the
+    # model cannot widen it.
+    document_ids: Optional[List[uuid.UUID]] = None
+
+    # OPTIONAL: called with each step the moment it is recorded. The
+    # streaming endpoint uses it to send "searched for X" to the browser
+    # WHILE the agent is still working, instead of all at once at the end.
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None
+
     def register(self, chunks: List[Dict[str, Any]]) -> List[int]:
         """
         Give each chunk its GLOBAL citation number, and return those numbers.
@@ -222,7 +233,14 @@ class AgentDeps:
 
     def add_step(self, tool: str, args: Dict[str, Any], summary: str) -> None:
         """Record one tool call for the UI's step-by-step trace."""
-        self.steps.append({"tool": tool, "args": args, "summary": summary})
+        step = {"tool": tool, "args": args, "summary": summary}
+        self.steps.append(step)
+        if self.on_step is not None:
+            # A broken listener must never break the answer itself.
+            try:
+                self.on_step(dict(step))
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("Agent step listener failed", exc_info=True)
 
 
 # ======================================================================
@@ -337,6 +355,7 @@ async def search_documents_tool(
                 project_id=deps.project_id,
                 document_id=doc_uuid,
                 top_k=deps.top_k,
+                document_ids=deps.document_ids,
             )
     except SQLAlchemyError as exc:
         logger.error("Agent tool search_documents failed", extra={"error": f"{type(exc).__name__}: {exc}"})
@@ -371,6 +390,10 @@ async def list_documents_tool(deps: AgentDeps) -> str:
         .order_by(Document.created_at.desc())
         .limit(MAX_LISTED_DOCUMENTS)
     )
+    if deps.document_ids:
+        # The user limited this question to some files: the agent should not
+        # even learn that the others exist.
+        statement = statement.where(Document.id.in_(deps.document_ids))
     try:
         async with _tool_db(deps):
             result = await deps.db.execute(statement)
@@ -429,13 +452,17 @@ async def read_document_section_tool(
             # First confirm the document is inside THIS org and THIS project. A
             # model that guessed (or was tricked into) another tenant's id gets
             # the same answer as for an id that does not exist at all.
-            doc_result = await deps.db.execute(
+            doc_statement = (
                 select(Document)
                 .join(Project, Document.project_id == Project.id)
                 .where(Document.id == doc_uuid)
                 .where(Project.org_id == deps.org_id)
                 .where(Document.project_id == deps.project_id)
             )
+            if deps.document_ids:
+                # Outside the user's document filter reads as "not found".
+                doc_statement = doc_statement.where(Document.id.in_(deps.document_ids))
+            doc_result = await deps.db.execute(doc_statement)
             document = doc_result.scalar_one_or_none()
 
             rows: List[Chunk] = []
@@ -662,6 +689,8 @@ async def run_agent(
     top_k: Optional[int] = None,
     history: Optional[List[Dict[str, str]]] = None,
     model: Any = None,
+    document_ids: Optional[List[uuid.UUID]] = None,
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Answer one question in agent mode.
@@ -675,6 +704,9 @@ async def run_agent(
 
     `model` exists for the tests: pass a Pydantic AI TestModel/FunctionModel
     to drive the real agent and tools without calling Groq.
+
+    `document_ids` limits every tool to those documents; `on_step` is called
+    with each tool step as it happens (see AgentDeps).
     """
     started_at = time.perf_counter()
     deps = AgentDeps(
@@ -682,6 +714,8 @@ async def run_agent(
         org_id=org_id,
         project_id=project_id,
         top_k=top_k if top_k is not None else settings.RETRIEVAL_TOP_K,
+        document_ids=list(document_ids) if document_ids else None,
+        on_step=on_step,
     )
 
     # ---- Is the agent framework available at all? --------------------

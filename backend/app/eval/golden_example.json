@@ -1,0 +1,31 @@
+{
+  "name": "Example: employee handbook",
+  "top_k": 5,
+  "cases": [
+    {
+      "id": "leave-full-time",
+      "question": "How many days of annual leave do full-time employees get?",
+      "expected_documents": ["handbook.pdf"],
+      "expected_snippets": ["annual leave"],
+      "expected_keywords": ["days"],
+      "reference_answer": "Full-time employees receive 25 days of annual leave per year."
+    },
+    {
+      "id": "leave-carry-over",
+      "question": "Can unused leave be carried over to next year?",
+      "expected_documents": ["handbook.pdf"],
+      "expected_snippets": ["carried over", "carry over"]
+    },
+    {
+      "id": "expenses-policy-code",
+      "question": "What does policy FIN-204 say about travel expenses?",
+      "expected_documents": ["expenses-policy.docx"],
+      "expected_snippets": ["FIN-204"]
+    },
+    {
+      "id": "not-in-documents",
+      "question": "What is the company's stock ticker symbol?",
+      "expected_documents": []
+    }
+  ]
+}

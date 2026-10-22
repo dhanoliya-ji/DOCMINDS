@@ -5,9 +5,15 @@ WHAT THIS FILE DOES
 -------------------
 Endpoints for getting files into the system and back out again.
 
-    POST /documents/upload              upload one or more files (editor+)
-    GET  /documents/?project_id=...     list a project's documents + status
-    GET  /documents/{id}/preview        download the original file
+    POST   /documents/upload              upload one or more files (editor+)
+    GET    /documents/?project_id=...     list a project's documents + status
+    GET    /documents/{id}                one document
+    PATCH  /documents/{id}                rename it            (editor+, audited)
+    DELETE /documents/{id}                delete it, its chunks and its file
+                                          (editor+, audited)
+    POST   /documents/{id}/reindex        process it again     (editor+, audited)
+    GET    /documents/{id}/preview        download the original file
+    GET    /documents/{id}/chunks         its text around a cited chunk
 
 THE MOST IMPORTANT THING ABOUT THE UPLOAD ENDPOINT
 --------------------------------------------------
@@ -70,7 +76,7 @@ import logging
 import mimetypes
 import os
 import uuid
-from typing import List, Literal
+from typing import List, Literal, Optional
 from urllib.parse import quote
 
 from fastapi import (
@@ -80,19 +86,21 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
+from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.document import DocumentOut
+from app.schemas.document import ChunkContextOut, DocumentOut, DocumentReindex, DocumentUpdate
 from app.core.config import settings
 from app.services import audit, uploads, usage
 from app.services.storage import (
@@ -575,3 +583,251 @@ async def preview_document(
     # A plain (synchronous) iterator: Starlette runs it on a worker thread,
     # so the blocking S3 reads never stall the event loop.
     return StreamingResponse(chunks, media_type=media_type, headers=headers)
+
+
+# ======================================================================
+# ONE DOCUMENT: read, rename, delete, re-index, read its text
+# ======================================================================
+
+
+async def get_org_document(db: AsyncSession, document_id: uuid.UUID, user: User) -> Document:
+    """
+    Load a document, but only from the caller's own organization.
+
+    A document has no org_id of its own, so ownership is checked by walking
+    up to its project -- the same chain the vector search walks. Another
+    tenant's document gets the same 404 as a missing one.
+    """
+    row = (
+        await db.execute(
+            select(Document)
+            .join(Project, Document.project_id == Project.id)
+            .where(Document.id == document_id, Project.org_id == user.org_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    return row
+
+
+@router.get("/{document_id}", response_model=DocumentOut)
+async def get_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    """One document's details and processing status."""
+    return await get_org_document(db, document_id, current_user)
+
+
+@router.patch("/{document_id}", response_model=DocumentOut)
+async def rename_document(
+    document_id: uuid.UUID,
+    payload: DocumentUpdate,
+    request: Request,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_editor),
+):
+    """
+    Rename a document (editor+, audited).
+
+    The new name is cleaned exactly like an uploaded filename, and keeps the
+    document's real extension: the type was decided by the file's CONTENT at
+    upload, so renaming "report.pdf" to "report.exe" cannot change what it is
+    -- the ".pdf" is put back. Citations already saved in old conversations
+    keep the name they were made with.
+    """
+    document = await get_org_document(db, document_id, current_user)
+    name = uploads.sanitize_filename(payload.filename)
+    if not name:
+        raise HTTPException(status_code=422, detail="That name has no usable characters.")
+    if uploads.extension_of(name) != document.file_type:
+        name = f"{name}.{document.file_type}"
+
+    old_name = document.filename
+    document.filename = name
+    await audit.record(
+        db, "document.rename", org_id=current_user.org_id, user_id=current_user.id,
+        request=request,
+        details={"document_id": document.id, "old_name": old_name, "new_name": name},
+    )
+    await db.commit()
+    await db.refresh(document)
+    return document
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_editor),
+):
+    """
+    Delete a document: its row, its chunks and vectors, and its stored file.
+
+    The chunks and embeddings go with the row through ON DELETE CASCADE (see
+    models/chunk.py), so the search index can never point at a document that
+    no longer exists. The file is removed AFTER the commit -- see
+    projects.delete_project for why that order is the safe one.
+
+    Answers already given keep their citations (they are a record of what
+    was said), but the "open source" link on them will report the document
+    as gone.
+    """
+    document = await get_org_document(db, document_id, current_user)
+    backend, key = document.storage_backend, document.file_path
+
+    await audit.record(
+        db, "document.delete", org_id=current_user.org_id, user_id=current_user.id,
+        request=request,
+        details={
+            "document_id": document.id,
+            "project_id": document.project_id,
+            "filename": document.filename,
+            "file_size": document.file_size,
+        },
+    )
+    await db.execute(delete(Document).where(Document.id == document.id))
+    await db.commit()
+
+    # Imported here to avoid a circular import between the two routers.
+    from app.api.v1.projects import delete_stored_file
+
+    await delete_stored_file(backend, key)
+    return None
+
+
+@router.post(
+    "/{document_id}/reindex",
+    response_model=DocumentOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    # Re-indexing is as heavy as an upload, so it shares the upload limit.
+    dependencies=[Depends(deps.rate_limit_by_user("upload"))],
+)
+async def reindex_document(
+    document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    payload: Optional[DocumentReindex] = None,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_editor),
+):
+    """
+    Process a document again from its stored file (editor+, audited).
+
+    WHEN YOU WANT THIS
+      * it failed, and the cause has since been fixed (OCR installed, a
+        provider key added);
+      * EMBEDDING_PROVIDER or the model changed -- retrieval only compares
+        vectors from the CURRENT model, so older documents stop matching
+        until they are re-embedded;
+      * you want different chunking (pass chunk_strategy / chunk_size /
+        chunk_overlap in the body).
+
+    The document goes back to "pending" and leaves search until it is
+    "completed" again; the pipeline (tasks/ingestion.py, stage 4) deletes
+    the old chunks before writing the new ones, so nothing is duplicated.
+    Returns 202 for the same reason the upload does.
+    """
+    document = await get_org_document(db, document_id, current_user)
+
+    if (document.meta_data or {}).get("quarantined"):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This file was quarantined by the malware scan and cannot be processed.",
+        )
+    if document.status in ("pending", "processing"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This document is already queued or being processed.",
+        )
+
+    meta = dict(document.meta_data or {})
+    options = payload.model_dump(exclude_none=True) if payload else {}
+    size = options.get("chunk_size", meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE))
+    overlap = options.get("chunk_overlap", meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP))
+    if overlap >= size:
+        raise HTTPException(status_code=422, detail="chunk_overlap must be smaller than chunk_size.")
+    meta.update(options)
+    # The previous run's error no longer describes this document.
+    meta.pop("error", None)
+    # A NEW dict, assigned: SQLAlchemy does not notice changes made inside a
+    # JSONB value in place.
+    document.meta_data = meta
+    document.status = "pending"
+    document.error_message = None
+    document.processing_started_at = None
+
+    await audit.record(
+        db, "document.reindex", org_id=current_user.org_id, user_id=current_user.id,
+        request=request,
+        details={"document_id": document.id, "filename": document.filename, **options},
+    )
+    await db.commit()
+    await db.refresh(document)
+
+    # Queued AFTER the commit, exactly like an upload.
+    if settings.INGESTION_MODE == "celery":
+        try:
+            process_document_task.delay(str(document.id))
+        except Exception as exc:
+            logger.warning(
+                "Could not queue re-index; the recovery sweep will retry",
+                extra={"document_id": str(document.id), "error": repr(exc)},
+            )
+    else:
+        background_tasks.add_task(run_inline_ingestion, str(document.id))
+    return document
+
+
+@router.get("/{document_id}/chunks", response_model=List[ChunkContextOut])
+async def document_chunks(
+    document_id: uuid.UUID,
+    around: Optional[uuid.UUID] = Query(
+        None, description="A chunk id: return it with its neighbours on either side."
+    ),
+    window: int = Query(2, ge=0, le=5, description="Neighbours on each side (0-5)."),
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    """
+    A few consecutive chunks of a document's extracted text.
+
+    The citation viewer uses this for files the browser cannot render itself
+    (DOCX, spreadsheets, emails...): it shows the cited chunk with its
+    neighbours, the cited passage highlighted. Without `around`, the start of
+    the document is returned.
+    """
+    document = await get_org_document(db, document_id, current_user)
+
+    centre = 0
+    if around is not None:
+        index = (
+            await db.execute(
+                select(Chunk.chunk_index).where(
+                    Chunk.id == around, Chunk.document_id == document.id
+                )
+            )
+        ).scalar_one_or_none()
+        if index is None:
+            # Re-indexing replaces every chunk id, so an old citation can
+            # point at a chunk that no longer exists.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That passage no longer exists; the document may have been re-indexed.",
+            )
+        centre = index
+
+    rows = (
+        await db.execute(
+            select(Chunk)
+            .where(
+                Chunk.document_id == document.id,
+                Chunk.chunk_index >= centre - window,
+                Chunk.chunk_index <= centre + (window if around is not None else 2 * window),
+            )
+            .order_by(Chunk.chunk_index)
+        )
+    ).scalars().all()
+    return rows
