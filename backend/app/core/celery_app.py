@@ -119,6 +119,12 @@ celery_app.conf.update(
             "task": "app.tasks.ingestion.recover_stuck_documents_task",
             "schedule": settings.INGESTION_RECOVERY_INTERVAL_MINUTES * 60.0,
         },
+        # Re-queues webhook deliveries whose message was lost (tasks/webhooks.py).
+        # Harmless when webhooks are off: it finds nothing pending.
+        "sweep-webhooks": {
+            "task": "app.tasks.webhooks.sweep_webhooks_task",
+            "schedule": 5 * 60.0,
+        },
     },
 
     # Explicitly import the tasks package on worker start-up. A task the worker

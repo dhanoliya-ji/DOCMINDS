@@ -22,6 +22,12 @@ THE ACTIONS WRITTEN TODAY
     project.create  project.rename  project.delete
     api_key.create  api_key.revoke
 
+WEBHOOKS
+--------
+With WEBHOOKS_ENABLED, `record` also forwards the actions listed in
+services/webhooks.py AUDIT_EVENT_MAP to the organization's webhooks, so no
+endpoint has to know webhooks exist.
+
 The "noun.verb" naming keeps related events together, so the audit endpoint's
 `action` filter can ask for exactly one, and a prefix like "member." groups a
 family of them.
@@ -42,6 +48,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.client_ip import client_ip as resolve_client_ip
+from app.core.config import settings
 from app.models.audit import AuditLog
 
 
@@ -83,4 +90,16 @@ async def record(
         },
     )
     db.add(entry)
+
+    # WEBHOOKS: many audit actions are also events an organization may want
+    # pushed to its own systems ("invite.accept" -> "member.joined"). Staged
+    # in the same transaction and sent only after it commits -- see
+    # services/webhooks.py. Imported here, not at the top, because webhooks
+    # is optional and this keeps audit importable on its own.
+    if settings.WEBHOOKS_ENABLED:
+        from app.services import webhooks
+
+        await webhooks.emit_for_audit(
+            db, action, org_id=org_id, user_id=user_id, details=entry.details
+        )
     return entry

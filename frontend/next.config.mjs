@@ -22,6 +22,10 @@ const nextConfig = {
         headers: securityHeaders({
           apiUrl: process.env.NEXT_PUBLIC_API_URL,
           isDev: process.env.NODE_ENV === "development",
+          // Only with a PostHog key is its host added to the CSP.
+          analyticsHost: process.env.NEXT_PUBLIC_POSTHOG_KEY
+            ? process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://us.i.posthog.com"
+            : "",
         }),
       },
     ];

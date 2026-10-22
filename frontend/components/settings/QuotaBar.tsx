@@ -43,7 +43,7 @@ export default function QuotaBar({
           aria-valuenow={Math.round(percent)}
           aria-valuetext={`${Math.round(percent)}% used`}
           className="h-2 overflow-hidden rounded-full"
-          style={{ background: "rgba(255,255,255,0.08)" }}
+          style={{ background: "var(--surface-2)" }}
         >
           <div className="h-full rounded-full" style={{ width: `${percent}%`, background: colour }} />
         </div>

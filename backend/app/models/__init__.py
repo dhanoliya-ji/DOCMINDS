@@ -49,6 +49,7 @@ from app.models.revoked_token import RevokedToken
 from app.models.usage import UsageEvent
 from app.models.user import User
 from app.models.user_token import UserToken
+from app.models.webhook import WebhookDelivery, WebhookEndpoint
 
 # `__all__` declares this module's public surface. It controls what
 # `from app.models import *` brings in, and documents the intended exports for
@@ -78,4 +79,7 @@ __all__ = [
     "UserToken",
     # ---- Metering ----
     "UsageEvent",
+    # ---- Integrations ----
+    "WebhookEndpoint",
+    "WebhookDelivery",
 ]

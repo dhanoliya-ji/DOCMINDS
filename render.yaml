@@ -156,3 +156,31 @@ services:
       # - key: S3_SECRET_ACCESS_KEY
       #   sync: false
 
+
+      # ---- OPTIONAL: single sign-on (OpenID Connect) ----
+      # "Continue with SSO" through Google, Microsoft, Okta... Commented out
+      # for the same reason as S3: a first deploy should ask for nothing
+      # extra. Uncomment, and Render asks for the `sync: false` values. The
+      # provider must list <this API>/api/v1/auth/sso/callback as an allowed
+      # redirect URI. See docs/DEPLOYMENT.md, "Single sign-on".
+      # - key: OIDC_ENABLED
+      #   value: "true"
+      # - key: OIDC_DISCOVERY_URL
+      #   sync: false
+      # - key: OIDC_CLIENT_ID
+      #   sync: false
+      # - key: OIDC_CLIENT_SECRET
+      #   sync: false
+      # - key: OIDC_PROVIDER_NAME
+      #   value: Google
+      # - key: OIDC_REDIRECT_URI
+      #   sync: false
+
+      # ---- OPTIONAL: webhooks, multilingual search, query cache ----
+      # All off by default. See docs/DEPLOYMENT.md for each.
+      # - key: WEBHOOKS_ENABLED
+      #   value: "true"
+      # - key: EMBEDDING_MULTILINGUAL     # then RE-INDEX every document
+      #   value: "true"
+      # - key: EMBEDDING_CACHE_ENABLED
+      #   value: "true"

@@ -40,7 +40,7 @@ mode and model are nullable and start NULL; steps defaults to an empty list.
 Old messages keep exactly the meaning they had.
 
 Revision ID: a7b9c1d3e5f8
-Revises: a7b9c1d3e5f8
+Revises: f6a8b0c2d4e7
 Create Date: 2026-10-23
 """
 
@@ -51,7 +51,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "a7b9c1d3e5f8"
-down_revision: Union[str, None] = "a7b9c1d3e5f8"
+down_revision: Union[str, None] = "f6a8b0c2d4e7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

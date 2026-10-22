@@ -17,7 +17,7 @@
  * are real.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -76,6 +76,17 @@ beforeEach(() => {
   mocks.listProjects.mockResolvedValue([]);
   mocks.health.mockResolvedValue(null);
 });
+
+/**
+ * Press and hold a HoldToConfirm button past its 1s threshold, then release.
+ * Real timers: one second per call is cheaper than reconciling fake timers
+ * with userEvent and the panels' async loads.
+ */
+async function hold(button: HTMLElement) {
+  fireEvent.pointerDown(button);
+  await act(() => new Promise((r) => setTimeout(r, 1100)));
+  fireEvent.pointerUp(button);
+}
 
 // ======================================================================
 // Who sees what
@@ -160,19 +171,18 @@ describe("members", () => {
     expect(mocks.updateMember).toHaveBeenCalledWith("m-2", { role: "editor" });
   });
 
-  it("removes a member only after confirming", async () => {
+  it("removes a member only after a completed hold", async () => {
     mocks.removeMember.mockResolvedValue({});
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     const user = userEvent.setup();
     render(<SettingsPage />);
 
     const remove = await screen.findByRole("button", { name: "Remove bob@example.com" });
+    // A plain click is not enough: HoldToConfirm replaced window.confirm().
     await user.click(remove);
     expect(mocks.removeMember).not.toHaveBeenCalled();
 
-    await user.click(remove);
-    expect(mocks.removeMember).toHaveBeenCalledWith("m-2");
-    confirm.mockRestore();
+    await hold(remove);
+    await waitFor(() => expect(mocks.removeMember).toHaveBeenCalledWith("m-2"));
   });
 
   it("shows the backend's refusal", async () => {
@@ -217,14 +227,13 @@ describe("API keys", () => {
       { id: "k2", name: "Old", key_prefix: "dm_cd34", role: "Employee", is_active: false, revoked_at: "2026-01-01", last_used_at: null },
     ]);
     mocks.revokeApiKey.mockResolvedValue({});
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    const user = await openKeys();
+    await openKeys();
 
     expect(await screen.findByText("dm_ab12…")).toBeInTheDocument();
     expect(screen.getByText("Revoked")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Revoke CI" }));
+    await hold(screen.getByRole("button", { name: "Revoke CI" }));
 
-    expect(mocks.revokeApiKey).toHaveBeenCalledWith("k1");
+    await waitFor(() => expect(mocks.revokeApiKey).toHaveBeenCalledWith("k1"));
   });
 });
 

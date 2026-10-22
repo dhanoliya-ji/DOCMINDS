@@ -32,6 +32,13 @@
  * "pending" or "processing", re-fetch the list every three seconds. Once
  * everything has settled, the polling stops on its own so we are not making
  * pointless requests forever.
+ *
+ * LAYOUT AND FIRST RUN
+ * --------------------
+ * Wrapped in <AppShell>. A project with no documents shows a first-run empty
+ * state (what to upload, what to ask) and a short guided tour, remembered
+ * once dismissed. Document rows lift and unfold upload details on hover
+ * (F12) and their icons sharpen in from a blur (F14).
  */
 
 "use client";
@@ -40,6 +47,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
   Check,
+  FileUp,
   CheckCircle2,
   Clock,
   FileText,
@@ -51,9 +59,13 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useState } from "react";
 
+import AppShell from "@/components/app/AppShell";
+import LogoLoader from "@/components/app/LogoLoader";
+import { FirstRunEmpty, GuidedTour, type TourStep } from "@/components/app/Onboarding";
 import ChatPanel from "@/components/ChatPanel";
 import DocumentActions from "@/components/DocumentActions";
 import SearchPanel from "@/components/SearchPanel";
@@ -64,6 +76,24 @@ import { useCurrentUser } from "@/lib/useCurrentUser";
 
 /** The three tabs of the workspace. */
 type Tab = "documents" | "search" | "chat";
+
+/** Example files shown on a fresh project, to suggest what is worth uploading. */
+const SAMPLE_UPLOADS = ["Employee handbook.pdf", "Contract.docx", "Pricing.xlsx", "Scanned receipt.jpg"];
+
+const TOUR: TourStep[] = [
+  {
+    title: "Drop documents in",
+    body: "Drag files onto the upload area. 19 formats are supported, and scans are read with OCR.",
+  },
+  {
+    title: "Watch them process",
+    body: "Each file moves from Queued to Processing to Ready. This page refreshes on its own.",
+  },
+  {
+    title: "Then search or ask",
+    body: "Use the Search tab for matching passages, or Ask AI for answers with page-level citations.",
+  },
+];
 
 export default function ProjectPage({
   params,
@@ -251,18 +281,18 @@ export default function ProjectPage({
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-5xl px-6 py-8">
+    <AppShell>
       {/* ---- Header ---- */}
-      <button
-        onClick={() => router.push("/dashboard")}
-        className="mb-5 flex items-center gap-1.5 text-sm transition-colors"
-        style={{ color: "var(--text-muted)" }}
+      <Link
+        href="/dashboard"
+        className="mb-5 inline-flex items-center gap-1.5 text-sm transition-colors"
+        style={{ color: "var(--text-secondary)" }}
       >
-        <ArrowLeft size={14} />
+        <ArrowLeft size={14} aria-hidden="true" />
         All projects
-      </button>
+      </Link>
 
-      <div className="mb-6">
+      <div className="mb-6 min-w-0">
         {renaming ? (
           <div className="flex items-center gap-2">
             <input
@@ -286,7 +316,7 @@ export default function ProjectPage({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-gradient text-3xl font-bold">{projectName}</h1>
+            <h1 className="text-gradient break-words text-3xl font-bold">{projectName}</h1>
             {mayUpload && (
               <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
                 <button
@@ -339,7 +369,7 @@ export default function ProjectPage({
       {/* ---- Tabs ---- */}
       <div
         className="mb-6 flex gap-1 rounded-xl p-1"
-        style={{ background: "rgba(255,255,255,0.04)" }}
+        style={{ background: "var(--surface-1)" }}
       >
         {(
           [
@@ -354,7 +384,8 @@ export default function ProjectPage({
             <button
               key={item.key}
               onClick={() => setTab(item.key)}
-              className="relative flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors"
+              aria-pressed={active}
+              className="relative flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-2 py-2.5 text-sm font-medium transition-colors sm:px-4"
               style={{
                 color: active ? "#fff" : "var(--text-secondary)",
               }}
@@ -376,7 +407,7 @@ export default function ProjectPage({
               )}
               {/* `relative` lifts the label above the highlight behind it. */}
               <span className="relative flex items-center gap-2">
-                <Icon size={15} />
+                <Icon size={15} aria-hidden="true" />
                 {item.label}
               </span>
             </button>
@@ -395,7 +426,7 @@ export default function ProjectPage({
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -10 }}
-          transition={{ duration: 0.2 }}
+          transition={{ duration: 0.18 }}
         >
           {/* ================= DOCUMENTS ================= */}
           {tab === "documents" && (
@@ -431,35 +462,41 @@ export default function ProjectPage({
               )}
 
               {loading ? (
-                <div className="space-y-2">
-                  {[0, 1].map((i) => (
-                    <div key={i} className="glass shimmer h-16" />
-                  ))}
-                </div>
+                <LogoLoader label="Loading documents" />
               ) : documents.length === 0 ? (
-                <div
-                  className="glass px-6 py-12 text-center text-sm"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  No documents yet. Upload one above to get started.
-                </div>
+                <>
+                  <GuidedTour id="project" steps={TOUR} />
+                  <FirstRunEmpty
+                    icon={<FileUp size={26} />}
+                    title="No documents yet"
+                    body={
+                      mayUpload
+                        ? "Upload one above to get started. Good first picks are documents people ask about often."
+                        : "Nothing has been uploaded to this project yet."
+                    }
+                    suggestionsLabel="For example"
+                    suggestions={SAMPLE_UPLOADS}
+                  />
+                </>
               ) : (
                 <div className="space-y-2">
-                  {documents.map((doc) => {
+                  {documents.map((doc, index) => {
                     const badge = statusBadge(doc.status);
                     return (
                       <motion.div
                         key={doc.id}
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="glass flex items-center gap-4 p-4"
+                        className="glass lift-card flex items-start gap-4 p-4"
                       >
                         <div
-                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+                          className="blur-reveal flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
                           style={{
-                            background: "rgba(99,102,241,0.14)",
+                            background: "color-mix(in srgb, var(--accent) 14%, transparent)",
                             color: "var(--accent-hover)",
+                            ["--reveal-delay" as string]: `${Math.min(index, 8) * 50}ms`,
                           }}
+                          aria-hidden="true"
                         >
                           <FileText size={16} />
                         </div>
@@ -521,6 +558,14 @@ export default function ProjectPage({
                               Retrying after a temporary problem: {doc.error_message}
                             </div>
                           )}
+                          {/* F12 hover preview: when it was added. */}
+                          <div className="card-preview">
+                            <div>
+                              <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                                Uploaded {new Date(doc.created_at).toLocaleString()}
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
                         <span className={`${badge.className} shrink-0`}>
@@ -566,7 +611,7 @@ export default function ProjectPage({
             ))}
         </motion.div>
       </AnimatePresence>
-    </main>
+    </AppShell>
   );
 }
 

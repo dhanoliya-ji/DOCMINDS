@@ -767,6 +767,120 @@ class Settings(BaseSettings):
     HSTS_MAX_AGE_SECONDS: int = 365 * 24 * 60 * 60
 
     # ==================================================================
+    # 18. SINGLE SIGN-ON (optional) -- api/v1/sso.py
+    # ==================================================================
+    # "Continue with SSO" through any OpenID Connect provider: Google,
+    # Microsoft Entra ID, Okta, Auth0, Keycloak... OIDC is the same protocol
+    # for all of them, so ONE generic implementation covers every provider --
+    # the provider is chosen entirely by the DISCOVERY URL, a JSON document
+    # every OIDC provider publishes that lists its other addresses:
+    #   Google     https://accounts.google.com/.well-known/openid-configuration
+    #   Microsoft  https://login.microsoftonline.com/<tenant>/v2.0/.well-known/openid-configuration
+    #   Okta       https://<your-org>.okta.com/.well-known/openid-configuration
+    #
+    # Off by default. Switching it on needs all three of the values below,
+    # which you get by registering DocMinds as an "application" (Google calls
+    # it an "OAuth client") with the provider.
+    OIDC_ENABLED: bool = False
+    OIDC_DISCOVERY_URL: str = ""
+    OIDC_CLIENT_ID: str = ""
+    # A secret, exactly like a password: .env or the host's secret store only.
+    OIDC_CLIENT_SECRET: str = ""
+    # What we ask the provider for. "openid" is mandatory; "email" is what
+    # account linking needs; "profile" is harmless and some providers want it.
+    OIDC_SCOPES: str = "openid email profile"
+    # The label on the login button: "Continue with Google", "... with Okta".
+    OIDC_PROVIDER_NAME: str = "SSO"
+    # The address the provider sends the browser back to. It must be
+    # registered with the provider EXACTLY. Empty = derived from the request
+    # (<this API>/api/v1/auth/sso/callback), which is right unless a proxy
+    # rewrites the host.
+    OIDC_REDIRECT_URI: str = ""
+    # Someone signing in with SSO for the first time, with no account and no
+    # invite: may they create a NEW organization of their own (exactly what
+    # the normal signup form allows)? They can never join an EXISTING
+    # organization without an invite -- that rule is not configurable.
+    OIDC_ALLOW_SIGNUP: bool = True
+    # Accounts are matched by email, so the email must be one the provider
+    # has VERIFIED (the `email_verified` claim). Google and Okta send it.
+    # Microsoft Entra ID does NOT send it for work accounts -- with Entra,
+    # set this to false, which is safe only because Entra itself controls
+    # the addresses in its directory. Never turn it off for a provider where
+    # users can type in any email they like.
+    OIDC_REQUIRE_EMAIL_VERIFIED: bool = True
+
+    # ==================================================================
+    # 19. MULTILINGUAL EMBEDDINGS (optional) -- services/embedding.py
+    # ==================================================================
+    # all-MiniLM-L6-v2 (the default local model) understands English only: a
+    # German question will not find the German paragraph that answers it.
+    # Switching this on makes the LOCAL provider use MULTILINGUAL_EMBEDDING_MODEL
+    # instead, which places 50+ languages in ONE shared vector space -- a
+    # French question can even find the English passage that answers it.
+    #
+    # paraphrase-multilingual-MiniLM-L12-v2 also makes 384-number vectors, so
+    # the vector(384) column fits unchanged and no migration is needed.
+    #
+    # >>> SWITCHING REQUIRES RE-INDEXING <<<  Vectors from two models are
+    # not comparable. Documents embedded by the old model stay searchable
+    # only by the old model -- reprocess every document after switching (see
+    # docs/DEVELOPMENT.md, "Multilingual embeddings").
+    EMBEDDING_MULTILINGUAL: bool = False
+    MULTILINGUAL_EMBEDDING_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
+
+    # ==================================================================
+    # 20. QUERY-EMBEDDING CACHE (optional) -- services/embedding.py
+    # ==================================================================
+    # Users ask the same questions again and again ("what is the leave
+    # policy?"). Embedding a question costs ~20 ms of CPU locally, or a paid
+    # API call with OpenAI/Gemini. The cache keeps each QUESTION's vector so
+    # the second identical question skips the model entirely.
+    #
+    # Only questions are cached -- document chunks are embedded once at upload
+    # and never asked for again. The key includes the model name and size, so
+    # switching model can never return a vector from the previous one.
+    #
+    #   auto   -> Redis when reachable (shared by every API process), falling
+    #             back to an in-memory LRU inside each process.
+    #   memory -> in-memory LRU only.
+    EMBEDDING_CACHE_ENABLED: bool = False
+    EMBEDDING_CACHE_BACKEND: Literal["auto", "memory"] = "auto"
+    # How many questions the in-memory LRU remembers (384 floats ~ 3 KB each).
+    EMBEDDING_CACHE_MAX_ENTRIES: int = 2048
+    # How long a cached vector lives, in Redis and in memory.
+    EMBEDDING_CACHE_TTL_SECONDS: int = 24 * 60 * 60
+
+    # ==================================================================
+    # 21. WEBHOOKS (optional) -- services/webhooks.py, api/v1/webhooks.py
+    # ==================================================================
+    # Org admins register an HTTPS URL and the events they care about
+    # (document.processed, member.joined, ...). Each event is POSTed there as
+    # JSON, signed with HMAC-SHA256 so the receiver can prove it came from us,
+    # and retried with growing waits by Celery when the receiver is down.
+    # Every attempt is kept in a delivery log admins can read.
+    WEBHOOKS_ENABLED: bool = False
+    # How many times one delivery is attempted in total, and the first wait
+    # between attempts (doubled each time: 30s, 60s, 120s ... capped at 1h).
+    WEBHOOK_MAX_ATTEMPTS: int = 6
+    WEBHOOK_RETRY_BACKOFF_SECONDS: int = 30
+    # How long the receiver gets to answer one POST.
+    WEBHOOK_TIMEOUT_SECONDS: float = 10.0
+    # SSRF PROTECTION. A webhook makes OUR server send a request to an address
+    # a customer typed in. Without a check, "http://169.254.169.254/" (the
+    # cloud metadata service, which hands out credentials) or
+    # "http://localhost:5432" would be reachable by anyone who is an admin of
+    # any organization. So every URL is resolved and refused if ANY address
+    # it resolves to is private, loopback, link-local or reserved -- at
+    # registration AND again at every delivery (DNS can change in between).
+    # Only switch this on for local testing against a receiver on your own
+    # machine; never in production.
+    WEBHOOK_ALLOW_PRIVATE_TARGETS: bool = False
+    # Plain http:// targets. Off: the signed payload travels encrypted only.
+    WEBHOOK_ALLOW_HTTP: bool = False
+    # Most endpoints one organization may register.
+    WEBHOOK_MAX_ENDPOINTS_PER_ORG: int = 10
+
+    # ==================================================================
     # DERIVED VALUES
     # ------------------------------------------------------------------
     # `@property` means "compute this on demand from the settings above".
@@ -855,6 +969,23 @@ class Settings(BaseSettings):
             if origin.strip():
                 return origin.strip().rstrip("/")
         return "http://localhost:3000"
+
+    @property
+    def local_embedding_model(self) -> str:
+        """The local model actually used: the multilingual one when switched on."""
+        if self.EMBEDDING_MULTILINGUAL:
+            return self.MULTILINGUAL_EMBEDDING_MODEL
+        return self.LOCAL_EMBEDDING_MODEL
+
+    @property
+    def oidc_configured(self) -> bool:
+        """SSO is on AND has everything it needs to work."""
+        return bool(
+            self.OIDC_ENABLED
+            and self.OIDC_DISCOVERY_URL
+            and self.OIDC_CLIENT_ID
+            and self.OIDC_CLIENT_SECRET
+        )
 
     @property
     def email_backend(self) -> str:
