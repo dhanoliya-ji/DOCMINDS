@@ -91,6 +91,7 @@ LIMITS: Dict[str, Tuple[str, str]] = {
     "login": ("RATE_LIMIT_LOGIN", "sign-in attempts from this address"),
     "signup": ("RATE_LIMIT_SIGNUP", "sign-ups from this address"),
     "password_reset": ("RATE_LIMIT_PASSWORD_RESET", "password reset requests from this address"),
+    "verify_resend": ("RATE_LIMIT_VERIFY_RESEND", "verification emails"),
     "chat": ("RATE_LIMIT_CHAT", "questions"),
     "search": ("RATE_LIMIT_SEARCH", "searches"),
     "upload": ("RATE_LIMIT_UPLOAD", "uploads"),

@@ -11,6 +11,7 @@ This guide covers the hosted demo configuration (Neon + Render + Vercel) and the
 - [Self-hosting with a worker](#self-hosting-with-a-worker)
 - [File storage](#file-storage)
 - [Malware scanning](#malware-scanning)
+- [Quotas](#quotas)
 - [Backups](#backups)
 - [Production checklist](#production-checklist)
 - [Troubleshooting](#troubleshooting)
@@ -57,8 +58,8 @@ Alembic's `env.py` runs `CREATE EXTENSION IF NOT EXISTS vector` before applying 
 
 1. Import this repository at https://vercel.com/new.
 2. Set **Root Directory** to `frontend`.
-3. Add the environment variable `NEXT_PUBLIC_API_URL` with the Render API address, without a trailing slash.
-4. Deploy and note the site address.
+3. Add the environment variable `NEXT_PUBLIC_API_URL` with the Render API address, without a trailing slash. It is built into the pages and into the Content-Security-Policy's `connect-src`, so redeploy the frontend after changing it; otherwise the browser blocks calls to the new address. If you changed the backend's `PASSWORD_MIN_LENGTH`, also set `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` to the same value.
+4. Deploy and note the site address. Set the backend's `FRONTEND_URL` (or `FRONTEND_ORIGIN`) to it: invite, reset and verification emails link to `/login?invite=`, `/reset-password?token=` and `/verify-email?token=` on that address.
 
 ### 4. Allow the frontend origin
 
@@ -170,8 +171,12 @@ Two things hold data: Postgres (every row, including the extracted text and the 
 | Set `SECRET_KEY` (for example `openssl rand -hex 32`) | The default in `config.py` is public; anyone could forge tokens. With `ENV=production` the API refuses to start on the default or on a key shorter than 32 characters |
 | Set `SMTP_HOST` (and credentials, `EMAIL_FROM`) and `FRONTEND_URL` | Without SMTP, invite, password reset and verification emails are only written to the API log. `FRONTEND_URL` is where their links point |
 | Decide on `REQUIRE_EMAIL_VERIFICATION` | Off by default; turn it on once email delivery works |
-| Run `alembic upgrade head` on deploy | Migration `c3d5e7f9a2b4` adds invites and server-side sessions; refresh tokens issued before it stop working, so users sign in once more. Migration `d4e6f8a0b2c5` adds the document storage and ingestion columns; existing rows are marked `local` |
-| Start uvicorn with `--proxy-headers` behind a proxy | Audit log IP addresses otherwise record the proxy, not the client |
+| Run `alembic upgrade head` on deploy | Migration `c3d5e7f9a2b4` adds invites and server-side sessions; refresh tokens issued before it stop working, so users sign in once more. Migration `d4e6f8a0b2c5` adds the document storage and ingestion columns; existing rows are marked `local`. Migration `e5f7a9b1c3d6` adds `usage_events` and the per-organisation quota columns; usage is counted from the deploy onwards |
+| Behind a proxy, set `TRUSTED_PROXY_COUNT` (1 on Render) or `CLIENT_IP_HEADER` | Per-IP rate limits, the audit log and the access log otherwise see every user as the proxy's address, and one person's failed sign-ins would lock everyone out. Never set them without a proxy: clients could then choose their own address |
+| Review the `RATE_LIMIT_*` and `QUOTA_*` settings | Defaults: 20 sign-ins a minute per IP, 30 questions a minute per user, 1,000,000 AI tokens a month, 1,000 documents and 5 GB per organisation. See [Quotas](#quotas) |
+| Point the platform's health check at `/api/v1/health/ready` for routing, and keep `/api/v1/health` for liveness | Readiness answers `503` while the database (or, in Celery mode, Redis or every worker) is down; liveness never touches dependencies, so an outage does not trigger restart loops |
+| Optionally set `SENTRY_DSN` | Error reports from the API, the worker and beat, grouped and tagged with the request id and organisation. Off by default |
+| Ship stdout to a log platform | Logs are one JSON object per line (`LOG_FORMAT=json`) with `request_id`, `user_id`, `org_id`; search a request id from a response's `X-Request-ID` header to find every line it produced |
 | `ENV=production`, `DEBUG=false` | `ENV=production` disables SQL statement echo and hides the `/api/v1/tasks` diagnostics (404); `DEBUG` is only reported by `/api/v1/health` |
 | `FRONTEND_ORIGIN` set to the exact frontend URL, including scheme | CORS |
 | `DATABASE_URL` points to Postgres with pgvector | Required for the `vector` column and HNSW index |
@@ -180,6 +185,18 @@ Two things hold data: Postgres (every row, including the extracted text and the 
 | A backup schedule for Postgres and the file store | See [Backups](#backups) |
 | One Celery beat process (with `INGESTION_MODE=celery`) | Runs the recovery sweep for documents orphaned by a dead worker |
 | Consider `MALWARE_SCAN=clamav` | Uploaded files are parsed by C libraries and served back through preview. See [Malware scanning](#malware-scanning) |
+
+## Quotas
+
+Each organisation is limited per calendar month (UTC) to `QUOTA_MONTHLY_TOKENS` AI tokens, and overall to `QUOTA_MAX_DOCUMENTS` documents totalling `QUOTA_MAX_STORAGE_BYTES`. To give one organisation different limits, set its own columns (NULL means use the setting, 0 means unlimited). They are deliberately not editable through the admin API, so an organisation cannot raise its own limits:
+
+```sql
+UPDATE organizations
+SET monthly_token_quota = 10000000, max_documents = 0, max_storage_bytes = 53687091200
+WHERE name = 'Acme';
+```
+
+Admins of an organisation see their month at `GET /api/v1/org/usage`: requests, tokens in and out, the estimated cost (from `LLM_PRICING`, an estimate rather than the provider's invoice) by model and mode, and each quota's use. Add your model to `LLM_PRICING` if you change `GROQ_MODEL`; an unpriced model is costed at zero and logged once.
 
 ## Troubleshooting
 
@@ -193,4 +210,8 @@ Two things hold data: Postgres (every row, including the extracted text and the 
 | `/api/v1/health` shows `"api_key_configured": false` | `GROQ_API_KEY` not set on the service | Set it and redeploy |
 | API refuses to start: `STORAGE_BACKEND=s3 needs S3_BUCKET` | S3 selected without a bucket | Set `S3_BUCKET`, or `STORAGE_BACKEND=local` |
 | Uploads return `503` "File storage is temporarily unavailable" | The S3 endpoint, credentials or bucket are wrong or unreachable | Check `S3_ENDPOINT_URL`, `S3_REGION` and the credentials' permissions |
+| `429` "Too many sign-in attempts" for every user at once | Behind a proxy with `TRUSTED_PROXY_COUNT=0`, every user shares the proxy's address | Set `TRUSTED_PROXY_COUNT` to the number of proxies you control |
+| Chat answers `429` "monthly AI quota" | The organisation used `QUOTA_MONTHLY_TOKENS` this month | Raise its `organizations.monthly_token_quota` (see [Quotas](#quotas)), or wait for the 1st (UTC) |
+| Upload answers `402` | Document or storage quota reached | Raise `organizations.max_documents` / `max_storage_bytes`, or the `QUOTA_*` defaults |
+| `/api/v1/health/ready` answers `503` | A hard dependency is down; the body names it | Check the component marked `"status": "down"`; in Celery mode start a worker |
 | Document stuck on `processing` | The worker died mid-job | It is re-queued after `INGESTION_STALE_AFTER_MINUTES` by the beat sweep or the next API start |

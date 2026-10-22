@@ -11,11 +11,12 @@ Technical reference for DocMinds: how the components fit together, how a documen
 5. [Agent mode](#agent-mode)
 6. [Data model](#data-model)
 7. [Authentication and tenant isolation](#authentication-and-tenant-isolation)
-8. [API surface](#api-surface)
-9. [Frontend](#frontend)
-10. [CI pipeline](#ci-pipeline)
-11. [Deployment topology](#deployment-topology)
-12. [Design decisions](#design-decisions)
+8. [Limits, quotas and observability](#limits-quotas-and-observability)
+9. [API surface](#api-surface)
+10. [Frontend](#frontend)
+11. [CI pipeline](#ci-pipeline)
+12. [Deployment topology](#deployment-topology)
+13. [Design decisions](#design-decisions)
 
 ---
 
@@ -67,19 +68,24 @@ Services contain all domain logic and never import FastAPI, so the same function
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Entry point | `main.py` | Builds the FastAPI app, the upload size middleware, CORS, mounts routers, `GET /` and `GET /api/v1/health`; its lifespan starts the recovery sweep in the background |
+| Entry point | `main.py` | Configures JSON logging and (optionally) Sentry, builds the FastAPI app with its middleware stack (CORS, request context, security headers, upload size), maps `QuotaExceeded` to `402`/`429`, mounts routers, `GET /`, `GET /api/v1/health` (liveness) and `GET /api/v1/health/ready` (readiness); its lifespan starts the recovery sweep in the background |
 | `core/` | `config.py` | Every setting, read once from the environment / `backend/.env` via pydantic-settings and validated at startup (including: `STORAGE_BACKEND=s3` requires `S3_BUCKET`) |
 | | `upload_limit.py` | `UploadSizeLimitMiddleware`: a pure ASGI middleware that answers `413` for an upload request over `MAX_UPLOAD_SIZE_BYTES` x `MAX_FILES_PER_UPLOAD` + 1 MB, from `Content-Length` before the body is read, or by counting the body as it streams in |
 | | `security.py` | bcrypt password hashing (passlib); JWT creation with `type`, `jti` and fractional `iat` claims; opaque token and API key generation and SHA-256 hashing; the password policy |
 | | `roles.py` | The role ranking `Admin` (admin) > `Manager` (editor) > `Employee` (viewer), and the generic aliases |
+| | `rate_limit.py` | Sliding-window rate limiter: Redis counters when reachable, in-memory otherwise (and while Redis is down); `check(name, identity)` returns a `Decision` with `retry_after` |
+| | `client_ip.py` | The one answer to "which IP is this request from": `CLIENT_IP_HEADER`, then the Nth-from-right `X-Forwarded-For` entry for `TRUSTED_PROXY_COUNT`, then the TCP peer. Shared by the rate limiter, the audit log and the access log |
+| | `middleware.py` | Pure ASGI middleware: `RequestContextMiddleware` (request id in/out via `X-Request-ID`, one access-log line per request with the route template, status and latency) and `SecurityHeadersMiddleware` (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, HSTS in production) |
+| | `observability.py` | `configure_logging` (JSON or text formatter for every logger, uvicorn's included), the per-request/per-task logging context (`new_context`, `bind`), and `init_sentry` (lazy, off without `SENTRY_DSN`, never raises) |
+| | `health.py` | The readiness checks: database `SELECT 1`, Redis `PING`, Celery worker ping; concurrent, each with `READINESS_TIMEOUT_SECONDS` |
 | | `celery_app.py` | The Celery app; Redis as broker and result backend, `task_track_started`, results expire after 24 h, prefetch of one message, a Redis visibility timeout longer than any live job, and the beat schedule for the recovery sweep |
 | `db/` | `session.py` | Async engine (asyncpg, `NullPool`) and `SessionLocal` (`expire_on_commit=False`, `autoflush=False`) |
 | | `base_class.py` | Declarative `Base`; derives plural snake_case table names from class names |
-| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint; then `c3d5e7f9a2b4`: invites, refresh tokens, access-token denylist, emailed tokens, API key roles, `users.password_changed_at`, audit index; then `d4e6f8a0b2c5`: `documents.storage_backend`, `attempts`, `processing_started_at`, `error_message` and an index on `status` |
-| `models/` | `organization.py`, `user.py`, `project.py`, `document.py`, `chunk.py`, `chat.py`, `api_key.py`, `audit.py`, `invite.py`, `refresh_token.py`, `revoked_token.py`, `user_token.py` | 15 SQLAlchemy tables, UUID primary keys, cascading foreign keys |
-| `schemas/` | `user.py`, `token.py`, `organization.py`, `project.py`, `document.py`, `account.py` | Pydantic request/response shapes (`Base` / `Create` / `Update` / `Out`); `*Out` use `from_attributes=True`. `account.py` covers reset, verification, members, invites, API keys and the audit log |
+| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint; then `c3d5e7f9a2b4`: invites, refresh tokens, access-token denylist, emailed tokens, API key roles, `users.password_changed_at`, audit index; then `d4e6f8a0b2c5`: `documents.storage_backend`, `attempts`, `processing_started_at`, `error_message` and an index on `status`; then `e5f7a9b1c3d6`: the `usage_events` table and the per-organisation quota overrides `organizations.monthly_token_quota`, `max_documents`, `max_storage_bytes` |
+| `models/` | `organization.py`, `user.py`, `project.py`, `document.py`, `chunk.py`, `chat.py`, `api_key.py`, `audit.py`, `invite.py`, `refresh_token.py`, `revoked_token.py`, `user_token.py`, `usage.py` | 16 SQLAlchemy tables, UUID primary keys, cascading foreign keys |
+| `schemas/` | `user.py`, `token.py`, `organization.py`, `project.py`, `document.py`, `account.py`, `usage.py` | Pydantic request/response shapes (`Base` / `Create` / `Update` / `Out`); `*Out` use `from_attributes=True`. `account.py` covers reset, verification, members, invites, API keys and the audit log |
 | | `rag.py` | Search and chat contract: `SearchRequest`, `ChatRequest` (`mode`), `Citation`, `AgentStep`, `ChatResponse`, `FeedbackCreate` |
-| `api/` | `deps.py` | `get_db`, `get_current_user` (Bearer JWT or `X-API-Key`), `get_current_active_user`, `require_role` / `require_viewer` / `require_editor` / `require_admin`, `RoleChecker` |
+| `api/` | `deps.py` | `get_db`, `get_current_user` (Bearer JWT or `X-API-Key`), `get_current_active_user`, `require_role` / `require_viewer` / `require_editor` / `require_admin`, `RoleChecker`, `rate_limit_by_ip` / `rate_limit_by_user` (route dependencies that answer `429` + `Retry-After`) |
 | | `v1/auth.py`, `users.py`, `projects.py`, `documents.py`, `search.py`, `chat.py`, `tasks.py`, `org.py` | One router per resource, mounted under `/api/v1`. `org.py` is the admin-only members, invites, API keys and audit log router |
 | `services/` | `extractor.py` | `DocumentExtractor`: 19 file extensions to text with page markers; zip-bomb limits for archives and Office files (`UnsafeArchiveError`) |
 | | `uploads.py` | Upload validation: `sanitize_filename`, the extension allowlist (exactly `extractor.SUPPORTED_EXTENSIONS`), `spool_upload` (1 MB chunks to a temp file, counted and SHA-256 hashed in one pass), `check_content` (magic bytes) |
@@ -88,9 +94,10 @@ Services contain all domain logic and never import FastAPI, so the same function
 | | `ocr.py` | `OCRService`: Tesseract, EasyOCR, PaddleOCR or mock |
 | | `chunker.py` | `ChunkerService`: page-aware chunking, token counts via `tiktoken` |
 | | `embedding.py` | `EmbeddingService`: local, OpenAI, Gemini or mock vectors, batched |
-| | `retrieval.py` | `RetrievalService`: tenant-scoped pgvector search, chat history |
-| | `llm.py` | `LLMService`: numbered-excerpt prompt, Groq call, demo fallback |
-| | `agent.py` | `run_agent`: Pydantic AI agent, its three tools and the citation registry |
+| | `retrieval.py` | `RetrievalService`: tenant-scoped pgvector search restricted to vectors from the current embedding model (the query is embedded on a worker thread), chat history |
+| | `llm.py` | `LLMService`: numbered, fenced-excerpt prompt (untrusted-content rule); async Groq client with retries, backoff and `LLM_FALLBACK_MODEL`; demo fallback |
+| | `agent.py` | `run_agent`: Pydantic AI agent, its three tools (output fenced like rag excerpts) and the citation registry; reports tokens in and out |
+| | `usage.py` | Metering and quotas: `record_chat_usage`, `check_token_quota` (`429`), `upload_allowance` (`402`), `usage_summary`, `estimate_cost_usd` from `LLM_PRICING` |
 | | `sessions.py` | Refresh-token issue, rotation and revocation; the access-token denylist; single-use emailed tokens |
 | | `audit.py` | `record`: stage an audit row in the caller's transaction |
 | | `email.py` | Invite, reset and verification emails; console sender by default, SMTP when `SMTP_HOST` is set; never raises |
@@ -102,7 +109,9 @@ Conventions worth knowing when changing the backend:
 - **Every query is scoped to an organisation.** `RetrievalService.search` takes `org_id` as a required argument and filters on it inside the SQL.
 - **Every external dependency has a `mock` provider** (`OCR_PROVIDER`, `EMBEDDING_PROVIDER`, `LLM_PROVIDER`), producing deterministic output with no keys or downloads.
 - **Heavy imports are lazy.** `sentence_transformers`, `pydantic_ai` and `boto3` are imported inside the functions that need them, so a Gemini-embedding deployment never loads PyTorch, the app starts even without `pydantic-ai` installed, and local storage never loads boto3.
-- **Optional integrations are off by default.** S3 storage, ClamAV scanning and SMTP are switched on by settings alone, and the app and every test run without credentials for any of them.
+- **Nothing blocking runs on the event loop.** Groq is called through its async client; embedding the query, file storage, extraction and SMTP run in `asyncio.to_thread`.
+- **Log, don't print.** Every module logs through `logging.getLogger(__name__)`; `extra={...}` fields become JSON fields, and the request or task context is added automatically.
+- **Optional integrations are off by default.** S3 storage, ClamAV scanning, SMTP and Sentry are switched on by settings alone, and the app and every test run without credentials for any of them.
 - **Files are reached only through `services/storage.py`.** No endpoint or task calls `open()` on an upload or touches boto3; each `Document` records the backend that holds its file.
 - **Models must be imported in `models/__init__.py`**, and `db/migrations/env.py` imports `app.models`; otherwise autogenerate sees an empty metadata and drops tables. Always read a generated migration before applying it.
 - **Celery tasks are named explicitly** (`name="app.tasks.ingestion.process_document_task"`) so the API and worker agree regardless of import path.
@@ -112,14 +121,21 @@ Conventions worth knowing when changing the backend:
 | Path | Responsibility |
 |---|---|
 | `app/page.tsx` | `/` landing page |
-| `app/login/page.tsx` | `/login`: sign in and sign up (sign up with `org_name` creates an organisation and makes the user its Admin) |
-| `app/dashboard/page.tsx` | `/dashboard`: list and create projects; shows provider status from `/api/v1/health` |
-| `app/project/[id]/page.tsx` | `/project/:id`: Documents, Search and Chat tabs; polls document status |
+| `app/login/page.tsx` | `/login`: sign in and sign up (sign up with `org_name` creates an organisation and makes the user its Admin). `/login?invite=<token>` previews the invite and joins the inviting organisation instead |
+| `app/forgot-password/page.tsx` | `/forgot-password`: request a reset link (one answer for every address) |
+| `app/reset-password/page.tsx` | `/reset-password?token=`: choose a new password with the emailed token |
+| `app/verify-email/page.tsx` | `/verify-email?token=`: confirms the address on load, sending the single-use token once |
+| `app/dashboard/page.tsx` | `/dashboard`: list and create projects (editor and above); email-confirmation banner with "Resend link"; provider status from `/api/v1/health` |
+| `app/project/[id]/page.tsx` | `/project/:id`: Documents, Search and Chat tabs; polls document status; the upload zone is shown to editors and above |
+| `app/settings/page.tsx` | `/settings`: your account; for admins, Members (invite, change role, remove), API keys (shown once on creation), Audit log (paginated, filterable) and Usage (token, document and storage quotas) |
 | `app/layout.tsx`, `app/globals.css` | Shared shell, fonts, metadata, Tailwind theme |
 | `components/UploadZone.tsx` | Drag-and-drop multipart upload |
 | `components/SearchPanel.tsx` | Semantic search results with similarity scores, no LLM |
 | `components/ChatPanel.tsx` | Chat sessions, Quick answer / Deep research toggle, citations, research steps, feedback |
-| `lib/api.ts` | Typed API client: token storage, `apiFetch`, response interfaces, one method per endpoint |
+| `components/AuthCard.tsx`, `components/VerifyBanner.tsx`, `components/settings/*` | Shared signed-out frame and notices; the confirmation banner; the four settings panels and `QuotaBar` |
+| `lib/api.ts` | Typed API client: token storage, `apiFetch`, silent refresh, `ApiError` (status + `Retry-After`), response interfaces, one method per endpoint |
+| `lib/roles.ts`, `lib/password.ts`, `lib/useCurrentUser.ts` | Role checks for hiding actions, the password policy mirrored from the backend, and the `/users/me` hook |
+| `security-headers.mjs` | The CSP and other security headers `next.config.mjs` sends on every route |
 
 ---
 
@@ -432,14 +448,16 @@ One embedding, one SQL query, one model call. The tenant and project filters are
 flowchart TD
     Q["Question text"] --> EQ["EmbeddingService.get_embedding with for_query"]
     EQ --> SQL["pgvector: ORDER BY cosine_distance, LIMIT top_k"]
-    SQL --> SCOPE["JOIN chunks, documents, projects. WHERE Project.org_id = caller org AND Document.project_id = session project AND Document.status = completed"]
+    SQL --> SCOPE["JOIN chunks, documents, projects. WHERE Project.org_id = caller org AND Document.project_id = session project AND Document.status = completed AND model_name = current embedding model"]
     SCOPE --> SCORE["similarity = 1 - distance. Drop anything below RETRIEVAL_MIN_SCORE"]
-    SCORE --> HIST["build_history: last 6 messages of the session"]
-    HIST --> PROMPT["build_context_prompt: EXCERPT [1] source file and page ... QUESTION"]
-    PROMPT --> LLM["Groq GROQ_MODEL, SYSTEM_PROMPT, LLM_TEMPERATURE 0.1, LLM_MAX_TOKENS 2048"]
+    SCORE --> HIST["build_history: last 6 messages, loaded before the question is saved"]
+    HIST --> PROMPT["build_context_prompt: EXCERPT [1] fenced in document_excerpt tags ... reminder ... QUESTION"]
+    PROMPT --> LLM["Groq GROQ_MODEL async, retries with backoff, then LLM_FALLBACK_MODEL"]
     LLM --> CITE["Citation n points at excerpt n: chunk_id, filename, page, score, 300-char snippet"]
-    CITE --> PERSIST["chat_messages row: content, tokens_used, latency, citations JSONB"]
+    CITE --> PERSIST["chat_messages row and usage_events row, one transaction"]
 ```
+
+Before any of this, the endpoint checks the organisation's monthly token quota (`429` when used up) and the per-user chat rate limit. The question is sent to the model exactly once: history is loaded before the new message is saved, and `build_messages` also drops a trailing copy defensively.
 
 `top_k` defaults to `RETRIEVAL_TOP_K` (5) and a request may raise it to 20. If nothing survives the score threshold the prompt says `EXCERPTS: (none found)` and the system prompt makes the model answer with the not-found sentence. Answers stay grounded through the system prompt (no outside knowledge, no invented citations), the `RETRIEVAL_MIN_SCORE` cut-off, a temperature of 0.1, and citations that map each `[n]` to a real file and page.
 
@@ -778,7 +796,61 @@ Admins create keys with a name, a role (default viewer, never above their own) a
 - Path ids are typed `uuid.UUID`, so a malformed id is rejected with `422` before any query runs.
 - Response models filter output, so fields such as `hashed_password`, token hashes and API key hashes cannot reach a client.
 - With `ENV=production`, the app refuses to start if `SECRET_KEY` is the committed default or shorter than 32 characters, and `/api/v1/tasks/*` returns `404`. Elsewhere those diagnostics require an Admin.
-- The frontend (`lib/api.ts`) stores both tokens. On a `401` it calls `/auth/refresh` once, through a single shared in-flight promise so simultaneous `401`s cannot present the same refresh token twice (which the backend would treat as theft), then retries the request; if the refresh fails the user is returned to `/login`. Signing out clears both tokens locally and calls `/auth/logout`. `lib/api.ts` also has typed methods for every new account and admin endpoint, but there are no screens for invites, password reset, email verification, members, API keys or the audit log yet.
+- The frontend (`lib/api.ts`) stores both tokens. On a `401` it calls `/auth/refresh` once, through a single shared in-flight promise so simultaneous `401`s cannot present the same refresh token twice (which the backend would treat as theft), then retries the request; if the refresh fails the user is returned to `/login`. Signing out clears both tokens locally and calls `/auth/logout`. The screens for these flows (`/login?invite=`, `/forgot-password`, `/reset-password`, `/verify-email` and `/settings`) are described under [Frontend](#frontend).
+
+---
+
+## Limits, quotas and observability
+
+### Middleware stack
+
+Requests pass, outermost first, through CORS, `RequestContextMiddleware` (request id, logging context, access log), `SecurityHeadersMiddleware` and `UploadSizeLimitMiddleware`, then the router. Because the request context wraps everything below it, a `413` from the size limit or an unhandled crash still gets a request id and an access-log line, and CORS headers stay on every error.
+
+### Rate limiting
+
+`core/rate_limit.py` keeps two counters per caller and limit (this window and the previous one) and estimates the last full window as `previous x (fraction still in view) + current`, which avoids the burst a fixed window allows at its boundary. A refused request is not counted, so a client that ignores `Retry-After` is still admitted at exactly the configured rate. Counters live in Redis (one atomic pipeline per request, keys expiring after two windows) when it answers, and in process memory otherwise; a Redis failure switches to memory for 30 seconds and is logged once.
+
+| Limit | Keyed by | Endpoints |
+|---|---|---|
+| `RATE_LIMIT_LOGIN` | client IP | `POST /auth/login` |
+| `RATE_LIMIT_SIGNUP` | client IP | `POST /auth/signup` |
+| `RATE_LIMIT_PASSWORD_RESET` | client IP | `POST /auth/password-reset/request` and `/confirm` |
+| `RATE_LIMIT_CHAT` | user | `POST /chat/sessions/{id}/messages` |
+| `RATE_LIMIT_SEARCH` | user | `POST /search/` |
+| `RATE_LIMIT_UPLOAD` | user | `POST /documents/upload` |
+
+The per-user limits depend on authentication, so an unauthenticated request is answered `401` and never counted. The client IP comes from `core/client_ip.py`, which believes `X-Forwarded-For` only as far as `TRUSTED_PROXY_COUNT` says proxies you control wrote it.
+
+### Metering and quotas
+
+Each chat answer stages one `usage_events` row (mode, the model that actually answered, prompt and completion tokens, estimated cost from `LLM_PRICING`, request id) in the same transaction as the answer. Quotas are per organisation, from the `QUOTA_*` settings unless the organisation row overrides them (NULL = setting, 0 = unlimited):
+
+| Quota | Checked | Over it |
+|---|---|---|
+| Monthly tokens (calendar month, UTC) | Before the question is saved or a model is called | `429` with `Retry-After` until the 1st |
+| Documents held | For each new, non-duplicate file before it is stored | `402`; files stored earlier in the request are removed |
+| Storage bytes | Same | `402` likewise |
+
+The token check is soft at the edge: a request made with a few tokens left may finish a little over, and the next is refused, so no answer is ever cut off. `GET /org/usage` (admin) reports the month by model and by mode with all three quotas.
+
+### Language model robustness
+
+`llm.py` calls Groq through `AsyncGroq` with the SDK's own retries disabled. Transient failures (`408`, `409`, `429`, `5xx`, connection errors) are retried on the same model up to `LLM_MAX_RETRIES` times with exponential backoff from `LLM_RETRY_BACKOFF_SECONDS`, honouring `Retry-After` up to 20 seconds. Timeouts (`LLM_TIMEOUT_SECONDS`), exhausted retries and retired models (`model_decommissioned`, `404`) move to `LLM_FALLBACK_MODEL` if one is set. Bad keys and malformed requests fail at once. If every model fails, the answer is an apology with `model="error"` and the excerpts still listed as sources.
+
+Document text is untrusted. Every excerpt, in rag prompts and in all agent tool output, is wrapped in `<document_excerpt>` tags with the uploader-controlled filename cleaned and any tag look-alike inside the text escaped, so an excerpt cannot close its own block. Both system prompts carry a rule that tagged text is data and instructions inside it must not be followed, and the rag prompt repeats it after the excerpts. The real boundary remains tenant isolation in the SQL: an injected instruction can only ever reach its own organisation's answers.
+
+Retrieval compares only vectors whose `model_name` matches the current embedding model, so after a provider or model change older documents stop matching (until re-processed) instead of being compared across incompatible vector spaces.
+
+### Logging, errors and health
+
+Every log line is one JSON object (`LOG_FORMAT=json`) with time, level, logger and message, plus the request context (`request_id`, and `user_id` / `org_id` once authenticated) or, in the worker, `task_id`, `task` and `document_id`. Uvicorn's own loggers are routed through the same formatter and its access log is replaced by the richer one. The access line records the route template rather than the URL, so tokens in paths and query strings never reach the logs.
+
+Sentry is optional: with `SENTRY_DSN` set, the API (Starlette/FastAPI integrations) and the worker and beat (Celery integration) report errors tagged with the component, request id and organisation, with `send_default_pii=False`.
+
+| Endpoint | Checks | Fails with |
+|---|---|---|
+| `GET /api/v1/health` | Nothing (liveness) | Never fails while the process runs |
+| `GET /api/v1/health/ready` | Database always; Redis; a Celery worker ping only with `INGESTION_MODE=celery` | `503` when the database is down, or Redis or the worker in Celery mode; Redis down in inline mode is reported but not fatal |
 
 ---
 
@@ -806,18 +878,22 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `POST` / `GET` | `/api/v1/org/api-keys` | Create a key (`name`, `role`, `expires_in_days`; key returned once) / list keys (admin) |
 | `DELETE` | `/api/v1/org/api-keys/{id}` | Revoke a key (admin) |
 | `GET` | `/api/v1/org/audit-logs` | Audit entries, newest first; `limit`, `offset`, `action`, `user_id`, `since`, `until` (admin) |
-| `POST` | `/api/v1/documents/upload` | Multipart upload (`project_id`, `files`, optional `chunk_strategy`, `chunk_size`, `chunk_overlap`), editor or admin; returns `202` with `pending` rows. `413` too large, `415` unsupported or mismatched content, `422` chunk options out of range, `503` storage unreachable |
+| `GET` | `/api/v1/org/usage` | This calendar month's chat usage: requests, tokens in and out, estimated cost, by model and by mode, and the token, document and storage quotas (admin) |
+| `POST` | `/api/v1/documents/upload` | Multipart upload (`project_id`, `files`, optional `chunk_strategy`, `chunk_size`, `chunk_overlap`), editor or admin; returns `202` with `pending` rows. `413` too large, `415` unsupported or mismatched content, `422` chunk options out of range, `402` document or storage quota reached, `429` rate limited, `503` storage unreachable |
 | `GET` | `/api/v1/documents/?project_id=` | Documents with status, `error_message`, `attempts` and processing metadata |
 | `GET` | `/api/v1/documents/{id}/preview` | The original file, as an attachment under its original name with `nosniff`; HTML is served as `text/plain`, and a type outside the allowlist (possible only for rows uploaded before it existed) as `application/octet-stream`. `409` while scanning is on and the file has not been cleared, `410` if quarantined, `404` if the stored file is gone |
 | `POST` | `/api/v1/search/` | Semantic search only: chunks with scores, no LLM |
 | `POST` / `GET` | `/api/v1/chat/sessions` | Start a conversation in a project / list your sessions |
 | `GET` | `/api/v1/chat/sessions/{id}/messages` | Transcript |
-| `POST` | `/api/v1/chat/sessions/{id}/messages` | Ask a question: `message` (1-4000 chars), optional `top_k` (1-20), optional `mode` (`rag` or `agent`) |
+| `POST` | `/api/v1/chat/sessions/{id}/messages` | Ask a question: `message` (1-4000 chars), optional `top_k` (1-20), optional `mode` (`rag` or `agent`). `429` when rate limited or the monthly token quota is used up |
 | `DELETE` | `/api/v1/chat/sessions/{id}` | Delete a conversation |
 | `POST` | `/api/v1/chat/messages/{id}/feedback` | Rate an answer (`1` or `-1`) |
 | `POST` | `/api/v1/tasks/trigger-add`, `/api/v1/tasks/trigger-document` | Queue diagnostics (admin; `503` in inline mode; `404` with `ENV=production`) |
 | `GET` | `/api/v1/tasks/status/{task_id}` | Celery task state (admin; `404` with `ENV=production`) |
 | `GET` | `/`, `/api/v1/health` | Liveness and configuration report (LLM provider, model, whether a key is configured, embedding settings) |
+| `GET` | `/api/v1/health/ready` | Readiness: per-component status of the database, Redis and (Celery mode) a worker; `503` when a hard dependency is down |
+
+Every response carries `X-Request-ID` and the security headers. Rate-limited endpoints also return `X-RateLimit-Limit` and `X-RateLimit-Remaining`, and `Retry-After` with a `429`.
 
 Search and chat are deliberately separate: search shows exactly what retrieval returned, which distinguishes a retrieval problem from a generation problem.
 
@@ -827,7 +903,13 @@ Search and chat are deliberately separate: search shows exactly what retrieval r
 
 The frontend is a Next.js 16 / React 19 client of the API with no server-side data access. Interactive pages and components are client components (`"use client"`).
 
-- **One API client.** Components never call `fetch` directly. `apiFetch` in `lib/api.ts` attaches the bearer token when present, clears it and redirects to `/login` on `401`, unwraps FastAPI's `detail` (string or validation-error array) into a readable message, and returns `{}` for `204`. `login` (OAuth2 form encoding) and `uploadDocuments` (`FormData`, browser-set multipart boundary) bypass it by necessity.
+- **One API client.** Components never call `fetch` directly. `apiFetch` in `lib/api.ts` attaches the bearer token when present, unwraps FastAPI's `detail` (string or validation-error array) into a readable message, and returns `{}` for `204`. `login` (OAuth2 form encoding) and `uploadDocuments` (`FormData`, browser-set multipart boundary) bypass it by necessity but share its error handling.
+- **Silent refresh.** On a `401`, `apiFetch` (and `uploadDocuments`) trades the stored refresh token for a new pair and retries the request once. Simultaneous `401`s share one refresh promise, because the backend treats a refresh token presented twice as stolen and ends the session. If the refresh fails, both tokens are cleared and the browser is sent to `/login`. `logout` clears both tokens first, then asks `/auth/logout` to revoke them (best effort, `keepalive`).
+- **Errors keep their status.** Failures are thrown as `ApiError` (an `Error` with `status` and `retryAfter`). `getErrorMessage` appends "Try again in ..." to a `429` whose text does not already say when, so chat and search show rate-limit and token-quota waits. `UploadZone` prefixes `413`, `415`, `429`, `402` and `503` with what kind of problem it is. The API lists `Retry-After` and `X-Request-ID` in CORS `expose_headers`; without that the browser hides them.
+- **Role-aware interface.** `useCurrentUser` loads `/users/me`; `lib/roles.ts` hides "New project" and the upload zone from viewers and the settings tabs from non-admins, accepting both role spellings and failing closed while the role is unknown. The API enforces every rule regardless.
+- **Password hints.** `lib/password.ts` mirrors `password_problems` (minimum length, not digits only, not the email), shown live under the signup and reset fields. The minimum is `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` (default 10) and should match the backend's `PASSWORD_MIN_LENGTH`.
+- **Email links.** The routes match the links in `backend/app/services/email.py`: `/login?invite=`, `/reset-password?token=` and `/verify-email?token=`. Change both sides together.
+- **Security headers.** `next.config.mjs` sends, on every route, a Content-Security-Policy (`default-src 'self'`; `connect-src` adds only the origin of `NEXT_PUBLIC_API_URL`; `frame-ancestors`, `object-src` `'none'`; `'unsafe-inline'` scripts for Next's hydration, `'unsafe-eval'` and websockets in development only; `upgrade-insecure-requests` when the API is HTTPS), `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, a `Permissions-Policy` disabling camera, microphone, geolocation, payment and USB, `X-Content-Type-Options: nosniff`, and HSTS in production builds. A nonce-based CSP would force every page to render dynamically, so it was not used.
 - **Hand-written types.** The interfaces in `lib/api.ts` mirror `backend/app/schemas/` and must be updated by hand when a schema changes; the end-to-end suite is what detects drift.
 - **Token storage.** The access token is stored in `localStorage` behind a `typeof window` guard, since components also render on the server. Client-side route guards are a convenience; the API enforces authorisation.
 - **Status polling.** The project page polls the document list every 3 seconds while any document is `pending` or `processing`, stops when all have settled, and clears the interval on cleanup. A `failed` document shows its `error_message` (falling back to `meta_data.error`), and a `pending` one with an `error_message` shows that it is waiting to be retried.
@@ -948,5 +1030,13 @@ flowchart TB
 **`NullPool` on the database engine.** Each Celery task calls `asyncio.run()`, creating and closing an event loop. asyncpg connections are bound to the loop that created them, so a pooled connection reused in a later loop fails with `Event loop is closed`.
 
 **Per-project deduplication.** A global unique constraint on `duplicate_hash` would prevent one organisation from uploading a file another already holds, and would reveal that it does. A migration replaced it with a `(project_id, duplicate_hash)` constraint.
+
+**Sliding-window counters, with memory as the fallback.** A rate limiter that fails the request when Redis is down would turn a cache outage into a full outage, so the limiter degrades to per-process counting and says so once. Two integers per caller and limit give near-exact sliding-window behaviour without storing a timestamp per request.
+
+**Usage as rows, not a running total.** One row per answer can be summed by month, model, mode or user after the fact and audited line by line; a counter column can only answer the question it was built for. The composite `(org_id, created_at)` index keeps the per-request quota check a short range scan.
+
+**402 for storage, 429 for tokens.** The token quota resets on the 1st, so it behaves like a rate limit with a known `Retry-After`. Document and storage quotas never free themselves, so they use the status that means "you need a bigger plan".
+
+**Liveness separate from readiness.** A liveness probe that queried the database would have the platform restart every API instance during a database outage, fixing nothing. Only readiness checks dependencies, concurrently and with a timeout each, so the probe itself can never hang.
 
 **Low temperature and a score threshold.** `LLM_TEMPERATURE=0.1` keeps answers close to the excerpts, and `RETRIEVAL_MIN_SCORE` discards weak matches so the system can answer "not found" instead of answering from unrelated text.

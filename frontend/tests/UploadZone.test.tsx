@@ -26,13 +26,25 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import UploadZone from "@/components/UploadZone";
+import UploadZone, { uploadErrorMessage } from "@/components/UploadZone";
+import { ApiError } from "@/lib/api";
 
 // Hoisted so the tests can assert on the calls.
 const uploadDocuments = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   api: { uploadDocuments: (...args: unknown[]) => uploadDocuments(...args) },
+  // A minimal stand-in with the same shape as the real class: the component
+  // only reads `status` to word the message.
+  ApiError: class ApiError extends Error {
+    status: number;
+    retryAfter: number | null;
+    constructor(message: string, status: number, retryAfter: number | null = null) {
+      super(message);
+      this.status = status;
+      this.retryAfter = retryAfter;
+    }
+  },
   getErrorMessage: (error: unknown, fallback = "Something went wrong.") =>
     error instanceof Error && error.message ? error.message : fallback,
 }));
@@ -258,6 +270,34 @@ describe("feedback", () => {
     await waitFor(() =>
       expect(screen.queryByText(/first attempt failed/i)).not.toBeInTheDocument()
     );
+  });
+});
+
+// ======================================================================
+// Refusals worded by status (413 / 415 / 429 / 402)
+// ======================================================================
+// The backend's detail says WHAT was wrong; the prefix says what KIND of
+// problem it is, so "make it smaller" is not confused with "wait a minute".
+
+describe("upload refusals", () => {
+  it.each([
+    [413, "handbook.pdf is larger than the 50 MB limit.", /^File too large: handbook\.pdf is larger/],
+    [415, "virus.exe: this file type is not supported.", /^Unsupported file: virus\.exe/],
+    [429, "Too many uploads. Please try again in 40 seconds.", /^Too many uploads: .*40 seconds/],
+    [402, "Your organization has reached its document quota.", /^Quota reached: /],
+  ])("words a %i clearly, keeping the backend's reason", async (status, detail, expected) => {
+    uploadDocuments.mockRejectedValueOnce(new ApiError(detail, status));
+    const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+
+    fireEvent.drop(zone(container), dropEvent([makeFile()]));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(expected);
+  });
+
+  it("leaves other errors in their own words", () => {
+    expect(uploadErrorMessage(new Error("Network down"))).toBe("Network down");
+    expect(uploadErrorMessage(new ApiError("Bad chunk size", 422))).toBe("Bad chunk size");
   });
 });
 

@@ -55,6 +55,7 @@ fails the document instead of being indexed as text.
 """
 
 import csv
+import logging
 import os
 import tempfile
 import uuid
@@ -72,6 +73,8 @@ from pptx import Presentation
 
 from app.core.config import settings
 from app.services.ocr import OCRService
+
+logger = logging.getLogger(__name__)
 
 # Every extension `DocumentExtractor.extract` can dispatch. The upload endpoint
 # accepts exactly these (services/uploads.py), so a format is allowed if and
@@ -269,8 +272,8 @@ class DocumentExtractor:
             threshold = settings.OCR_CHAR_THRESHOLD_PER_PAGE * page_count
 
             if page_count > 0 and len(text.strip()) < threshold:
-                print(
-                    f"[Extractor] Only {len(text.strip())} characters across "
+                logger.info(
+                    f"Only {len(text.strip())} characters across "
                     f"{page_count} pages -- below the {threshold} threshold. "
                     f"Treating as a scan and running OCR."
                 )
@@ -288,7 +291,7 @@ class DocumentExtractor:
             # The PDF is malformed or encrypted in a way PyMuPDF cannot parse.
             # OCR works on the rendered pixels and often succeeds anyway, so it
             # is worth attempting before giving up.
-            print(f"[Extractor] PDF parsing failed: {exc}. Attempting OCR...")
+            logger.warning(f"PDF parsing failed: {exc}. Attempting OCR...")
             try:
                 ocr_text, _ = OCRService.ocr_pdf(file_path)
                 text = ocr_text

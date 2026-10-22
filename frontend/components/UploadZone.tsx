@@ -30,7 +30,36 @@ import { AnimatePresence, motion } from "framer-motion";
 import { FileUp, Loader2, UploadCloud, X } from "lucide-react";
 import { DragEvent, useRef, useState } from "react";
 
-import { api, getErrorMessage } from "@/lib/api";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
+
+/**
+ * Word an upload failure for the person who just dropped the files.
+ *
+ * The backend's `detail` already says WHAT was wrong ("handbook.exe: this file
+ * type is not supported"); the prefix adds what kind of problem it is, so a
+ * user can tell "make it smaller" from "convert it" from "wait" at a glance.
+ * `instanceof ApiError` is checked by status rather than trusted blindly: an
+ * error from anywhere else (a network failure) falls through to its message.
+ */
+export function uploadErrorMessage(error: unknown): string {
+  const detail = getErrorMessage(error, "Upload failed.");
+  if (!(error instanceof ApiError)) return detail;
+  switch (error.status) {
+    case 413:
+      return `File too large: ${detail}`;
+    case 415:
+      return `Unsupported file: ${detail}`;
+    case 429:
+      // getErrorMessage has already appended "Try again in ..." if needed.
+      return `Too many uploads: ${detail}`;
+    case 402:
+      return `Quota reached: ${detail}`;
+    case 503:
+      return `Upload unavailable: ${detail}`;
+    default:
+      return detail;
+  }
+}
 
 /** Formats accepted by the backend extractor, for the file picker's filter. */
 const ACCEPTED =
@@ -72,7 +101,7 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
       // Clear the confirmation after a few seconds so it does not linger.
       setTimeout(() => setJustUploaded([]), 4000);
     } catch (err) {
-      setError(getErrorMessage(err, "Upload failed."));
+      setError(uploadErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -181,8 +210,10 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
               color: "var(--danger)",
             }}
           >
-            <span>{error}</span>
-            <button onClick={() => setError("")}>
+            {/* role="alert": announced immediately, because the upload the
+                user was waiting on did not happen. */}
+            <span role="alert">{error}</span>
+            <button onClick={() => setError("")} aria-label="Dismiss error">
               <X size={14} />
             </button>
           </motion.div>

@@ -48,12 +48,15 @@ says plainly what is missing.
 """
 
 import io
+import logging
 from typing import Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Pillow can decode dozens of image formats, and most of its security
 # advisories are in decoders nobody uploads to a document tool: EPS (which
@@ -147,7 +150,7 @@ class OCRService:
         elif provider == "mock":
             return cls._ocr_mock(image_bytes)
         else:
-            print(f"[OCR] Unknown provider '{provider}'. Falling back to mock OCR.")
+            logger.warning(f"Unknown provider '{provider}'. Falling back to mock OCR.")
             return cls._ocr_mock(image_bytes)
 
     # ==================================================================
@@ -188,8 +191,8 @@ class OCRService:
         except Exception as exc:
             # Usually "tesseract is not installed or it's not in your PATH".
             # We degrade to mock rather than failing the whole ingestion.
-            print(
-                f"[OCR] Tesseract failed or is not installed: {exc}. "
+            logger.warning(
+                f"Tesseract failed or is not installed: {exc}. "
                 f"Falling back to mock OCR."
             )
             return cls._ocr_mock(image_bytes)
@@ -221,10 +224,10 @@ class OCRService:
             return "\n".join(results)
 
         except ImportError:
-            print("[OCR] easyocr is not installed. Falling back to mock OCR.")
+            logger.warning("easyocr is not installed. Falling back to mock OCR.")
             return cls._ocr_mock(image_bytes)
         except Exception as exc:
-            print(f"[OCR] EasyOCR failed: {exc}. Falling back to mock OCR.")
+            logger.warning(f"EasyOCR failed: {exc}. Falling back to mock OCR.")
             return cls._ocr_mock(image_bytes)
 
     # ==================================================================
@@ -265,10 +268,10 @@ class OCRService:
             return "\n".join(texts)
 
         except ImportError:
-            print("[OCR] paddleocr is not installed. Falling back to mock OCR.")
+            logger.warning("paddleocr is not installed. Falling back to mock OCR.")
             return cls._ocr_mock(image_bytes)
         except Exception as exc:
-            print(f"[OCR] PaddleOCR failed: {exc}. Falling back to mock OCR.")
+            logger.warning(f"PaddleOCR failed: {exc}. Falling back to mock OCR.")
             return cls._ocr_mock(image_bytes)
 
     # ==================================================================

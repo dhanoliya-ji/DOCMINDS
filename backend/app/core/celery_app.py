@@ -132,3 +132,55 @@ celery_app.conf.update(
 # `@celery_app.task`. Between this and `imports` above, a newly added task is
 # picked up without further configuration.
 celery_app.autodiscover_tasks(["app"])
+
+
+# ----------------------------------------------------------------------
+# LOGGING, ERROR REPORTING AND PER-TASK CONTEXT  (core/observability.py)
+# ----------------------------------------------------------------------
+# Celery normally installs its OWN log handlers and format when a worker
+# starts. Connecting to `setup_logging` tells it "logging is handled": the
+# worker's lines then come out as the same JSON objects as the API's, which
+# one log query can search together.
+#
+# The task signals give every line a task runs a context of its own -- the
+# task id and name -- the worker-side counterpart of the request id the API
+# middleware assigns.
+from celery import signals  # noqa: E402
+
+from app.core import observability  # noqa: E402
+
+_task_context_tokens: dict = {}
+
+
+@signals.setup_logging.connect
+def _configure_worker_logging(**_kwargs) -> None:
+    observability.configure_logging()
+
+
+@signals.worker_process_init.connect
+@signals.worker_init.connect
+def _start_worker_sentry(**_kwargs) -> None:
+    # Off unless SENTRY_DSN is set; never raises.
+    observability.init_sentry("worker")
+
+
+@signals.beat_init.connect
+def _start_beat_sentry(**_kwargs) -> None:
+    observability.init_sentry("beat")
+
+
+@signals.task_prerun.connect
+def _bind_task_context(task_id=None, task=None, **_kwargs) -> None:
+    _task_context_tokens[task_id] = observability.new_context(
+        task_id=task_id, task=getattr(task, "name", None)
+    )
+
+
+@signals.task_postrun.connect
+def _clear_task_context(task_id=None, **_kwargs) -> None:
+    token = _task_context_tokens.pop(task_id, None)
+    if token is not None:
+        try:
+            observability.reset_context(token)
+        except ValueError:  # pragma: no cover - token from another context
+            pass

@@ -141,6 +141,84 @@ function endSession(): never {
 }
 
 // ----------------------------------------------------------------------
+// ERRORS THAT REMEMBER THEIR STATUS
+// ----------------------------------------------------------------------
+
+/**
+ * A failed request, carrying the HTTP status and any Retry-After wait.
+ *
+ * WHY NOT A PLAIN Error?
+ * ----------------------
+ * Most screens only need the message, and an ApiError IS an Error, so they
+ * keep working unchanged. But a few need to know WHICH failure it was: the
+ * upload zone words a 413 differently from a 415, and chat and search want to
+ * say "try again in 40 seconds" after a 429. Parsing that back out of the
+ * message text would break the first time the backend rewords a sentence.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  /** Seconds to wait before retrying (from Retry-After), or null. */
+  readonly retryAfter: number | null;
+
+  constructor(message: string, status: number, retryAfter: number | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+/**
+ * Read a Retry-After header as a number of seconds.
+ *
+ * The header may be either a number of seconds or an HTTP date; the backend
+ * only sends seconds, but a proxy in front of it could send a date. NOTE: in a
+ * browser this header is only readable cross-origin because the backend lists
+ * it in CORS `expose_headers` -- without that, `get` returns null here.
+ */
+function readRetryAfter(response: Response): number | null {
+  // `headers?.get` because test doubles (and very old polyfills) may not
+  // provide a Headers object at all.
+  const raw = response.headers?.get?.("Retry-After");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(raw);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+/**
+ * Turn a non-2xx response into an ApiError with the backend's own words.
+ *
+ * FastAPI reports problems as {"detail": "..."}. Reading it gives the user the
+ * real reason ("Project not found") instead of a bare status code. Validation
+ * errors arrive as an ARRAY of problems rather than a string, and String() of
+ * that would show "[object Object]", so both shapes are handled.
+ */
+async function errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
+  let message = fallback;
+  try {
+    const body = await response.json();
+    if (body && body.detail) {
+      message =
+        typeof body.detail === "string" ? body.detail : body.detail[0]?.msg || message;
+    }
+  } catch {
+    // The error body was not JSON at all -- keep the fallback.
+  }
+  return new ApiError(message, response.status, readRetryAfter(response));
+}
+
+/** 42 -> "42 seconds", 150 -> "3 minutes", 7200 -> "2 hours" (as the backend words it). */
+export function formatWait(seconds: number): string {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 90 * 60) return `${Math.ceil(seconds / 60)} minutes`;
+  if (seconds < 48 * 3600) return `${Math.ceil(seconds / 3600)} hours`;
+  return `${Math.ceil(seconds / 86400)} days`;
+}
+
+// ----------------------------------------------------------------------
 // THE CORE REQUEST FUNCTION
 // ----------------------------------------------------------------------
 
@@ -188,23 +266,7 @@ async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    // FastAPI reports problems as {"detail": "..."}. Reading it gives the user
-    // the real reason ("Project not found") instead of a bare status code.
-    let message = `Request failed (${response.status})`;
-    try {
-      const body = await response.json();
-      if (body.detail) {
-        // Validation errors arrive as an ARRAY of problems rather than a
-        // string, so handle both shapes.
-        message =
-          typeof body.detail === "string"
-            ? body.detail
-            : body.detail[0]?.msg || message;
-      }
-    } catch {
-      // The error body was not JSON at all -- keep the generic message.
-    }
-    throw new Error(message);
+    throw await errorFromResponse(response, `Request failed (${response.status})`);
   }
 
   // 204 No Content has an empty body, so calling .json() on it would throw.
@@ -223,6 +285,19 @@ async function apiFetch<T>(
  * safely instead of assuming it is always an Error.
  */
 export function getErrorMessage(error: unknown, fallback = "Something went wrong."): string {
+  if (error instanceof ApiError && error.message) {
+    // A 429 (rate limit, or the monthly token quota) with a Retry-After: make
+    // sure the user is told WHEN to try again. The backend's rate-limit text
+    // already says so; the hint is only added when the message does not.
+    if (
+      error.status === 429 &&
+      error.retryAfter !== null &&
+      !/try again/i.test(error.message)
+    ) {
+      return `${error.message} Try again in ${formatWait(error.retryAfter)}.`;
+    }
+    return error.message;
+  }
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
   return fallback;
@@ -444,6 +519,53 @@ export interface AuditLogFilters {
   until?: string;
 }
 
+// ----------------------------------------------------------------------
+// THE SIGNED-IN USER AND THE ORGANIZATION'S USAGE
+// ----------------------------------------------------------------------
+
+/** GET /users/me (backend/app/schemas/user.py UserOut). */
+export interface CurrentUser {
+  id: string;
+  email: string;
+  role: Role;
+  org_id: string;
+  is_active: boolean;
+  is_verified: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One metered quantity against its limit (backend/app/schemas/usage.py). */
+export interface QuotaUsage {
+  used: number;
+  quota: number;
+  // True when the quota is 0, which the backend treats as "no limit".
+  unlimited: boolean;
+  remaining: number | null;
+}
+
+/** GET /org/usage (backend/app/schemas/usage.py UsageSummary). */
+export interface UsageSummary {
+  period_start: string;
+  period_end: string;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost_usd: number;
+  tokens: QuotaUsage;
+  documents: QuotaUsage;
+  storage_bytes: QuotaUsage;
+  by_model: {
+    model: string;
+    requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    estimated_cost_usd: number;
+  }[];
+  by_mode: { mode: string; requests: number; total_tokens: number }[];
+}
+
 /**
  * One tool call the agent made while researching an answer.
  *
@@ -532,6 +654,11 @@ export const api = {
     return apiFetch<{ detail: string }>("/auth/verify-email/resend", { method: "POST" });
   },
 
+  /** Who is signed in: email, role and whether the email is confirmed. */
+  getMe() {
+    return apiFetch<CurrentUser>("/users/me");
+  },
+
   // ---- Organization admin (Admin role only) -------------------------
 
   listMembers() {
@@ -579,6 +706,11 @@ export const api = {
     return apiFetch<void>(`/org/api-keys/${keyId}`, { method: "DELETE" });
   },
 
+  /** This month's tokens, estimated cost and the organization's quotas. */
+  getUsage() {
+    return apiFetch<UsageSummary>("/org/usage");
+  },
+
   listAuditLogs(filters: AuditLogFilters = {}) {
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
@@ -608,7 +740,10 @@ export const api = {
     });
 
     if (!response.ok) {
-      throw new Error("Incorrect email or password.");
+      // The backend's own words: wrong credentials (401), a deactivated
+      // account (400), an unconfirmed email (403) or too many attempts (429)
+      // each need a different reaction from the user.
+      throw await errorFromResponse(response, "Incorrect email or password.");
     }
 
     const data = await response.json();
@@ -712,22 +847,10 @@ export const api = {
 
     if (!response.ok) {
       // The backend says exactly what was wrong: 413 too large, 415 a type it
-      // cannot read or a renamed file, 422 bad chunking options.
-      let message = "Upload failed.";
-      try {
-        const body = await response.json();
-        if (body.detail) {
-          // Like apiFetch: a validation error is an ARRAY of problems, and
-          // String() of that would show the user "[object Object]".
-          message =
-            typeof body.detail === "string"
-              ? body.detail
-              : body.detail[0]?.msg || message;
-        }
-      } catch {
-        /* the error body was not JSON */
-      }
-      throw new Error(message);
+      // cannot read or a renamed file, 422 bad chunking options, 429 too many
+      // uploads, 402 over the organization's document or storage quota. The
+      // status travels with the error so UploadZone can word each one.
+      throw await errorFromResponse(response, "Upload failed.");
     }
 
     return response.json() as Promise<DocumentItem[]>;

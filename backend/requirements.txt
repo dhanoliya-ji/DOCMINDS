@@ -141,6 +141,13 @@ openai==3.31.0
 #            all: services/malware.py speaks clamd's protocol over a socket.)
 boto3==1.43.92
 
+# sentry-sdk : OPTIONAL. Error reporting to Sentry for the API and the Celery
+#            worker (core/observability.py). Off unless SENTRY_DSN is set; it
+#            is only imported then, so without a DSN it is never loaded, and
+#            if the package is missing the app logs a warning and runs on.
+#            The [fastapi] and [celery] integrations ship inside the package.
+sentry-sdk==2.71.0
+
 # ---- TESTING ---------------------------------------------------------
 # Needed only to RUN the test suite, never by the application itself.
 # They are listed here rather than in a separate requirements-dev.txt so that

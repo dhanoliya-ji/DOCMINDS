@@ -66,6 +66,7 @@ WHAT THE PREVIEW REFUSES
 """
 
 import asyncio
+import logging
 import mimetypes
 import os
 import uuid
@@ -93,7 +94,7 @@ from app.models.project import Project
 from app.models.user import User
 from app.schemas.document import DocumentOut
 from app.core.config import settings
-from app.services import audit, uploads
+from app.services import audit, uploads, usage
 from app.services.storage import (
     LocalStorage,
     Storage,
@@ -103,6 +104,8 @@ from app.services.storage import (
     new_key,
 )
 from app.tasks.ingestion import process_document_task, run_inline_ingestion
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -153,6 +156,9 @@ def _not_yet_cleared_by_scan(document: Document) -> bool:
     "/upload",
     response_model=List[DocumentOut],
     status_code=status.HTTP_202_ACCEPTED,
+    # At most RATE_LIMIT_UPLOAD upload requests per user (core/rate_limit.py):
+    # extraction, OCR and embedding are the heaviest work the server does.
+    dependencies=[Depends(deps.rate_limit_by_user("upload"))],
 )
 async def upload_documents(
     # Injected by FastAPI. Used only when INGESTION_MODE is "inline".
@@ -247,6 +253,13 @@ async def upload_documents(
                     status_code=rejected.status_code, detail=rejected.message
                 ) from rejected
 
+        # What the organization already holds against its document and
+        # storage quotas (services/usage.py). Each accepted file is admitted
+        # BEFORE it is stored; a file that does not fit raises QuotaExceeded
+        # (402), and the cleanup below removes anything stored earlier in
+        # this request -- so a refused upload changes nothing at all.
+        allowance = await usage.upload_allowance(db, current_user.org_id)
+
         storage = get_storage()
         processed_docs = []
         skipped_duplicates = []
@@ -269,10 +282,13 @@ async def upload_documents(
             if item.sha256 in seen_hashes or result_dup.scalar_one_or_none():
                 # Already present in THIS project. Skip it rather than
                 # repeating the expensive OCR and embedding work.
-                print(f"[Upload] Skipping duplicate file: {item.filename}")
+                logger.info("Skipping duplicate file", extra={"upload_filename": item.filename})
                 skipped_duplicates.append(item.filename)
                 continue
             seen_hashes.add(item.sha256)
+
+            # Duplicates were skipped above, so they never count.
+            allowance.admit(item.size)
 
             # --------------------------------------------------------------
             # 4. VERSIONING
@@ -367,7 +383,10 @@ async def upload_documents(
             try:
                 await asyncio.to_thread(used_storage.delete, key)
             except Exception as cleanup_error:  # pragma: no cover - best effort
-                print(f"[Upload] Could not remove orphaned object {key}: {cleanup_error}")
+                logger.warning(
+                    "Could not remove orphaned object",
+                    extra={"storage_key": key, "error": repr(cleanup_error)},
+                )
         raise
     finally:
         for item in spooled:
@@ -393,7 +412,10 @@ async def upload_documents(
                 # Redis is down. The upload itself succeeded and is safely
                 # stored as "pending"; the recovery sweep re-queues it once
                 # the queue is back, so the user is not told it failed.
-                print(f"[Upload] Could not queue {document.id}; recovery will retry: {exc}")
+                logger.warning(
+                    "Could not queue document; the recovery sweep will retry",
+                    extra={"document_id": str(document.id), "error": repr(exc)},
+                )
         else:
             # INGESTION_MODE=inline: runs after the response is sent, so the
             # upload still returns at once with status "pending" and the

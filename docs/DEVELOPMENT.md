@@ -219,6 +219,10 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 | `LLM_MAX_TOKENS` | `2048` | Maximum generated tokens (reasoning models count hidden reasoning against this) |
 | `AGENT_MODEL` | *(empty)* | Groq model for agent mode; empty reuses `GROQ_MODEL`. Must support tool calling |
 | `AGENT_MAX_STEPS` | `6` | Maximum model requests per agent answer |
+| `LLM_MAX_RETRIES` | `2` | Retries of a transient model error (429, 5xx, connection) on the same model. 401/400 are never retried |
+| `LLM_RETRY_BACKOFF_SECONDS` | `1.0` | First retry wait; doubles each retry. A server's `Retry-After` is used instead; waits over 20 s go to the fallback model |
+| `LLM_TIMEOUT_SECONDS` | `30.0` | Per-call timeout. A timed-out call is not retried on the same model; it goes to the fallback |
+| `LLM_FALLBACK_MODEL` | *(empty)* | Second Groq model tried when the main one is out of retries, timed out or retired (e.g. `openai/gpt-oss-20b`). Empty = no fallback |
 
 ### Retrieval and chunking
 
@@ -232,11 +236,53 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 
 The `DEFAULT_CHUNK_*` values apply when a document has no chunk options recorded; the upload endpoint's own form defaults are `fixed_size`, 500 and 50.
 
+### Rate limiting
+
+Over a limit, the endpoint answers `429` with `Retry-After` (seconds) and `X-RateLimit-Limit` / `X-RateLimit-Remaining`. Limits are written `<count>/<period>` (`20/minute`, `10/hour`, `5/15minutes`); empty or `off` disables one limit, and an unparseable value stops the app at startup.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_ENABLED` | `True` | Master switch |
+| `RATE_LIMIT_STORAGE` | `auto` | `auto`: Redis when reachable (shared by every API process), in-memory otherwise (Redis retried every 30 s). `memory`: always in-process |
+| `RATE_LIMIT_LOGIN` | `20/minute` | Per client IP, `POST /auth/login` |
+| `RATE_LIMIT_SIGNUP` | `10/hour` | Per client IP, `POST /auth/signup` |
+| `RATE_LIMIT_PASSWORD_RESET` | `10/hour` | Per client IP, shared by `/auth/password-reset/request` and `/confirm` |
+| `RATE_LIMIT_VERIFY_RESEND` | `5/hour` | Per user, `POST /auth/verify-email/resend` |
+| `RATE_LIMIT_CHAT` | `30/minute` | Per user, asking a question |
+| `RATE_LIMIT_SEARCH` | `60/minute` | Per user, `POST /search/` |
+| `RATE_LIMIT_UPLOAD` | `30/minute` | Per user, upload requests |
+| `TRUSTED_PROXY_COUNT` | `0` | Proxies you control in front of the API. With N > 0 the client IP is the Nth `X-Forwarded-For` entry from the right; 0 ignores the header and uses the TCP peer |
+| `CLIENT_IP_HEADER` | *(empty)* | A header your proxy or CDN overwrites with the client IP (e.g. `CF-Connecting-IP`); wins when present. Only set it if every request passes through that proxy |
+
+### Usage metering and quotas
+
+Every chat answer records a row in `usage_events` (model, mode, tokens in and out, estimated cost, request id). Quotas are per organization; `0` means unlimited. Each can be overridden for one organization by the matching nullable column on `organizations` (`monthly_token_quota`, `max_documents`, `max_storage_bytes`; NULL means use the setting). Admins read the month at `GET /api/v1/org/usage`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `QUOTA_MONTHLY_TOKENS` | `1000000` | AI tokens per calendar month (UTC). Over it, chat answers `429` with `Retry-After` counting down to the 1st |
+| `QUOTA_MAX_DOCUMENTS` | `1000` | Documents an organization may hold. An upload crossing it answers `402` and stores nothing |
+| `QUOTA_MAX_STORAGE_BYTES` | `5368709120` (5 GB) | Total bytes of those documents; `402` likewise |
+| `LLM_PRICING` | `{"openai/gpt-oss-120b": {"input": 0.15, "output": 0.60}, "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30}}` | USD per million tokens, used only to estimate cost. Set as JSON. Unlisted models cost 0 (logged once) |
+
+### Observability
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_FORMAT` | `json` | `json`: one JSON object per line with `request_id`, `user_id`, `org_id` (API) or `task_id` (worker). `text`: readable lines for a terminal |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Health-check access lines are logged at `DEBUG` |
+| `SENTRY_DSN` | *(empty)* | Turns on Sentry for the API, worker and beat. Empty means off, and `sentry-sdk` is not even imported |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Fraction of requests traced for performance (errors are always sent) |
+| `SENTRY_ENVIRONMENT` | *(empty)* | Environment tag; empty uses `ENV` |
+| `READINESS_TIMEOUT_SECONDS` | `3.0` | Per-dependency timeout of `GET /api/v1/health/ready` |
+| `HSTS_MAX_AGE_SECONDS` | `31536000` | `Strict-Transport-Security` max-age, sent only with `ENV=production`; 0 disables it |
+
 ### Frontend
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Backend base URL, set in `frontend/.env.local`. The `NEXT_PUBLIC_` prefix exposes it to browser code, so never put secrets in it |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Backend base URL, set in `frontend/.env.local`. The `NEXT_PUBLIC_` prefix exposes it to browser code, so never put secrets in it. Its origin is also the only external origin in the Content-Security-Policy's `connect-src`, so it is read at build time: changing it means rebuilding |
+| `NEXT_PUBLIC_PASSWORD_MIN_LENGTH` | `10` | Minimum length shown in the signup and reset password hints. Set it to the backend's `PASSWORD_MIN_LENGTH` if you change that; a mismatch only makes the hint less helpful, since the API still enforces its own value |
 
 There is no development proxy; the browser calls the API directly, so the API's CORS origins must include the frontend URL.
 
@@ -268,6 +314,8 @@ python -m pytest -m "not gemini_live"     # skip the live Gemini test
 | Tier 1 + 2 (`test_auth_flows.py`) | Nothing for the `[sqlite]` run; Postgres for the `[postgres]` run | Signup and invites, refresh rotation and logout, password reset, email verification, role enforcement, members admin, API keys, audit log, the locked-down task endpoints |
 | Tier 1 (`test_uploads.py`, `test_upload_limit.py`, `test_storage.py`, `test_zip_safety.py`, `test_malware.py`) | Nothing | Filename sanitizing, content sniffing, the streamed size limit, the request-size middleware (driven directly as an ASGI app, including chunked bodies with no `Content-Length`), local and S3 storage (against a fake boto3 client, plus the real client's configuration), zip-bomb limits for archives and Office files, the clamd protocol (against a fake daemon on a loopback socket) |
 | Tier 1 + 2 (`test_ingestion_durability.py`, `test_upload_hardening.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | The claim, retries, quarantine, the recovery sweep, inline retries and the Celery task options; the upload and preview endpoints (`413`, `415`, storage keys, queueing after the commit) |
+| Tier 1 (`test_rate_limit.py`, `test_observability.py`, `test_llm_robustness.py`) | Nothing | The sliding-window limiter (fake clock, fake and failing Redis), client-IP resolution behind proxies, `429` + `Retry-After` on every limited endpoint; JSON logs with request context, Sentry staying off, request ids, the access log, security headers, `/health/ready` with faked dependency checks; LLM retries, backoff and fallback (fake Groq client), the question being sent once, prompt-injection fencing in rag and agent output, retrieval's model filter and off-loop embedding |
+| Tier 1 + 2 (`test_usage.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Usage events per chat answer, the token quota (`429`), document and storage quotas (`402`, nothing stored), per-org overrides, `GET /org/usage` |
 | Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, tenant isolation, cascades, the HTTP layer |
 | `gemini_live` marker | `GEMINI_API_KEY` | One call to the real Gemini embedding API |
 
@@ -283,6 +331,8 @@ Tier 2 tests skip, with a reason, when Postgres is unreachable or pgvector is mi
 - Tests share one database, so use names that are unique per test to avoid unique-constraint collisions.
 - Confirm a new test can fail: break the code it covers and check that it goes red.
 
+Rate limits are switched off for every test by an autouse fixture in `tests/conftest.py` (the suite signs up many users from one address); `test_rate_limit.py` turns them back on where they are the subject.
+
 Known gaps: binary PDF and Office extraction, real OCR engines, a real S3 bucket and a real ClamAV daemon (both are tested against fakes), Celery's own retry scheduling and time limits (the task options are checked, not exercised), and live Groq tool calling.
 
 ### Frontend unit tests (Vitest)
@@ -294,7 +344,7 @@ npm run test:run                  # single run
 npx vitest run tests/api.test.ts  # one file
 ```
 
-Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts`, `ChatPanel`, `SearchPanel`, `UploadZone` and the project page's polling and auth guard. `tests/setup.ts` stubs `next/navigation`, `window.location`, `scrollIntoView` and `framer-motion`, and clears `localStorage` between tests. Component tests mock `lib/api`.
+Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts` (silent refresh, logout, `ApiError` and `Retry-After`), `ChatPanel`, `SearchPanel`, `UploadZone` (including `413`/`415`/`429`/`402` wording), the project page's polling, auth guard and role gating, the signed-out pages (`AuthPages.test.tsx`: sign in, sign up, invites, forgot/reset password, verify email), the settings area and dashboard (`Settings.test.tsx`), and the password policy, role rules and security headers (`policy.test.ts`). `tests/setup.ts` stubs `next/navigation` (set `searchParamsMock.value` to drive `useSearchParams`), `window.location`, `scrollIntoView` and `framer-motion` (one cached component per tag, so inputs inside `motion.div` keep focus while typing), and clears `localStorage` between tests. Component tests mock `lib/api`; page tests mock only the `api` object and keep the real error helpers.
 
 ### End-to-end tests (Playwright)
 

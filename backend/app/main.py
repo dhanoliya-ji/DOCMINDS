@@ -14,10 +14,14 @@ decides which piece of code handles it.
 
 WHAT IT ACTUALLY DOES, IN ORDER
 -------------------------------
-  1. Creates the FastAPI application object.
-  2. Adds CORS middleware, so the Next.js frontend is allowed to call us.
-  3. Registers every group of endpoints ("routers") under a URL prefix.
-  4. Defines a couple of small status endpoints of its own.
+  1. Switches every log line to structured JSON, and Sentry on if configured
+     (core/observability.py).
+  2. Creates the FastAPI application object.
+  3. Adds middleware: request ids + access log, security headers, the upload
+     size ceiling, and CORS so the Next.js frontend is allowed to call us.
+  4. Registers every group of endpoints ("routers") under a URL prefix.
+  5. Defines the status endpoints of its own: /health (liveness) and
+     /health/ready (readiness, core/health.py).
 
 WHAT IS A ROUTER?
 -----------------
@@ -32,6 +36,9 @@ THE REQUEST LIFECYCLE
 ---------------------
     Browser
       -> CORS middleware        (is this website allowed to call us?)
+      -> request context        (request id, access log -- core/middleware.py)
+      -> security headers       (nosniff, frame DENY, HSTS...)
+      -> upload size ceiling    (413 before a huge body is read)
       -> router matching        (which function handles this URL?)
       -> dependencies           (open a DB session, decode the JWT, load user)
       -> your endpoint function (the actual work)
@@ -40,10 +47,12 @@ THE REQUEST LIFECYCLE
 """
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
@@ -53,8 +62,22 @@ from app.api.v1.projects import router as projects_router
 from app.api.v1.search import router as search_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.users import router as users_router
+from app.core import health, observability
 from app.core.config import settings
+from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.core.upload_limit import UploadSizeLimitMiddleware
+from app.services.usage import QuotaExceeded
+
+# ----------------------------------------------------------------------
+# LOGGING AND ERROR REPORTING -- before anything else logs a line
+# ----------------------------------------------------------------------
+# Every log record in the process becomes one JSON object carrying the
+# request id, user and organization (core/observability.py). Sentry is
+# switched on only when SENTRY_DSN is set; otherwise this is a no-op.
+observability.configure_logging()
+observability.init_sentry("api")
+
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -75,7 +98,7 @@ async def _recover_on_startup() -> None:
     try:
         await recover_stuck_documents()
     except Exception as exc:
-        print(f"[Startup] Document recovery skipped: {exc}")
+        logger.warning("Document recovery skipped at startup", extra={"error": repr(exc)})
 
 
 # Strong reference to the startup job, so it is not garbage-collected while
@@ -151,6 +174,17 @@ app = FastAPI(
 # the browser would hide the real error behind a CORS failure.
 app.add_middleware(UploadSizeLimitMiddleware)
 
+# ----------------------------------------------------------------------
+# SECURITY HEADERS AND REQUEST CONTEXT  (core/middleware.py)
+# ----------------------------------------------------------------------
+# Same ordering rule as above: each add_middleware wraps the ones before it.
+# The security headers wrap the upload ceiling, so its 413 carries them too.
+# The request context wraps both, so its request id and access-log line
+# cover EVERYTHING inside -- including a 413 or a crash -- and CORS (added
+# last) is still the outermost layer.
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -160,7 +194,25 @@ app.add_middleware(
     allow_methods=["*"],
     # Allow every request header, which we need for `Authorization: Bearer ...`.
     allow_headers=["*"],
+    # Response headers the BROWSER may read from a cross-origin reply. By
+    # default JavaScript sees only a handful of "safe" ones; Retry-After is not
+    # among them, so without this the frontend could not tell a rate-limited
+    # user how long to wait, and X-Request-ID could not be quoted in a report.
+    expose_headers=["Retry-After", "X-Request-ID"],
 )
+
+# ----------------------------------------------------------------------
+# QUOTAS -> HTTP
+# ----------------------------------------------------------------------
+# services/usage.py raises QuotaExceeded from deep inside an endpoint (chat,
+# upload) without knowing about HTTP. One handler turns it into the response:
+# 429 + Retry-After for the monthly token quota, 402 for documents/storage.
+@app.exception_handler(QuotaExceeded)
+async def quota_exceeded_handler(_request: Request, exc: QuotaExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.message}, headers=exc.headers
+    )
+
 
 # ----------------------------------------------------------------------
 # REGISTER THE ROUTERS
@@ -252,3 +304,20 @@ async def health_check():
             "min_score": settings.RETRIEVAL_MIN_SCORE,
         },
     }
+
+
+@app.get(f"{settings.API_V1_STR}/health/ready", tags=["Health"])
+async def readiness_check():
+    """
+    READINESS: can this instance serve real traffic right now?
+
+    Checks the database, Redis and (with INGESTION_MODE=celery) that a Celery
+    worker answers a ping -- concurrently, each with its own timeout -- and
+    reports each component's status. Answers 503 when a HARD dependency is
+    down, so a load balancer or deploy can hold traffic back.
+
+    /health above deliberately checks nothing: see core/health.py for why
+    liveness and readiness must be separate.
+    """
+    ready, body = await health.readiness()
+    return JSONResponse(status_code=200 if ready else 503, content=body)

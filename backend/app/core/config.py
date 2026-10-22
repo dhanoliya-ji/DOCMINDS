@@ -636,6 +636,8 @@ class Settings(BaseSettings):
     # also stops the endpoint being used to flood someone's inbox.
     RATE_LIMIT_PASSWORD_RESET: str = "10/hour"
     # Per user.
+    # "Resend the confirmation email": each call sends an email, so keep it low.
+    RATE_LIMIT_VERIFY_RESEND: str = "5/hour"
     RATE_LIMIT_CHAT: str = "30/minute"
     RATE_LIMIT_SEARCH: str = "60/minute"
     RATE_LIMIT_UPLOAD: str = "30/minute"
@@ -881,7 +883,7 @@ class Settings(BaseSettings):
         it stops the app from starting, with the bad value in the message.
         """
         for name in (
-            "RATE_LIMIT_LOGIN", "RATE_LIMIT_SIGNUP", "RATE_LIMIT_PASSWORD_RESET",
+            "RATE_LIMIT_LOGIN", "RATE_LIMIT_SIGNUP", "RATE_LIMIT_PASSWORD_RESET", "RATE_LIMIT_VERIFY_RESEND",
             "RATE_LIMIT_CHAT", "RATE_LIMIT_SEARCH", "RATE_LIMIT_UPLOAD",
         ):
             try:

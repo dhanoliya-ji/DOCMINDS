@@ -187,3 +187,24 @@ def unique_name():
     it -- or, worse, one test reading another's rows.
     """
     return lambda prefix="test": f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+# ======================================================================
+# Rate limits are OFF for every test unless a test switches them on
+# ======================================================================
+# The whole suite talks to the app from ONE address and a handful of users.
+# With the real limits on, the eleventh signup in a run would get a 429 and
+# fail a test that has nothing to do with rate limiting. tests/test_rate_limit.py
+# turns them back on (with the `rate_limits_on` fixture) where they ARE the
+# subject. Counters are kept in memory and wiped between tests, so no test
+# depends on a Redis server or on what an earlier test counted.
+@pytest.fixture(autouse=True)
+def _rate_limits_off(monkeypatch):
+    from app.core import rate_limit
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE", "memory")
+    rate_limit.limiter.reset()
+    yield
+    rate_limit.limiter.reset()

@@ -64,7 +64,7 @@ from fastapi import (
     status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
@@ -72,6 +72,7 @@ from app.core import roles, security
 from app.core.config import settings
 from app.models.invite import Invite
 from app.models.organization import Organization
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.models.user_token import EMAIL_VERIFY, PASSWORD_RESET
 from app.schemas.account import (
@@ -138,7 +139,13 @@ async def _start_email_verification(
 # ----------------------------------------------------------------------
 
 
-@router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/signup",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    # Per client IP (core/rate_limit.py): every sign-up creates an organization.
+    dependencies=[Depends(deps.rate_limit_by_ip("signup"))],
+)
 async def signup(
     user_in: UserCreate,
     request: Request,
@@ -154,6 +161,12 @@ async def signup(
     # ---- Is this email already taken? ----
     # The database also enforces this with a unique constraint. Checking here
     # too lets us return a friendly message instead of a raw integrity error.
+    #
+    # DOCUMENTED TRADE-OFF: this message does confirm that an address is
+    # registered. Hiding it would mean a silent "check your email" for every
+    # signup, which is confusing when email verification is off (the default,
+    # and SMTP may not even be configured). The oracle is throttled by
+    # RATE_LIMIT_SIGNUP per IP, and login/password reset reveal nothing.
     existing = await db.execute(
         select(User).where(func.lower(User.email) == user_in.email.lower())
     )
@@ -248,7 +261,12 @@ async def signup(
 # ----------------------------------------------------------------------
 
 
-@router.post("/login", response_model=Token)
+@router.post(
+    "/login",
+    response_model=Token,
+    # Per client IP: what makes password guessing hopeless (core/rate_limit.py).
+    dependencies=[Depends(deps.rate_limit_by_ip("login"))],
+)
 async def login(
     request: Request,
     db: AsyncSession = Depends(deps.get_db),
@@ -260,14 +278,27 @@ async def login(
     Remember the email arrives as `form_data.username` -- an OAuth2 convention,
     not a mistake.
     """
-    result = await db.execute(select(User).where(User.email == form_data.username))
+    # Case-insensitive, exactly like signup, password reset and invites: an
+    # account created as "Alice@x.com" must be reachable as "alice@x.com".
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == form_data.username.strip().lower())
+    )
     user = result.scalar_one_or_none()
+
+    # ---- ALWAYS run bcrypt, even for an unknown email ----
+    # The identical error message below is not enough on its own: if an
+    # unknown email skipped bcrypt it would answer in ~1 ms while a real one
+    # takes ~100 ms, and the TIMING would reveal which accounts exist. So an
+    # unknown email is checked against a throwaway hash of equal cost.
+    password_ok = security.verify_password(
+        form_data.password, user.hashed_password if user else _dummy_hash()
+    )
 
     # ---- One combined check, deliberately ----
     # "user does not exist" and "wrong password" return the SAME message. If
     # they differed, an attacker could enumerate which email addresses have
     # accounts simply by watching which error comes back.
-    if not user or not security.verify_password(form_data.password, user.hashed_password):
+    if user is None or not password_ok:
         if user is not None:
             # Recorded for the account's Admins (a burst of these is what a
             # password-guessing attack looks like) but never reflected in the
@@ -300,6 +331,19 @@ async def login(
     await audit.record(db, "user.login", org_id=user.org_id, user_id=user.id, request=request)
     await db.commit()
     return tokens
+
+
+_DUMMY_HASH: Optional[str] = None
+
+
+def _dummy_hash() -> str:
+    """A bcrypt hash of a random secret, computed once on first use (not at
+    import, so starting the app stays fast). Used by login to spend the same
+    time on an unknown email as on a real one."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = security.get_password_hash(uuid.uuid4().hex)
+    return _DUMMY_HASH
 
 
 @router.post("/refresh", response_model=Token)
@@ -362,7 +406,26 @@ async def refresh_token(
             detail="User is deactivated.",
         )
 
-    stored.revoked_at = sessions.utcnow()
+    # ---- Claim the token ATOMICALLY ----
+    # Checking `revoked_at is None` above and then setting it in Python is a
+    # race: two requests with the same token (an attacker replaying a stolen
+    # copy at the same moment as the real client, or two browser tabs) could
+    # both pass the check and both receive a live pair. A conditional UPDATE
+    # lets the database decide: exactly one request flips revoked_at from
+    # NULL, and the loser sees rowcount 0 and is treated as reuse.
+    claimed = await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.id == stored.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=sessions.utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await sessions.revoke_family(db, stored.family_id)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session has ended. Please sign in again.",
+        )
     # Built from the user's CURRENT role, freshly read above.
     tokens = await sessions.issue_token_pair(db, user, family_id=stored.family_id)
     await db.commit()
@@ -466,7 +529,12 @@ _RESET_ACK = "If an account exists for that email, a password reset link has bee
 
 
 @router.post(
-    "/password-reset/request", response_model=Message, status_code=status.HTTP_202_ACCEPTED
+    "/password-reset/request",
+    response_model=Message,
+    status_code=status.HTTP_202_ACCEPTED,
+    # Per client IP. Each request sends an email, so without a limit this
+    # endpoint could be used to flood someone's inbox.
+    dependencies=[Depends(deps.rate_limit_by_ip("password_reset"))],
 )
 async def request_password_reset(
     payload: PasswordResetRequest,
@@ -503,7 +571,12 @@ async def request_password_reset(
     return Message(detail=_RESET_ACK)
 
 
-@router.post("/password-reset/confirm", response_model=Message)
+@router.post(
+    "/password-reset/confirm",
+    response_model=Message,
+    # Shares the password-reset budget: slows down guessing reset tokens.
+    dependencies=[Depends(deps.rate_limit_by_ip("password_reset"))],
+)
 async def confirm_password_reset(
     payload: PasswordResetConfirm,
     request: Request,
@@ -565,7 +638,14 @@ async def verify_email(
     return Message(detail="Your email address has been confirmed.")
 
 
-@router.post("/verify-email/resend", response_model=Message, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/verify-email/resend",
+    response_model=Message,
+    status_code=status.HTTP_202_ACCEPTED,
+    # Per user: every call sends an email and writes a token row, so an
+    # unthrottled loop could flood an inbox and the user_tokens table.
+    dependencies=[Depends(deps.rate_limit_by_user("verify_resend"))],
+)
 async def resend_verification(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(deps.get_db),

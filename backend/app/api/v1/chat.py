@@ -11,8 +11,12 @@ THE FULL JOURNEY OF ONE QUESTION
 --------------------------------
 When a user types "How many leave days do I get?" and presses enter:
 
-   1. The request arrives here with a JWT proving who they are.
+   1. The request arrives here with a JWT proving who they are, and passes
+      the per-user rate limit (core/rate_limit.py).
    2. We verify the chat session belongs to them          (security)
+      and that the organization is within its monthly token quota, then
+      load the conversation so far (BEFORE saving the new question, so it
+      is not sent to the model twice).
    3. We save their question as a ChatMessage             (role="user")
    4. RETRIEVE : retrieval.py embeds the question and finds the 5 closest
                  chunks in Postgres, restricted to their organization.
@@ -20,7 +24,8 @@ When a user types "How many leave days do I get?" and presses enter:
    6. GENERATE : GPT-OSS 120B on Groq writes an answer using only those excerpts.
    7. We build citations linking each [n] back to its file and page.
    8. We save the answer as a ChatMessage                 (role="assistant")
-      along with the citations, token count and how long it took.
+      along with the citations, token count and how long it took --
+      and, in the same transaction, a usage event (services/usage.py).
    9. We return both messages so the UI can render the exchange.
 
 TWO MODES (the request's `mode` field)
@@ -59,6 +64,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
+from app.core import observability
 from app.models.chat import ChatMessage, ChatSession, Feedback
 from app.models.project import Project
 from app.models.user import User
@@ -72,6 +78,7 @@ from app.schemas.rag import (
     Citation,
     FeedbackCreate,
 )
+from app.services import usage
 from app.services.agent import run_agent
 from app.services.llm import LLMService
 from app.services.retrieval import RetrievalService
@@ -222,7 +229,13 @@ async def delete_chat_session(
 # ======================================================================
 
 
-@router.post("/sessions/{session_id}/messages", response_model=ChatResponse)
+@router.post(
+    "/sessions/{session_id}/messages",
+    response_model=ChatResponse,
+    # At most RATE_LIMIT_CHAT questions per user (core/rate_limit.py). Every
+    # question costs model tokens, so this is the most expensive endpoint.
+    dependencies=[Depends(deps.rate_limit_by_user("chat"))],
+)
 async def ask_question(
     session_id: uuid.UUID,
     payload: ChatRequest,
@@ -237,6 +250,20 @@ async def ask_question(
     """
     # ---- STEP 1: Authorise -------------------------------------------
     chat_session = await _get_owned_session(db, session_id, current_user)
+
+    # ---- STEP 1b: Is the organization within its monthly token quota? --
+    # Checked BEFORE anything is saved or any model is called: a refused
+    # question costs nothing and leaves no half-finished exchange behind.
+    # Raises QuotaExceeded, which main.py turns into a 429 with Retry-After.
+    await usage.check_token_quota(db, current_user.org_id)
+
+    # ---- STEP 1c: Load the conversation so far -----------------------
+    # BEFORE the new question is saved, so the history holds only the EARLIER
+    # turns. Loaded after, it would end with this very question -- which the
+    # prompt then adds again, sending it to the model twice (wasted tokens,
+    # and the model reads it as the user repeating themselves). Both answer
+    # paths also drop such a duplicate defensively.
+    history = await RetrievalService.build_history(db, session_id)
 
     # ---- STEP 2: Save the user's question ----------------------------
     # We store it BEFORE calling the AI on purpose. If the LLM call then fails
@@ -261,8 +288,6 @@ async def ask_question(
 
     if payload.mode == "agent":
         # ---- AGENT MODE: steps 3-6 handled by the Pydantic AI agent ---
-        # History first, because the agent needs it before it starts.
-        history = await RetrievalService.build_history(db, session_id)
         agent_result = await run_agent(
             db=db,
             question=payload.message,
@@ -303,15 +328,17 @@ async def ask_question(
             top_k=payload.top_k,
         )
 
-        # ---- STEP 4: Load conversation history ---------------------------
+        # ---- STEP 4: Conversation history (loaded in STEP 1c) -----------
         # So the user can ask a follow-up such as "and for part-time staff?" and
         # have it understood in the context of the previous question.
-        history = await RetrievalService.build_history(db, session_id)
 
         # ---- STEP 5: AUGMENT + GENERATE ----------------------------------
         # llm.py pastes the retrieved chunks into the prompt (augment) and asks
         # GPT-OSS 120B on Groq to answer using only those chunks (generate).
-        llm_result = LLMService.generate_answer(
+        # Awaited: the model call waits on the network WITHOUT blocking the
+        # server (llm.py uses Groq's async client), and is retried / falls
+        # back to LLM_FALLBACK_MODEL on transient failures.
+        llm_result = await LLMService.generate_answer(
             question=payload.message,
             chunks=chunks,
             history=history,
@@ -350,7 +377,24 @@ async def ask_question(
     )
     db.add(assistant_message)
 
-    # One commit saves the question, the answer and the renamed title together.
+    # ---- STEP 7b: Meter it ---------------------------------------------
+    # One usage event per answer: tokens in and out, the model that actually
+    # answered (the fallback's name if the main one failed) and its
+    # estimated cost. Staged in the SAME transaction as the answer, so usage
+    # is never recorded for an answer that was not saved, or vice versa.
+    usage.record_chat_usage(
+        db,
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        mode=payload.mode,
+        model=llm_result["model"],
+        prompt_tokens=llm_result.get("prompt_tokens", 0),
+        completion_tokens=llm_result.get("completion_tokens", 0),
+        total_tokens=llm_result.get("tokens_used", 0),
+        request_id=observability.current_request_id(),
+    )
+
+    # One commit saves the question, the answer, its usage and the renamed title together.
     # Because it is a single transaction, we can never end up with a question
     # stored but its answer missing.
     await db.commit()

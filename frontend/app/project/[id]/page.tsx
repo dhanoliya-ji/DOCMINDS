@@ -46,6 +46,8 @@ import ChatPanel from "@/components/ChatPanel";
 import SearchPanel from "@/components/SearchPanel";
 import UploadZone from "@/components/UploadZone";
 import { api, DocumentItem, getToken } from "@/lib/api";
+import { canEdit } from "@/lib/roles";
+import { useCurrentUser } from "@/lib/useCurrentUser";
 
 /** The three tabs of the workspace. */
 type Tab = "documents" | "search" | "chat";
@@ -67,6 +69,10 @@ export default function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const router = useRouter();
+
+  // The signed-in user's role decides whether the upload zone is offered.
+  const { user, loading: userLoading } = useCurrentUser();
+  const mayUpload = canEdit(user?.role);
 
   // `use()` unwraps a promise inside a component. This is a Client Component,
   // so `await` is not available -- `use` is React's equivalent, and it
@@ -279,7 +285,22 @@ export default function ProjectPage({
           {/* ================= DOCUMENTS ================= */}
           {tab === "documents" && (
             <div className="space-y-5">
-              <UploadZone projectId={projectId} onUploaded={loadDocuments} />
+              {/* Uploading needs the editor role. A viewer is told why the
+                  zone is missing rather than offered one that answers 403.
+                  While the role is still loading, show neither. */}
+              {mayUpload ? (
+                <UploadZone projectId={projectId} onUploaded={loadDocuments} />
+              ) : (
+                !userLoading && (
+                  <p
+                    className="glass px-4 py-3 text-sm"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    You have view-only access to this project. Ask an editor or
+                    admin to upload documents.
+                  </p>
+                )
+              )}
 
               {loading ? (
                 <div className="space-y-2">

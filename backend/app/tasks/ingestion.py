@@ -92,8 +92,8 @@ across these short-lived event loops, or you get "Event loop is closed" errors.
 
 import asyncio
 import datetime
+import logging
 import time
-import traceback
 import uuid
 from typing import Optional
 
@@ -101,6 +101,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import and_, or_, select, update
 
 from app.core.celery_app import celery_app
+from app.core import observability
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.chunk import Chunk, ChunkEmbedding
@@ -114,6 +115,8 @@ from app.services.storage import (
     StorageUnavailableError,
     get_storage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ======================================================================
@@ -334,15 +337,17 @@ async def async_process_document(
             # Deleted since the upload, already completed, or claimed by
             # another worker (a duplicate delivery). All are fine: exit
             # quietly rather than crashing the worker or doing the work twice.
-            print(f"[Ingestion] Document '{document_id}' is not claimable. Skipping.")
+            logger.warning(f"Document '{document_id}' is not claimable. Skipping.")
             return "skipped"
 
         # Captured now: after a failed write, touching the ORM object again
         # can itself raise, and the failure handler needs to know which row.
         claimed_id = document.id
+        # Every later line of this run says which document and tenant it is about.
+        observability.bind(document_id=document.id, project_id=document.project_id)
 
-        print(
-            f"[Ingestion] === Starting pipeline for: {document.filename} "
+        logger.info(
+            f"=== Starting pipeline for: {document.filename} "
             f"(attempt {document.attempts}) ==="
         )
 
@@ -358,8 +363,8 @@ async def async_process_document(
             # library: PyMuPDF for PDF, python-docx for Word, and so on.
             # For a scanned PDF it detects the lack of a text layer and falls
             # back to OCR automatically.
-            print(
-                f"[Ingestion] 1/5 Fetching, scanning and extracting text "
+            logger.info(
+                f"1/5 Fetching, scanning and extracting text "
                 f"(type: {document.file_type}, storage: {document.storage_backend})..."
             )
             # The three heavy steps (extraction/OCR, chunking, embedding) are
@@ -380,8 +385,8 @@ async def async_process_document(
                     "corrupted, or an image with no readable text."
                 )
 
-            print(
-                f"[Ingestion]     Extracted {len(extraction.text):,} characters "
+            logger.info(
+                f"Extracted {len(extraction.text):,} characters "
                 f"(language: {extraction.language}, OCR used: {extraction.needs_ocr})"
             )
 
@@ -402,8 +407,8 @@ async def async_process_document(
                 document_meta.get("chunk_overlap") or settings.DEFAULT_CHUNK_OVERLAP
             )
 
-            print(
-                f"[Ingestion] 2/5 Chunking (strategy: {chunk_strategy}, "
+            logger.info(
+                f"2/5 Chunking (strategy: {chunk_strategy}, "
                 f"size: {chunk_size} tokens, overlap: {chunk_overlap})..."
             )
             chunks_data = await asyncio.to_thread(
@@ -417,7 +422,7 @@ async def async_process_document(
             if not chunks_data:
                 raise ValueError("Chunking produced no chunks from the extracted text.")
 
-            print(f"[Ingestion]     Produced {len(chunks_data)} chunks.")
+            logger.info(f"Produced {len(chunks_data)} chunks.")
 
             # ==========================================================
             # STAGE 4: Clear any previous chunks (idempotent re-processing)
@@ -434,7 +439,7 @@ async def async_process_document(
             )
             old_chunks = existing.scalars().all()
             if old_chunks:
-                print(f"[Ingestion]     Removing {len(old_chunks)} previous chunks.")
+                logger.info(f"Removing {len(old_chunks)} previous chunks.")
                 for old_chunk in old_chunks:
                     await db.delete(old_chunk)
                 # `flush` sends the DELETEs to the database now, so the inserts
@@ -472,8 +477,8 @@ async def async_process_document(
             # Each chunk becomes 384 numbers describing its meaning. Later, a
             # user's question becomes 384 numbers too, and Postgres finds the
             # chunks whose numbers point in the most similar direction.
-            print(
-                f"[Ingestion] 3/5 Embedding {len(chunk_objects)} chunks "
+            logger.info(
+                f"3/5 Embedding {len(chunk_objects)} chunks "
                 f"via '{settings.EMBEDDING_PROVIDER}'..."
             )
 
@@ -496,7 +501,7 @@ async def async_process_document(
                     f"for {len(chunk_objects)} chunks."
                 )
 
-            print(f"[Ingestion] 4/5 Saving vectors (model: {model_name})...")
+            logger.info(f"4/5 Saving vectors (model: {model_name})...")
 
             # `zip` walks both lists together, pairing each chunk with the
             # vector produced from its own text.
@@ -564,8 +569,8 @@ async def async_process_document(
             # document still reads "processing".
             await db.commit()
 
-            print(
-                f"[Ingestion] 5/5 DONE: {document.filename} -> "
+            logger.info(
+                f"5/5 DONE: {document.filename} -> "
                 f"{len(chunk_objects)} chunks in {elapsed}s. Now searchable."
             )
             return "completed"
@@ -605,11 +610,14 @@ async def _handle_failure(
     retrying = transient and not final_attempt
     message = describe_failure(exc)
 
-    print(
-        f"[Ingestion] {'TRANSIENT failure, will retry' if retrying else 'FAILED'} "
-        f"for {document_id}: {message}"
+    # The traceback rides on the same structured line (exc_info), instead of
+    # being printed separately where nothing ties it to this document.
+    logger.log(
+        logging.WARNING if retrying else logging.ERROR,
+        "Transient ingestion failure; will retry" if retrying else "Ingestion failed",
+        extra={"document_id": str(document_id), "error": message},
+        exc_info=exc,
     )
-    traceback.print_exc()
 
     try:
         # The session may be in a broken state after an error mid-write --
@@ -638,7 +646,7 @@ async def _handle_failure(
             try:
                 get_storage(document.storage_backend).delete(document.file_path)
             except Exception as delete_error:  # pragma: no cover - best effort
-                print(f"[Ingestion] Could not delete quarantined file: {delete_error}")
+                logger.warning(f"Could not delete quarantined file: {delete_error}")
 
         document.meta_data = error_metadata
         document.error_message = message
@@ -655,7 +663,7 @@ async def _handle_failure(
         # Could not even record the failure -- most likely the database is the
         # thing that is down. A transient retry is still worth scheduling; if
         # nothing else, recovery will find the row stuck in "processing".
-        print(f"[Ingestion] Could not record the failure: {record_error}")
+        logger.warning(f"Could not record the failure: {record_error}")
         if transient and not final_attempt:
             raise TransientIngestionError(message) from exc
         raise
@@ -801,10 +809,10 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
                 # alongside the API. The row already says "pending", so a
                 # later sweep queues it; one failure must not stop the rest
                 # from being queued, or abort the API's startup.
-                print(f"[Recovery] Could not queue {document_id}; a later sweep will retry: {exc}")
+                logger.warning(f"Could not queue {document_id}; a later sweep will retry: {exc}")
 
     if requeued or failed:
-        print(f"[Recovery] Re-queued {len(requeued)} and failed {len(failed)} stuck document(s).")
+        logger.warning(f"Re-queued {len(requeued)} and failed {len(failed)} stuck document(s).")
     return {"requeued": requeued, "failed": failed}
 
 

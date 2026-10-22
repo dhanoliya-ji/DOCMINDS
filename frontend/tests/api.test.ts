@@ -25,8 +25,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ApiError,
   api,
   clearToken,
+  formatWait,
   getErrorMessage,
   getRefreshToken,
   getToken,
@@ -637,5 +639,141 @@ describe("account and admin endpoints", () => {
 
     expect(callUrl(mock)).toContain("/auth/password-reset/confirm");
     expect(JSON.parse(callOptions(mock).body)).toEqual({ token: "tok", new_password: "a-new-password" });
+  });
+});
+
+// ======================================================================
+// Status-aware errors: ApiError, Retry-After and the wait hint
+// ======================================================================
+// Rate limits (429), quotas (429/402) and upload refusals (413/415) each need
+// different wording on screen, which is only possible if the status survives
+// the trip from fetch to the component. And a 429 is only useful to the user
+// if it says WHEN to try again.
+
+/** A reply carrying response headers, as a real 429 does. */
+function replyWithHeaders(status: number, body: unknown, headers: Record<string, string>) {
+  return { ...reply(status, body), headers: new Headers(headers) } as unknown as Response;
+}
+
+describe("ApiError", () => {
+  it("carries the status and the Retry-After seconds", async () => {
+    setToken("t");
+    stubFetch(
+      replyWithHeaders(429, { detail: "Monthly AI token quota reached." }, { "Retry-After": "120" })
+    );
+
+    const error = await api.search("q").catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.status).toBe(429);
+    expect(error.retryAfter).toBe(120);
+  });
+
+  it("has no wait when the header is absent", async () => {
+    setToken("t");
+    stubFetch(reply(404, { detail: "Project not found" }));
+
+    const error = await api.listProjects().catch((e) => e);
+
+    expect(error.status).toBe(404);
+    expect(error.retryAfter).toBeNull();
+  });
+
+  it("reads an HTTP-date Retry-After as seconds from now", async () => {
+    setToken("t");
+    const inAMinute = new Date(Date.now() + 60_000).toUTCString();
+    stubFetch(replyWithHeaders(429, { detail: "x" }, { "Retry-After": inAMinute }));
+
+    const error = await api.search("q").catch((e) => e);
+
+    expect(error.retryAfter).toBeGreaterThan(50);
+    expect(error.retryAfter).toBeLessThanOrEqual(60);
+  });
+
+  it("keeps the status on upload refusals", async () => {
+    setToken("t");
+    stubFetch(reply(413, { detail: "Too large." }));
+
+    const error = await api.uploadDocuments("p", [new File(["x"], "a.pdf")]).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(413);
+    expect(error.message).toBe("Too large.");
+  });
+});
+
+describe("the Retry-After hint", () => {
+  it("is appended to a 429 that does not say when to retry", () => {
+    const error = new ApiError("Monthly AI token quota reached.", 429, 7200);
+    expect(getErrorMessage(error)).toBe("Monthly AI token quota reached. Try again in 2 hours.");
+  });
+
+  it("is not duplicated when the backend already said it", () => {
+    const error = new ApiError("Too many questions. Please try again in 40 seconds.", 429, 40);
+    expect(getErrorMessage(error)).toBe("Too many questions. Please try again in 40 seconds.");
+  });
+
+  it("is not added to other statuses", () => {
+    expect(getErrorMessage(new ApiError("Quota reached.", 402, 30))).toBe("Quota reached.");
+  });
+
+  it("words waits the way the backend does", () => {
+    expect(formatWait(1)).toBe("1 second");
+    expect(formatWait(42)).toBe("42 seconds");
+    expect(formatWait(150)).toBe("3 minutes");
+    expect(formatWait(7200)).toBe("2 hours");
+    expect(formatWait(5 * 86400)).toBe("5 days");
+  });
+});
+
+describe("login errors", () => {
+  it("shows the backend's reason, e.g. an unconfirmed email", async () => {
+    stubFetch(reply(403, { detail: "Please confirm your email address first." }));
+
+    const error = await api.login("a@b.com", "pw").catch((e) => e);
+
+    expect(error.status).toBe(403);
+    expect(error.message).toMatch(/confirm your email/);
+  });
+
+  it("does not try a silent refresh on a failed login", async () => {
+    setRefreshToken("r");
+    const mock = stubFetch(reply(401, { detail: "Incorrect email or password." }));
+
+    await expect(api.login("a@b.com", "wrong")).rejects.toThrow("Incorrect email or password.");
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("account lookups", () => {
+  it("getMe asks /users/me", async () => {
+    setToken("t");
+    const mock = stubFetch(reply(200, { id: "u", role: "Admin", is_verified: true }));
+
+    const me = await api.getMe();
+
+    expect(callUrl(mock)).toMatch(/\/api\/v1\/users\/me$/);
+    expect(me.role).toBe("Admin");
+  });
+
+  it("getUsage asks /org/usage", async () => {
+    setToken("t");
+    const mock = stubFetch(reply(200, { requests: 3 }));
+
+    await api.getUsage();
+
+    expect(callUrl(mock)).toMatch(/\/api\/v1\/org\/usage$/);
+  });
+
+  it("resend verification is a POST with the token", async () => {
+    setToken("t");
+    const mock = stubFetch(reply(202, { detail: "sent" }));
+
+    await api.resendVerification();
+
+    expect(callUrl(mock)).toContain("/auth/verify-email/resend");
+    expect(callOptions(mock).method).toBe("POST");
+    expect(callOptions(mock).headers.Authorization).toBe("Bearer t");
   });
 });

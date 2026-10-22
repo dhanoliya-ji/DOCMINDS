@@ -29,6 +29,11 @@ import { afterEach, beforeEach, vi } from "vitest";
 export const pushMock = vi.fn();
 export const replaceMock = vi.fn();
 
+// The query string `useSearchParams()` returns. A test that renders a page
+// reading `?token=` or `?invite=` sets `searchParamsMock.value` first; it is
+// reset to empty before every test below.
+export const searchParamsMock = { value: new URLSearchParams() };
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: pushMock,
@@ -39,7 +44,7 @@ vi.mock("next/navigation", () => ({
     prefetch: vi.fn(),
   }),
   usePathname: () => "/",
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParamsMock.value,
   useParams: () => ({}),
 }));
 
@@ -75,7 +80,14 @@ vi.mock("framer-motion", async () => {
   AnimatePresenceStub.displayName = "AnimatePresence";
 
   return {
-    motion: new Proxy({}, { get: (_t, tag: string) => passthrough(tag) }),
+    // CACHED per tag: `motion.div` must return the SAME component every time.
+    // A fresh component type on each render makes React unmount and remount
+    // everything inside it -- so a controlled <input> wrapped in motion.div
+    // lost its focus after every keystroke and a test typing into it only
+    // ever got the first character in.
+    motion: new Proxy({} as Record<string, unknown>, {
+      get: (cache, tag: string) => (cache[tag] ??= passthrough(tag)),
+    }),
     AnimatePresence: AnimatePresenceStub,
     useAnimation: () => ({ start: vi.fn(), stop: vi.fn() }),
   };
@@ -118,6 +130,7 @@ beforeEach(() => {
   // A token left behind by one test would silently authenticate the next one.
   localStorage.clear();
   vi.clearAllMocks();
+  searchParamsMock.value = new URLSearchParams();
 });
 
 afterEach(() => {

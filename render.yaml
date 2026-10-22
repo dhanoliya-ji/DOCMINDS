@@ -112,6 +112,13 @@ services:
       - key: EMBEDDING_DIMENSION
         value: "384"
 
+      # Every request reaches the API through Render's proxy, which appends
+      # the real client address to X-Forwarded-For. Trust that one hop, or
+      # the per-IP sign-in and sign-up limits would count every visitor as
+      # the proxy's single address (docs/DEPLOYMENT.md, Production checklist).
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"
+
       - key: RETRIEVAL_TOP_K
         value: "5"
       - key: RETRIEVAL_MIN_SCORE

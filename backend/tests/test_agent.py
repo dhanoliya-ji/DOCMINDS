@@ -34,6 +34,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.models.chat import ChatMessage
 from app.schemas.rag import AgentStep, ChatRequest
 from app.services import agent as agent_module
 from app.services.agent import (
@@ -254,7 +255,8 @@ class TestKeylessFallback:
         assert [s["tool"] for s in result["steps"]] == ["search_documents"]
         assert result["citations_chunks"][0]["number"] == 1
         assert set(result) == {
-            "answer", "tokens_used", "latency", "model", "citations_chunks", "steps",
+            "answer", "tokens_used", "prompt_tokens", "completion_tokens",
+            "latency", "model", "citations_chunks", "steps",
         }
 
     async def test_nothing_found_uses_exact_fallback_sentence(self, keyless, fake_search):
@@ -544,12 +546,17 @@ def chat_client(monkeypatch):
     async def fake_search(**kwargs):
         return [chunk("Leave is 25 days.")]
 
-    def fake_generate_answer(question, chunks, history):
+    async def fake_generate_answer(question, chunks, history):
         return {"answer": "Leave is 25 days [1].", "tokens_used": 10,
                 "latency": 0.1, "model": "test"}
 
+    async def within_quota(db, org_id, now=None):
+        return None
+
     monkeypatch.setattr(chat_module, "_get_owned_session", owned_session)
     monkeypatch.setattr(chat_module, "run_agent", fake_run_agent)
+    # The quota check queries usage_events, which FakeSession cannot answer.
+    monkeypatch.setattr(chat_module.usage, "check_token_quota", within_quota)
     monkeypatch.setattr(RetrievalService, "build_history", staticmethod(no_history))
     monkeypatch.setattr(RetrievalService, "search", staticmethod(fake_search))
     monkeypatch.setattr(chat_module.LLMService, "generate_answer", staticmethod(fake_generate_answer))
@@ -577,7 +584,10 @@ class TestChatEndpointModes:
         assert body["steps"][0]["tool"] == "search_documents"
         assert chat_client.state["agent_calls"] == 1
         # The stored assistant message carries the same global numbers.
-        assistant = chat_client.db.added[-1]
+        assistant = next(
+            obj for obj in chat_client.db.added
+            if isinstance(obj, ChatMessage) and obj.role == "assistant"
+        )
         assert [c["number"] for c in assistant.citations] == [3, 7]
         assert chat_client.db.committed
 

@@ -51,6 +51,7 @@ is then a one-line change in .env, and no other file in the project notices.
 """
 
 import hashlib
+import logging
 import math
 import random
 import threading
@@ -58,6 +59,8 @@ import time
 from typing import List
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
 # MODULE-LEVEL CACHE for the local AI model.
@@ -132,8 +135,8 @@ class EmbeddingService:
             # An unknown provider name is a configuration mistake. We warn
             # loudly but fall back to mock so the app still starts, which makes
             # the problem much easier to diagnose than a hard crash on boot.
-            print(
-                f"[Embedding] Unknown provider '{provider}'. "
+            logger.warning(
+                f"Unknown provider '{provider}'. "
                 f"Falling back to mock embeddings."
             )
             return cls._get_mock_embeddings(texts)
@@ -188,8 +191,8 @@ class EmbeddingService:
                 # OpenAI or mock never pays that cost at all.
                 from sentence_transformers import SentenceTransformer
 
-                print(
-                    f"[Embedding] Loading local model "
+                logger.info(
+                    f"Loading local model "
                     f"'{settings.LOCAL_EMBEDDING_MODEL}' (first use only, "
                     f"this can take ~10s)..."
                 )
@@ -197,7 +200,7 @@ class EmbeddingService:
                 # HuggingFace and caches it on disk (~/.cache/huggingface).
                 # Every later start reads from that cache and is much faster.
                 _local_model = SentenceTransformer(settings.LOCAL_EMBEDDING_MODEL)
-                print("[Embedding] Local model ready.")
+                logger.info("Local model ready.")
 
         return _local_model
 
@@ -236,8 +239,8 @@ class EmbeddingService:
 
         except ImportError:
             # Raised when the `sentence-transformers` package is not installed.
-            print(
-                "[Embedding] sentence-transformers is not installed. "
+            logger.warning(
+                "sentence-transformers is not installed. "
                 "Run: pip install sentence-transformers. Using mock vectors."
             )
             return cls._get_mock_embeddings(texts)
@@ -245,7 +248,7 @@ class EmbeddingService:
             # Any other failure (out of memory, corrupted model cache, no
             # internet on the very first download) also degrades to mock rather
             # than taking the entire ingestion pipeline down.
-            print(f"[Embedding] Local embedding failed: {exc}. Using mock vectors.")
+            logger.warning(f"Local embedding failed: {exc}. Using mock vectors.")
             return cls._get_mock_embeddings(texts)
 
     # ==================================================================
@@ -263,8 +266,8 @@ class EmbeddingService:
         try:
             # Fail fast and clearly if the key was never configured.
             if not settings.OPENAI_API_KEY:
-                print(
-                    "[Embedding] OPENAI_API_KEY is missing from .env. "
+                logger.warning(
+                    "OPENAI_API_KEY is missing from .env. "
                     "Using mock vectors."
                 )
                 return cls._get_mock_embeddings(texts)
@@ -285,7 +288,7 @@ class EmbeddingService:
             return [item.embedding for item in response.data]
 
         except Exception as exc:
-            print(f"[Embedding] OpenAI API call failed: {exc}. Using mock vectors.")
+            logger.warning(f"OpenAI API call failed: {exc}. Using mock vectors.")
             return cls._get_mock_embeddings(texts)
 
     # ==================================================================

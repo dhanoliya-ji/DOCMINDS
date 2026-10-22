@@ -52,7 +52,13 @@ from app.services.retrieval import RetrievalService
 router = APIRouter()
 
 
-@router.post("/", response_model=SearchResponse)
+@router.post(
+    "/",
+    response_model=SearchResponse,
+    # At most RATE_LIMIT_SEARCH searches per user: each one embeds the query,
+    # which costs CPU or an embedding API call (core/rate_limit.py).
+    dependencies=[Depends(deps.rate_limit_by_user("search"))],
+)
 async def semantic_search(
     payload: SearchRequest,
     db: AsyncSession = Depends(deps.get_db),
