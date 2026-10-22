@@ -13,10 +13,12 @@ THE STATUS FIELD IS THE HEART OF THIS TABLE
 Because processing happens in a background worker, the browser has no way of
 being told when it finishes. This column is how progress is communicated:
 
-    pending     uploaded, sitting in the Celery queue
-    processing  a worker has picked it up
+    pending     uploaded, sitting in the Celery queue (or waiting to retry)
+    processing  a worker has claimed it -- `processing_started_at` says when
     completed   chunked, embedded and SEARCHABLE
-    failed      something went wrong; the reason is in meta_data["error"]
+    failed      something went wrong; the reason is in `error_message` (and,
+                for older frontends, meta_data["error"]). A file rejected by
+                the malware scan is failed with meta_data["quarantined"].
 
 The frontend polls until it reads "completed", and services/retrieval.py
 searches ONLY completed documents -- a half-processed file would otherwise
@@ -35,9 +37,9 @@ preserved.
 
 import datetime
 import uuid
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -64,14 +66,44 @@ class Document(Base):
     # Size in bytes. Displayed as KB/MB by the frontend.
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # Where the bytes actually live. Stored under a uuid-prefixed name so two
-    # users uploading "report.pdf" cannot overwrite each other on disk.
+    # Where the bytes actually live: a STORAGE KEY such as
+    # "<project_id>/<uuid>.pdf", read through services/storage.py. The
+    # client's filename is never part of it. (Rows from before storage keys
+    # existed hold an absolute disk path here; LocalStorage still reads them.)
+    # The column keeps its old name so no data has to be rewritten.
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
 
-    # pending | processing | completed | failed  -- see the docstring above.
-    status: Mapped[str] = mapped_column(
-        String(50), default="pending", nullable=False
+    # WHICH storage backend holds that key: "local" or "s3". Recorded per
+    # document so switching STORAGE_BACKEND does not orphan older uploads --
+    # they are still read from wherever they were written.
+    storage_backend: Mapped[str] = mapped_column(
+        String(16), default="local", server_default="local", nullable=False
     )
+
+    # pending | processing | completed | failed  -- see the docstring above.
+    # Indexed because the recovery routine searches by it on a timer.
+    status: Mapped[str] = mapped_column(
+        String(50), default="pending", nullable=False, index=True
+    )
+
+    # ---- Ingestion bookkeeping (tasks/ingestion.py) ---------------------
+    # How many times processing has been STARTED. Retries and recoveries
+    # both count, so a document that keeps killing its worker is eventually
+    # given up on instead of being re-queued forever.
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+
+    # When the current (or last) attempt claimed the document. A "processing"
+    # row whose claim is older than INGESTION_STALE_AFTER_MINUTES is assumed
+    # to be orphaned by a dead worker and is re-queued.
+    processing_started_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Why the document failed, in words a user can act on. NULL unless the
+    # status is "failed" (or a retry is pending after a transient error).
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # SHA-256 of the file's CONTENTS, used for deduplication.
     #

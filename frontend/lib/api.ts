@@ -22,6 +22,12 @@
  * who you are. We keep it in `localStorage` (the browser's small persistent
  * key/value store) so a page refresh does not log you out. Every later request
  * carries it in the `Authorization: Bearer <token>` header.
+ *
+ * The access token lasts 30 minutes. Login also returns a REFRESH token (7
+ * days), stored alongside it. When a request comes back 401, `apiFetch`
+ * quietly trades the refresh token for a fresh pair and retries once; only if
+ * that fails is the user sent back to /login. Signing out tells the backend
+ * to revoke both tokens, so a copied token stops working too.
  */
 
 // ----------------------------------------------------------------------
@@ -38,8 +44,9 @@ export const API_BASE =
 
 const API_V1 = `${API_BASE}/api/v1`;
 
-// The localStorage key under which we save the token.
+// The localStorage keys under which we save the two tokens.
 const TOKEN_KEY = "edia_token";
+const REFRESH_KEY = "edia_refresh";
 
 // ----------------------------------------------------------------------
 // TOKEN STORAGE
@@ -60,6 +67,77 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
+  // Both go together: a refresh token left behind could sign the user
+  // straight back in after they chose to sign out.
+  localStorage.removeItem(REFRESH_KEY);
+}
+
+export function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(REFRESH_KEY);
+}
+
+export function setRefreshToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(REFRESH_KEY, token);
+}
+
+// ----------------------------------------------------------------------
+// SILENT REFRESH
+// ----------------------------------------------------------------------
+
+// The refresh currently in progress, shared by everyone who needs it.
+//
+// WHY THIS MATTERS: the backend ROTATES refresh tokens, and treats a token
+// presented twice as stolen -- it then ends the whole session. A page that
+// fires three requests at once, all of which come back 401, would otherwise
+// send three refreshes with the same token, and the second would log the user
+// out. Sharing one promise means one refresh, whatever the number of callers.
+let refreshInFlight: Promise<boolean> | null = null;
+
+/** Trade the stored refresh token for a new pair. Resolves true on success. */
+export function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const refreshToken = getRefreshToken();
+      if (!refreshToken) return false;
+      try {
+        const response = await fetch(`${API_V1}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        setToken(data.access_token);
+        setRefreshToken(data.refresh_token);
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+/** Clear the session and send the user to sign in again. */
+function endSession(): never {
+  clearToken();
+  if (typeof window !== "undefined") {
+    // A HARD navigation, deliberately, and not `router.push`.
+    //
+    // Two reasons. This is a plain module function rather than a component,
+    // so there is no router to reach for -- and a full page load is what we
+    // actually want: it discards every piece of in-memory React state along
+    // with the token. A soft navigation would carry the previous user's
+    // loaded projects and open chat session into the login screen.
+    //
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.href = "/login";
+  }
+  throw new Error("Your session expired. Please sign in again.");
 }
 
 // ----------------------------------------------------------------------
@@ -75,7 +153,10 @@ export function clearToken(): void {
  */
 async function apiFetch<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  // True on the one retry after a silent refresh, so a second 401 ends the
+  // session instead of looping.
+  isRetry = false
 ): Promise<T> {
   const token = getToken();
 
@@ -95,24 +176,15 @@ async function apiFetch<T>(
 
   const response = await fetch(`${API_V1}${path}`, { ...options, headers });
 
-  // 401 means the token is missing, invalid or expired. Clear it and send the
-  // user back to the login page, rather than leaving them on a screen that
-  // silently fails to load anything.
+  // 401 means the token is missing, invalid or expired. First try a silent
+  // refresh and repeat the request once. If that is not possible, clear the
+  // tokens and send the user back to the login page, rather than leaving them
+  // on a screen that silently fails to load anything.
   if (response.status === 401) {
-    clearToken();
-    if (typeof window !== "undefined") {
-      // A HARD navigation, deliberately, and not `router.push`.
-      //
-      // Two reasons. This is a plain module function rather than a component,
-      // so there is no router to reach for -- and a full page load is what we
-      // actually want: it discards every piece of in-memory React state along
-      // with the token. A soft navigation would carry the previous user's
-      // loaded projects and open chat session into the login screen.
-      //
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = "/login";
+    if (!isRetry && (await refreshSession())) {
+      return apiFetch<T>(path, options, true);
     }
-    throw new Error("Your session expired. Please sign in again.");
+    endSession();
   }
 
   if (!response.ok) {
@@ -276,6 +348,94 @@ export interface ChatSessionItem {
  */
 export type ChatMode = "rag" | "agent";
 
+// ----------------------------------------------------------------------
+// ACCOUNTS AND ORGANIZATION ADMIN (backend/app/schemas/account.py)
+// ----------------------------------------------------------------------
+
+// Stored role names, and what they mean: Employee = viewer (read, search,
+// chat), Manager = editor (+ upload, projects), Admin = admin (+ members,
+// invites, API keys, audit log). The backend also accepts the aliases.
+export type Role = "Admin" | "Manager" | "Employee";
+export type RoleInput = Role | "admin" | "editor" | "viewer";
+
+export interface Member {
+  id: string;
+  email: string;
+  role: Role;
+  is_active: boolean;
+  is_verified: boolean;
+  created_at: string;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: Role;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  invited_by: string | null;
+  created_at: string;
+  status: "pending" | "accepted" | "revoked" | "expired";
+}
+
+/** Only the create response carries the token -- it is never shown again. */
+export interface InviteCreated extends Invite {
+  token: string;
+  invite_url: string;
+}
+
+export interface InvitePreview {
+  email: string;
+  role: Role;
+  org_name: string;
+  expires_at: string;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  role: Role;
+  user_id: string;
+  is_active: boolean;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+/** Only the create response carries the key -- it is never shown again. */
+export interface ApiKeyCreated extends ApiKey {
+  key: string;
+}
+
+export interface AuditLogItem {
+  id: string;
+  action: string;
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  user_id: string | null;
+  created_at: string;
+}
+
+export interface AuditLogPage {
+  items: AuditLogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditLogFilters {
+  limit?: number;
+  offset?: number;
+  /** Exact action, or a prefix ending in "." such as "member." */
+  action?: string;
+  user_id?: string;
+  since?: string;
+  until?: string;
+}
+
 /**
  * One tool call the agent made while researching an answer.
  *
@@ -312,10 +472,14 @@ export const api = {
   // ---- Authentication ----------------------------------------------
 
   /**
-   * Create an account and a brand-new organization for it.
-   * The first user of an organization automatically becomes its Admin.
+   * Create an account.
+   *
+   * Without an invite token this creates a brand-new organization and makes
+   * the user its Admin. With one (from an invite email's `?invite=` link) it
+   * joins the inviting organization with the role the Admin chose; the email
+   * must be the one the invite was sent to.
    */
-  async signup(email: string, password: string, orgName: string) {
+  async signup(email: string, password: string, orgName: string, inviteToken?: string) {
     return apiFetch<{ id: string; email: string; role: string }>(
       "/auth/signup",
       {
@@ -323,10 +487,97 @@ export const api = {
         body: JSON.stringify({
           email,
           password,
-          org_name: orgName,
+          ...(inviteToken ? { invite_token: inviteToken } : { org_name: orgName }),
         }),
       }
     );
+  },
+
+  /** What an invite link is for, so a signup form can say "Join Acme as Manager". */
+  previewInvite(token: string) {
+    return apiFetch<InvitePreview>(`/auth/invites/${encodeURIComponent(token)}`);
+  },
+
+  /** Always resolves the same way, whether or not the email has an account. */
+  requestPasswordReset(email: string) {
+    return apiFetch<{ detail: string }>("/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  confirmPasswordReset(token: string, newPassword: string) {
+    return apiFetch<{ detail: string }>("/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  },
+
+  verifyEmail(token: string) {
+    return apiFetch<{ detail: string }>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  },
+
+  resendVerification() {
+    return apiFetch<{ detail: string }>("/auth/verify-email/resend", { method: "POST" });
+  },
+
+  // ---- Organization admin (Admin role only) -------------------------
+
+  listMembers() {
+    return apiFetch<Member[]>("/org/members");
+  },
+
+  updateMember(userId: string, changes: { role?: RoleInput; is_active?: boolean }) {
+    return apiFetch<Member>(`/org/members/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  },
+
+  removeMember(userId: string) {
+    return apiFetch<void>(`/org/members/${userId}`, { method: "DELETE" });
+  },
+
+  createInvite(email: string, role: RoleInput = "viewer") {
+    return apiFetch<InviteCreated>("/org/invites", {
+      method: "POST",
+      body: JSON.stringify({ email, role }),
+    });
+  },
+
+  listInvites() {
+    return apiFetch<Invite[]>("/org/invites");
+  },
+
+  revokeInvite(inviteId: string) {
+    return apiFetch<void>(`/org/invites/${inviteId}`, { method: "DELETE" });
+  },
+
+  createApiKey(name: string, role: RoleInput = "viewer", expiresInDays?: number) {
+    return apiFetch<ApiKeyCreated>("/org/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name, role, expires_in_days: expiresInDays ?? null }),
+    });
+  },
+
+  listApiKeys() {
+    return apiFetch<ApiKey[]>("/org/api-keys");
+  },
+
+  revokeApiKey(keyId: string) {
+    return apiFetch<void>(`/org/api-keys/${keyId}`, { method: "DELETE" });
+  },
+
+  listAuditLogs(filters: AuditLogFilters = {}) {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.append(key, String(value));
+    });
+    const query = params.toString();
+    return apiFetch<AuditLogPage>(`/org/audit-logs${query ? `?${query}` : ""}`);
   },
 
   /**
@@ -354,11 +605,38 @@ export const api = {
 
     const data = await response.json();
     setToken(data.access_token);
+    if (data.refresh_token) setRefreshToken(data.refresh_token);
     return data;
   },
 
+  /**
+   * Sign out: forget both tokens here AND ask the backend to revoke them.
+   *
+   * The local part happens first and unconditionally, so the user is signed
+   * out on this device even if the network call fails. The backend call is
+   * best effort (`keepalive` lets it finish while the page navigates away):
+   * it is what makes a COPY of the token stop working too.
+   */
   logout() {
+    const accessToken = getToken();
+    const refreshToken = getRefreshToken();
     clearToken();
+    if (!accessToken && !refreshToken) return;
+    try {
+      void fetch(`${API_V1}/auth/logout`, {
+        method: "POST",
+        keepalive: true,
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }).catch(() => {
+        /* signed out locally regardless */
+      });
+    } catch {
+      /* no fetch available (tests, old browsers): signed out locally */
+    }
   },
 
   // ---- Projects ------------------------------------------------------
@@ -406,12 +684,23 @@ export const api = {
     // field name "files".
     files.forEach((file) => form.append("files", file));
 
-    const token = getToken();
-    const response = await fetch(`${API_V1}/documents/upload`, {
-      method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: form,
-    });
+    const send = () => {
+      const token = getToken();
+      return fetch(`${API_V1}/documents/upload`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+    };
+
+    let response = await send();
+    // Same silent refresh as apiFetch: an upload started just as the access
+    // token expired should not fail.
+    if (response.status === 401) {
+      if (!(await refreshSession())) endSession();
+      response = await send();
+      if (response.status === 401) endSession();
+    }
 
     if (!response.ok) {
       let message = "Upload failed.";

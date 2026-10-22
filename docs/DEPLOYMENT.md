@@ -9,6 +9,9 @@ This guide covers the hosted demo configuration (Neon + Render + Vercel) and the
 - [Deploying the demo](#deploying-the-demo)
 - [Docker image](#docker-image)
 - [Self-hosting with a worker](#self-hosting-with-a-worker)
+- [File storage](#file-storage)
+- [Malware scanning](#malware-scanning)
+- [Backups](#backups)
 - [Production checklist](#production-checklist)
 - [Troubleshooting](#troubleshooting)
 
@@ -30,7 +33,7 @@ Locally, DocMinds runs an API, a Celery worker, Redis and a local PyTorch embedd
 - **`EMBEDDING_PROVIDER=gemini`**: embeddings come from the Gemini API. Render passes this value to the Docker build as well, and the image is built without PyTorch. The CI job *Free-demo image* verifies that this build imports the app without `torch` and stays under 300 MB peak memory.
 - **`INGESTION_MODE=inline`**: the API processes each upload itself after replying, so no worker or Redis is needed. Uploads still return immediately and status still moves from `pending` to `completed`.
 
-A free Render service loses its disk on restart, so original uploaded files are lost. Extracted text and embeddings are stored in Neon, so search and chat keep working; only the file preview is affected. Free services also sleep after 15 minutes idle, so the first request afterwards takes up to a minute.
+A free Render service loses its disk on restart, so with the default `STORAGE_BACKEND=local` original uploaded files are lost. Extracted text and embeddings are stored in Neon, so search and chat keep working; only the file preview is affected. To keep the originals, point the service at an object store (Cloudflare R2 has a free tier): see [File storage](#file-storage). Free services also sleep after 15 minutes idle, so the first request afterwards takes up to a minute.
 
 ## Deploying the demo
 
@@ -83,20 +86,82 @@ docker run -p 8000:8000 \
 To run with background ingestion (`INGESTION_MODE=celery`, the default):
 
 - Provide Redis and set `REDIS_URL_OVERRIDE` (or `REDIS_HOST` / `REDIS_PORT`).
-- Run a worker from the same image or codebase: `celery -A app.core.celery_app worker --loglevel=info`.
-- The API and worker exchange only the document id; the worker reads the uploaded file from `uploads/`. They must therefore share a filesystem (same host or a shared volume).
-- The embedding provider and `EMBEDDING_DIMENSION` must be identical in both processes.
+- Run a worker from the same image or codebase: `celery -A app.core.celery_app worker --loglevel=info`. Use the default prefork pool in production: the ingestion time limits (`INGESTION_SOFT_TIME_LIMIT_SECONDS`, `INGESTION_TIME_LIMIT_SECONDS`) need it.
+- Run exactly one Celery beat process: `celery -A app.core.celery_app beat --loglevel=info` (or add `-B` to a single worker). It sends the recovery sweep every `INGESTION_RECOVERY_INTERVAL_MINUTES`. Without beat the sweep still runs once whenever the API starts.
+- The API and worker exchange only the document id; the worker reads the file through the storage backend. With `STORAGE_BACKEND=local` they must share a filesystem (same host or a shared volume, at `LOCAL_STORAGE_DIR`); with `STORAGE_BACKEND=s3` they need only the same bucket settings.
+- The embedding provider, `EMBEDDING_DIMENSION` and the storage and malware-scan settings must be identical in both processes.
+
+### What happens when ingestion fails
+
+| Failure | Behaviour |
+|---|---|
+| Permanent (corrupt or empty file, unsupported content, zip bomb, malware) | The document is marked `failed` at once with `error_message` set (also copied to `meta_data.error`) |
+| Transient (database or network blip, rate limit, storage or ClamAV unavailable) | The document returns to `pending` and the task is retried with exponential backoff, up to `INGESTION_MAX_RETRIES` times, then marked `failed` |
+| The worker dies mid-job | `acks_late` and `reject_on_worker_lost` return the message to the queue. A claim on the document (one conditional `UPDATE`) makes sure only one run processes it |
+| Redis lost the message, or the API restarted mid-job in inline mode | The recovery sweep re-queues any document `processing` or `pending` for longer than `INGESTION_STALE_AFTER_MINUTES`, or fails it once it has used every attempt |
+| Redis is down at upload time | The upload still succeeds (`202`, status `pending`); the sweep queues it once Redis is back |
+
+## File storage
+
+`STORAGE_BACKEND` chooses where new uploads go. Every file is stored under a key the server generates (`<project_id>/<uuid>.<ext>`); the client's filename is kept only in the database, for display. Each document records the backend it was written to, so switching from `local` to `s3` keeps older files readable from disk while new uploads go to the bucket.
+
+| Provider | Settings |
+|---|---|
+| AWS S3 | `STORAGE_BACKEND=s3`, `S3_BUCKET`, `S3_REGION`; credentials from an IAM role or `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` |
+| Cloudflare R2 | As above with `S3_REGION=auto` and `S3_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com` |
+| MinIO, Backblaze B2 | As above with the provider's `S3_ENDPOINT_URL` |
+
+Keep the bucket private: previews are streamed through the API after its ownership check, so the bucket needs no public access and no CORS rules. The credentials need `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` (for `HeadObject` to report a missing object as 404 rather than 403). Turn on the bucket's default encryption.
+
+## Malware scanning
+
+Set `MALWARE_SCAN=clamav` and point `CLAMAV_HOST` / `CLAMAV_PORT` (or `CLAMAV_SOCKET`) at a clamd daemon, for example the `clamav/clamav` image (`docker compose --profile scan up -d` starts one locally). Every file is streamed to clamd before it is processed:
+
+- **Infected**: the document is marked `failed` with `meta_data.quarantined = true` and the signature name, its bytes are deleted from storage, and the preview endpoint returns `410 Gone`.
+- **clamd unreachable or no verdict**: treated as transient and retried; after the last retry the document fails. A file is never processed unscanned while scanning is on.
+- Set clamd's `StreamMaxLength` at least as high as `MAX_UPLOAD_SIZE_BYTES` (clamd's default is 25 MB); larger files otherwise get no verdict and fail.
+
+## Backups
+
+Two things hold data: Postgres (every row, including the extracted text and the vectors) and the file store (the original uploads). Back both up; neither can be rebuilt from the other. Text and vectors can be regenerated from the originals, but only by re-processing every document.
+
+### Postgres
+
+- **Managed hosts**: Neon keeps point-in-time restore history (the free plan covers a short window; paid plans longer). Check the retention on your plan, and still take a logical backup you control.
+- **Scheduled `pg_dump`**: once a day, in custom format so single tables can be restored, kept off the database host:
+
+  ```bash
+  # e.g. a daily cron job or a scheduled CI workflow
+  pg_dump --format=custom --no-owner --file="docminds-$(date -u +%Y%m%d).dump" "$DATABASE_URL_SYNC"
+  aws s3 cp "docminds-$(date -u +%Y%m%d).dump" "s3://docminds-backups/postgres/"
+  ```
+
+  Use the plain `postgresql://` URL (not the `+asyncpg` form). Keep 7 daily, 4 weekly and 12 monthly dumps, for example with a lifecycle rule on the backup bucket.
+- **Restore** into an empty database with pgvector available: `pg_restore --no-owner --dbname="$TARGET_URL" docminds-YYYYMMDD.dump`, then `alembic upgrade head` (a no-op if the dump is current). Restore into a scratch database regularly; a backup that has never been restored is not known to work.
+
+### Uploaded files
+
+- **`STORAGE_BACKEND=s3`**: enable **bucket versioning**, so an overwritten or deleted object can be recovered, plus a lifecycle rule that expires non-current versions after, for example, 30 days. For protection against losing the account or region, add replication to a second bucket (S3 Cross-Region Replication, or a scheduled `rclone sync` for R2 and others). Object Lock (compliance mode) protects backups from deletion by stolen credentials.
+- **`STORAGE_BACKEND=local`**: back up `LOCAL_STORAGE_DIR` (default `backend/uploads`) on the same schedule as the database, for example with `restic` or `rclone` to an object store. A container's own disk is not a backup.
+- Take the database dump **before** the file backup. A row whose file is missing only breaks its preview; a file without a row is harmless but invisible.
 
 ## Production checklist
 
 | Item | Why |
 |---|---|
-| Set `SECRET_KEY` (for example `openssl rand -hex 32`) | The default in `config.py` is public; anyone could forge tokens |
-| `ENV=production`, `DEBUG=false` | `ENV=production` disables SQL statement echo; `DEBUG` is only reported by `/api/v1/health` |
+| Set `SECRET_KEY` (for example `openssl rand -hex 32`) | The default in `config.py` is public; anyone could forge tokens. With `ENV=production` the API refuses to start on the default or on a key shorter than 32 characters |
+| Set `SMTP_HOST` (and credentials, `EMAIL_FROM`) and `FRONTEND_URL` | Without SMTP, invite, password reset and verification emails are only written to the API log. `FRONTEND_URL` is where their links point |
+| Decide on `REQUIRE_EMAIL_VERIFICATION` | Off by default; turn it on once email delivery works |
+| Run `alembic upgrade head` on deploy | Migration `c3d5e7f9a2b4` adds invites and server-side sessions; refresh tokens issued before it stop working, so users sign in once more. Migration `d4e6f8a0b2c5` adds the document storage and ingestion columns; existing rows are marked `local` |
+| Start uvicorn with `--proxy-headers` behind a proxy | Audit log IP addresses otherwise record the proxy, not the client |
+| `ENV=production`, `DEBUG=false` | `ENV=production` disables SQL statement echo and hides the `/api/v1/tasks` diagnostics (404); `DEBUG` is only reported by `/api/v1/health` |
 | `FRONTEND_ORIGIN` set to the exact frontend URL, including scheme | CORS |
 | `DATABASE_URL` points to Postgres with pgvector | Required for the `vector` column and HNSW index |
 | `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSION` fixed before the first upload | Changing either later requires re-processing every document |
-| Persistent storage for `uploads/` | Needed for file preview and for re-processing |
+| `STORAGE_BACKEND=s3` with a versioned bucket, or persistent storage for `LOCAL_STORAGE_DIR` | Needed for file preview and for re-processing. See [File storage](#file-storage) |
+| A backup schedule for Postgres and the file store | See [Backups](#backups) |
+| One Celery beat process (with `INGESTION_MODE=celery`) | Runs the recovery sweep for documents orphaned by a dead worker |
+| Consider `MALWARE_SCAN=clamav` | Uploaded files are parsed by C libraries and served back through preview. See [Malware scanning](#malware-scanning) |
 
 ## Troubleshooting
 
@@ -108,3 +173,6 @@ To run with background ingestion (`INGESTION_MODE=celery`, the default):
 | First request takes about a minute | Free services sleep after 15 minutes idle | Expected on free plans |
 | Deep research answers "could not finish" with a rate-limit error | Agent mode makes several Groq calls per question | Wait, use Quick answer, or lower `AGENT_MAX_STEPS` |
 | `/api/v1/health` shows `"api_key_configured": false` | `GROQ_API_KEY` not set on the service | Set it and redeploy |
+| API refuses to start: `STORAGE_BACKEND=s3 needs S3_BUCKET` | S3 selected without a bucket | Set `S3_BUCKET`, or `STORAGE_BACKEND=local` |
+| Uploads return `503` "File storage is temporarily unavailable" | The S3 endpoint, credentials or bucket are wrong or unreachable | Check `S3_ENDPOINT_URL`, `S3_REGION` and the credentials' permissions |
+| Document stuck on `processing` | The worker died mid-job | It is re-queued after `INGESTION_STALE_AFTER_MINUTES` by the beat sweep or the next API start |

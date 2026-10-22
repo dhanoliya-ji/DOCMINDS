@@ -34,10 +34,19 @@ WHAT THE STATUS VALUES MEAN
     SUCCESS  finished; `result` holds the return value.
     FAILURE  raised an exception; `result` holds the error.
     RETRY    failed and is being attempted again.
+
+WHO MAY CALL THEM
+-----------------
+Admins only, and NOBODY in production. They let a caller put arbitrary jobs on
+the queue and read any job's result by id -- harmless on a laptop, and nothing
+a production deployment needs exposed. With ENV=production every route here
+answers 404, exactly as if it did not exist.
 """
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.api import deps
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -57,7 +66,22 @@ def _require_worker() -> None:
         )
 
 
-router = APIRouter(dependencies=[Depends(_require_worker)])
+def _not_in_production() -> None:
+    """Hide the diagnostics entirely in production (404, not 403: there is
+    nothing there to be forbidden from)."""
+    if settings.ENV == "production":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+
+# Order matters: production is ruled out before anything else is checked, then
+# the caller must be an Admin, and only then is the worker question asked.
+router = APIRouter(
+    dependencies=[
+        Depends(_not_in_production),
+        Depends(deps.require_admin),
+        Depends(_require_worker),
+    ]
+)
 
 
 @router.post("/trigger-add", status_code=status.HTTP_202_ACCEPTED)

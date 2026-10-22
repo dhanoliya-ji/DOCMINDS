@@ -63,6 +63,59 @@ from pptx import Presentation
 from app.core.config import settings
 from app.services.ocr import OCRService
 
+# Every extension `DocumentExtractor.extract` can dispatch. The upload endpoint
+# accepts exactly these (services/uploads.py), so a format is allowed if and
+# only if there is a parser for it -- the two lists cannot drift apart.
+IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "tiff", "bmp", "gif"})
+SUPPORTED_EXTENSIONS = frozenset(
+    {
+        "pdf", "docx", "pptx", "xlsx", "xls", "html", "htm",
+        "eml", "txt", "md", "markdown", "csv", "zip",
+    }
+    | IMAGE_EXTENSIONS
+)
+
+
+class UnsafeArchiveError(ValueError):
+    """
+    A zip archive broke one of the ZIP_* safety limits.
+
+    A subclass of ValueError, so the ingestion task treats it as PERMANENT
+    (retrying a zip bomb would only detonate it again) and marks the document
+    failed with this message. Unlike ordinary extraction problems it is raised
+    rather than folded into the text -- a bomb must stop the pipeline, not be
+    indexed as "ZIP extraction failed: ...".
+    """
+
+
+class _ZipBudget:
+    """
+    The remaining allowance for one upload, shared by nested archives.
+
+    Shared on purpose: if each nested zip had its own budget, a zip of ten
+    zips would get ten times the limit -- exactly the multiplication trick
+    nested bombs rely on.
+    """
+
+    def __init__(self):
+        self.entries_left = settings.ZIP_MAX_ENTRIES
+        self.bytes_left = settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES
+
+    def take_entry(self) -> None:
+        self.entries_left -= 1
+        if self.entries_left < 0:
+            raise UnsafeArchiveError(
+                f"Archive rejected: more than {settings.ZIP_MAX_ENTRIES} files."
+            )
+
+    def take_bytes(self, count: int) -> None:
+        self.bytes_left -= count
+        if self.bytes_left < 0:
+            raise UnsafeArchiveError(
+                "Archive rejected: it expands to more than "
+                f"{settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES // (1024 * 1024)} MB."
+            )
+
 
 class ExtractionResult:
     """
@@ -134,7 +187,7 @@ class DocumentExtractor:
 
         if file_type == "pdf":
             return cls.extract_pdf(file_path)
-        elif file_type in ["png", "jpg", "jpeg", "tiff", "bmp", "gif"]:
+        elif file_type in IMAGE_EXTENSIONS:
             return cls.extract_image(file_path, file_type)
         elif file_type == "docx":
             return cls.extract_docx(file_path)
@@ -556,7 +609,9 @@ class DocumentExtractor:
     # ==================================================================
 
     @classmethod
-    def extract_zip(cls, file_path: str) -> ExtractionResult:
+    def extract_zip(
+        cls, file_path: str, _depth: int = 1, _budget: "_ZipBudget | None" = None
+    ) -> ExtractionResult:
         """
         Unpack an archive and extract every supported file inside it.
 
@@ -567,9 +622,32 @@ class DocumentExtractor:
 
         Uploading one archive of a whole folder is far more practical than
         uploading forty files individually.
+
+        WHY IT NO LONGER CALLS `extractall()`
+        -------------------------------------
+        An archive is a description written by whoever made it, and every
+        part of that description can lie. `extractall()` trusts all of it.
+        Instead each member is checked, then copied out by hand:
+
+            too many members                  -> whole archive rejected
+            declared or ACTUAL expansion over
+              ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES -> whole archive rejected
+            compression ratio over the limit  -> whole archive rejected
+            an absolute path or ".." in it    -> member skipped
+            encrypted, or a symlink           -> member skipped
+            a zip deeper than the max depth   -> member skipped
+
+        Bytes are COUNTED while being copied, not just read from the header,
+        because the header's size field is the easiest thing in the archive
+        to forge. Members are written under random names, so even a member
+        that slipped past the path checks could not land outside the temp dir.
+
+        `_depth` and `_budget` are internal: 1 is the uploaded archive itself,
+        and the budget is shared with any archive nested inside it.
         """
         texts = []
-        metadata: Dict[str, Any] = {"files_extracted": []}
+        metadata: Dict[str, Any] = {"files_extracted": [], "skipped_entries": []}
+        budget = _budget or _ZipBudget()
         temp_dir = None
 
         try:
@@ -581,41 +659,73 @@ class DocumentExtractor:
             os.makedirs(temp_dir, exist_ok=True)
 
             with zipfile.ZipFile(file_path, "r") as archive:
-                archive.extractall(temp_dir)
+                members = [info for info in archive.infolist() if not info.is_dir()]
 
-            # Formats we know how to read. Anything else inside the archive --
-            # executables, videos, fonts -- is skipped silently.
-            supported = {
-                "pdf", "docx", "pptx", "xlsx", "xls", "html", "htm",
-                "eml", "txt", "md", "markdown", "csv",
-                "png", "jpg", "jpeg", "tiff", "bmp", "gif",
-            }
+                # Cheap checks on what the archive CLAIMS, before unpacking a
+                # single byte. A bomb that is honest about its size is turned
+                # away here; one that lies is caught by the counting below.
+                if len(members) > budget.entries_left:
+                    raise UnsafeArchiveError(
+                        f"Archive rejected: more than {settings.ZIP_MAX_ENTRIES} files."
+                    )
+                declared = sum(info.file_size for info in members)
+                if declared > budget.bytes_left:
+                    raise UnsafeArchiveError(
+                        "Archive rejected: it expands to more than "
+                        f"{settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES // (1024 * 1024)} MB."
+                    )
 
-            # `os.walk` descends into nested folders too, so a zip containing
-            # directories is handled correctly.
-            for root, _, filenames in os.walk(temp_dir):
-                for filename in filenames:
-                    inner_path = os.path.join(root, filename)
-                    extension = os.path.splitext(filename)[1].lstrip(".").lower()
+                for info in members:
+                    budget.take_entry()
+                    display_name = os.path.basename(info.filename.replace("\\", "/"))
+                    extension = os.path.splitext(display_name)[1].lstrip(".").lower()
+                    reason = cls._unsafe_member_reason(info)
 
-                    if extension not in supported:
+                    if reason is None and extension not in SUPPORTED_EXTENSIONS:
+                        # Executables, videos, fonts... skipped silently.
+                        continue
+                    if (
+                        reason is None
+                        and extension == "zip"
+                        and _depth > settings.ZIP_MAX_NESTING_DEPTH
+                    ):
+                        reason = "nested archive too deep"
+                    if reason is not None:
+                        metadata["skipped_entries"].append(f"{info.filename} ({reason})")
                         continue
 
+                    inner_path = os.path.join(temp_dir, f"{uuid.uuid4().hex}.{extension}")
                     try:
-                        # THE RECURSIVE CALL. Each inner file goes back through
-                        # the dispatcher and is handled by its own parser.
-                        result = cls.extract(inner_path, extension)
-                        texts.append(f"--- File: {filename} ---\n{result.text}")
-                        metadata["files_extracted"].append(filename)
+                        cls._copy_member(archive, info, inner_path, budget)
+                        if extension == "zip":
+                            # One level deeper, same shared budget.
+                            result = cls.extract_zip(inner_path, _depth + 1, budget)
+                        else:
+                            # THE RECURSIVE CALL. Each inner file goes back
+                            # through the dispatcher to its own parser.
+                            result = cls.extract(inner_path, extension)
+                        texts.append(f"--- File: {display_name} ---\n{result.text}")
+                        metadata["files_extracted"].append(display_name)
+                    except UnsafeArchiveError:
+                        raise
                     except Exception as inner_error:
                         # One unreadable file must not fail the whole archive.
                         texts.append(
-                            f"--- File: {filename} (extraction failed: {inner_error}) ---"
+                            f"--- File: {display_name} (extraction failed: {inner_error}) ---"
                         )
+                    finally:
+                        # Delete as we go, so disk use never exceeds one member.
+                        try:
+                            os.remove(inner_path)
+                        except OSError:
+                            pass
 
             text = "\n\n=================================\n\n".join(texts)
             metadata["file_count"] = len(metadata["files_extracted"])
 
+        except UnsafeArchiveError:
+            # Not swallowed: the pipeline must stop and say why.
+            raise
         except Exception as exc:
             text = f"ZIP extraction failed: {exc}"
             metadata["error"] = str(exc)
@@ -629,6 +739,66 @@ class DocumentExtractor:
         return ExtractionResult(
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
+
+    @staticmethod
+    def _unsafe_member_reason(info: zipfile.ZipInfo) -> "str | None":
+        """
+        Why this member must not be extracted, or None if it is fine.
+
+        "Zip slip": a member named "../../app/main.py" or "/etc/cron.d/x"
+        would, with a naive extractor, be written OUTSIDE the target folder.
+        We never use member names as paths anyway, but such a name is never
+        legitimate in a document bundle, so it is skipped and recorded.
+
+        A compression ratio over the limit is not skipped but RAISED: that is
+        not a strange file, it is an attack, and the whole archive goes.
+        """
+        name = info.filename.replace("\\", "/")
+        parts = name.split("/")
+        if name.startswith("/") or (len(name) > 1 and name[1] == ":") or ".." in parts:
+            return "unsafe path"
+        # Bit 0 of the flags marks an encrypted member. We have no password,
+        # and zipfile would raise half-way through anyway.
+        if info.flag_bits & 0x1:
+            return "encrypted"
+        # Unix file mode lives in the top 16 bits of external_attr. 0o120000
+        # is a symbolic link -- which could point anywhere on the worker.
+        if (info.external_attr >> 16) & 0o170000 == 0o120000:
+            return "symbolic link"
+        # The ratio is only judged above 1 MB. A small file of repeated text
+        # can legitimately compress 200:1 and is harmless at any ratio; a
+        # bomb is dangerous precisely because it is LARGE once expanded.
+        ratio = info.file_size / max(info.compress_size, 1)
+        if info.file_size > 1024 * 1024 and ratio > settings.ZIP_MAX_COMPRESSION_RATIO:
+            raise UnsafeArchiveError(
+                f"Archive rejected: '{os.path.basename(name)}' is compressed "
+                f"{int(ratio)}:1, over the {settings.ZIP_MAX_COMPRESSION_RATIO}:1 "
+                "limit -- this is how zip bombs are built."
+            )
+        return None
+
+    @staticmethod
+    def _copy_member(
+        archive: zipfile.ZipFile, info: zipfile.ZipInfo, destination: str, budget: "_ZipBudget"
+    ) -> None:
+        """
+        Copy one member out, counting every byte against the budget.
+
+        Also enforces the member's OWN declared size: a member that produces
+        more bytes than its header claimed is lying, and the ratio check above
+        was computed from that lie.
+        """
+        written = 0
+        with archive.open(info) as source, open(destination, "wb") as target:
+            while chunk := source.read(1024 * 1024):
+                written += len(chunk)
+                if written > info.file_size:
+                    raise UnsafeArchiveError(
+                        f"Archive rejected: '{os.path.basename(info.filename)}' "
+                        "is larger than its header declares."
+                    )
+                budget.take_bytes(len(chunk))
+                target.write(chunk)
 
     @staticmethod
     def _remove_tree(directory: str) -> None:

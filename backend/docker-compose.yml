@@ -96,6 +96,33 @@ services:
       timeout: 3s
       retries: 5
 
+  # ==================================================================
+  # CLAMAV -- OPTIONAL malware scanner (MALWARE_SCAN=clamav)
+  # ==================================================================
+  # Not started by a plain `docker compose up`: it sits behind a PROFILE, so
+  # it only runs when asked for:
+  #
+  #     docker compose --profile scan up -d
+  #
+  # and then set MALWARE_SCAN=clamav in backend/.env. The first start
+  # downloads the virus definitions, which takes a minute or two; until then
+  # scans fail and documents are retried (the scan fails CLOSED).
+  clamav:
+    image: clamav/clamav:stable
+    container_name: docminds_clamav
+    profiles: ["scan"]
+    restart: unless-stopped
+    # NOTE: clamd refuses streams larger than its StreamMaxLength (25 MB
+    # unless clamd.conf says otherwise), and a refused stream counts as "no
+    # verdict", so that document fails. To scan up to the 50 MB upload limit,
+    # mount a clamd.conf with `StreamMaxLength 60M` at /etc/clamav/clamd.conf.
+    ports:
+      # clamd's standard port, matching CLAMAV_PORT's default.
+      - "3310:3310"
+    volumes:
+      # Keep downloaded definitions across restarts.
+      - clamav_data:/var/lib/clamav
+
 # ======================================================================
 #  NAMED VOLUMES
 # ----------------------------------------------------------------------
@@ -108,3 +135,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  clamav_data:

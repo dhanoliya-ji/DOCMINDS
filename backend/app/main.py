@@ -39,22 +39,72 @@ THE REQUEST LIFECYCLE
       -> Browser
 """
 
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.documents import router as documents_router
+from app.api.v1.org import router as org_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.search import router as search_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.users import router as users_router
 from app.core.config import settings
+from app.core.upload_limit import UploadSizeLimitMiddleware
+
+
+# ----------------------------------------------------------------------
+# STARTUP: recover documents a previous run left behind
+# ----------------------------------------------------------------------
+async def _recover_on_startup() -> None:
+    """
+    Re-queue documents orphaned by the last shutdown (see
+    `recover_stuck_documents` in tasks/ingestion.py).
+
+    This matters most in INGESTION_MODE=inline, where the jobs run inside this
+    very process: a redeploy in the middle of a job would otherwise leave that
+    document on "processing" for ever. It never raises -- a database that is
+    not reachable yet must not stop the API from starting.
+    """
+    from app.tasks.ingestion import recover_stuck_documents
+
+    try:
+        await recover_stuck_documents()
+    except Exception as exc:
+        print(f"[Startup] Document recovery skipped: {exc}")
+
+
+# Strong reference to the startup job, so it is not garbage-collected while
+# it runs (asyncio itself only keeps a weak one).
+_startup_jobs: set = set()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """
+    Code that runs once when the server starts (before `yield`) and once
+    when it stops (after it).
+
+    The recovery is started in the BACKGROUND rather than awaited: the API
+    begins answering requests -- and health checks -- immediately, instead of
+    waiting on a database query that may take a while to time out.
+    """
+    if settings.INGESTION_RECOVER_ON_STARTUP:
+        job = asyncio.create_task(_recover_on_startup())
+        _startup_jobs.add(job)
+        job.add_done_callback(_startup_jobs.discard)
+    yield
+
 
 # ----------------------------------------------------------------------
 # CREATE THE APPLICATION
 # ----------------------------------------------------------------------
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.PROJECT_NAME,
     description=(
         "A multi-tenant RAG platform. Upload documents in 19 formats, and ask "
@@ -91,6 +141,16 @@ app = FastAPI(
 # Note this is a browser-enforced rule, not a server firewall: tools such as
 # curl and Postman ignore CORS entirely. Real access control is done by the JWT
 # authentication on each endpoint, not here.
+# ----------------------------------------------------------------------
+# UPLOAD SIZE CEILING
+# ----------------------------------------------------------------------
+# Refuses an over-sized upload with 413 before its body is parsed and spooled
+# to disk (see core/upload_limit.py). Added BEFORE the CORS middleware on
+# purpose: Starlette wraps each new middleware around the previous ones, so
+# CORS ends up outermost and adds its headers to this 413 too -- without them
+# the browser would hide the real error behind a CORS failure.
+app.add_middleware(UploadSizeLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -117,6 +177,10 @@ app.include_router(
 )
 app.include_router(
     projects_router, prefix=f"{settings.API_V1_STR}/projects", tags=["Projects"]
+)
+# Members, invites, API keys and the audit log. Admin-only, every endpoint.
+app.include_router(
+    org_router, prefix=f"{settings.API_V1_STR}/org", tags=["Organization admin"]
 )
 
 # --- Document ingestion ---

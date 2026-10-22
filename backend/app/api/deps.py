@@ -7,9 +7,11 @@ Provides the reusable pieces that endpoints declare they NEED, rather than
 build for themselves:
 
     get_db                 an open database session
-    get_current_user       the logged-in user, decoded from the JWT
+    get_current_user       the caller, from a JWT *or* an X-API-Key header
     get_current_active_user  ...and confirmed not to be deactivated
-    RoleChecker            ...and confirmed to hold a specific role
+    require_role("editor") ...and confirmed to hold at least that role
+    require_viewer / require_editor / require_admin   the three ready-made
+    RoleChecker            the older list-based check, kept for compatibility
 
 WHAT "DEPENDENCY INJECTION" MEANS IN FASTAPI
 --------------------------------------------
@@ -34,33 +36,55 @@ By the time your code executes, `current_user` is guaranteed to be a real,
 active user. There is no unauthenticated code path.
 """
 
-from typing import AsyncGenerator, List
+import datetime
+import uuid
+from typing import AsyncGenerator, List, Optional
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import roles, security
 from app.core.config import settings
 from app.db.session import SessionLocal
+from app.models.api_key import APIKey
 from app.models.user import User
 from app.schemas.token import TokenPayload
+from app.services import sessions
 
 # ----------------------------------------------------------------------
-# HOW THE TOKEN IS READ OFF THE REQUEST
+# HOW THE CREDENTIAL IS READ OFF THE REQUEST
 # ----------------------------------------------------------------------
-# This extracts the token from the standard header:
+# Two ways to prove who you are:
 #
-#     Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+#     Authorization: Bearer eyJhbGciOiJIUzI1NiIs...   a person, via login
+#     X-API-Key: dm_Xq3...                            a program, via API key
 #
-# and returns just the token part. If the header is absent it raises 401
-# automatically, before any of our code runs.
+# `auto_error=False` on both: by default each would raise 401 the moment ITS
+# header was missing, which would make the other way impossible. Instead both
+# return None when absent, and `get_current_user` decides.
 #
-# `tokenUrl` does not affect that behaviour at all -- it tells the /docs page
-# which endpoint to call when you click "Authorize", so you can try protected
-# endpoints straight from the browser.
-reusable_oauth2 = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+# `tokenUrl` does not affect behaviour at all -- it tells the /docs page which
+# endpoint to call when you click "Authorize".
+reusable_oauth2 = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False
+)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# How stale `api_keys.last_used_at` may get before a request refreshes it.
+# Writing it on EVERY request would turn every read into a write.
+_LAST_USED_RESOLUTION = datetime.timedelta(minutes=5)
+
+
+def _unauthorized(detail: str) -> HTTPException:
+    # The WWW-Authenticate header is what the HTTP spec asks a 401 to carry.
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -78,17 +102,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def get_current_user(
-    db: AsyncSession = Depends(get_db),
-    token: str = Depends(reusable_oauth2),
-) -> User:
+def decode_access_token(token: str) -> TokenPayload:
     """
-    Verify the JWT and load the user it identifies.
+    Verify an access token's signature, expiry and type, and return its claims.
 
-    Three checks happen here, in order:
-        1. Is the signature valid and the token unexpired?  (jwt.decode)
-        2. Is it an ACCESS token, not a refresh token?
-        3. Does the user it names still exist?
+    Shared by get_current_user and /auth/logout (which needs the jti and the
+    expiry of the very token it is revoking).
     """
     try:
         # `jwt.decode` verifies the signature and the `exp` claim, raising if
@@ -98,24 +117,6 @@ async def get_current_user(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         token_data = TokenPayload(**payload)
-
-        # ---- CRITICAL CHECK ----
-        # Refresh tokens are valid signatures too, but they last SEVEN DAYS.
-        # Accepting one here would let a stolen refresh token be used directly
-        # as an API credential for a week, defeating the entire point of having
-        # short-lived access tokens.
-        if token_data.type != "access":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token type, access token required.",
-            )
-
-        if token_data.sub is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials: sub claim missing.",
-            )
-
     except (JWTError, ValueError):
         # JWTError covers a bad signature, a malformed token and expiry.
         # ValueError covers a payload that does not fit TokenPayload.
@@ -123,22 +124,111 @@ async def get_current_user(
         # Note the message is deliberately vague. Telling an attacker WHICH
         # check failed -- "expired" versus "bad signature" -- hands them free
         # information about how their forgery attempt went wrong.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials: signature invalid or expired.",
+        raise _unauthorized(
+            "Could not validate credentials: signature invalid or expired."
         ) from None
 
-    # The token is genuine, but the user may have been deleted since it was
-    # issued -- a token stays valid for its full lifetime regardless.
-    statement = select(User).where(User.id == token_data.sub)
-    result = await db.execute(statement)
-    user = result.scalar_one_or_none()
+    # ---- CRITICAL CHECK ----
+    # Refresh tokens are valid signatures too, but they last SEVEN DAYS.
+    # Accepting one here would let a stolen refresh token be used directly as
+    # an API credential for a week, defeating the entire point of having
+    # short-lived access tokens.
+    if token_data.type != "access":
+        raise _unauthorized("Invalid token type, access token required.")
 
+    if token_data.sub is None:
+        raise _unauthorized("Could not validate credentials: sub claim missing.")
+
+    return token_data
+
+
+async def _user_from_api_key(db: AsyncSession, raw_key: str) -> User:
+    """
+    Authenticate a program by its API key.
+
+    The key is hashed and looked up -- the plaintext is never stored, so there
+    is nothing else to compare against. The key must be active, not revoked
+    and not expired, and its owner must still exist in the same organization.
+
+    The returned user carries `api_key_role`, so role checks use the LOWER of
+    the key's role and the owner's current role. A "viewer" key stays a viewer
+    key even though an Admin created it.
+    """
+    result = await db.execute(
+        select(APIKey).where(APIKey.hashed_key == security.hash_token(raw_key))
+    )
+    key = result.scalar_one_or_none()
+
+    # One message for every failure, for the same reason as login: the caller
+    # learns nothing about WHICH check their key failed.
+    invalid = _unauthorized("Invalid, expired or revoked API key.")
+    if key is None or not key.is_active or key.revoked_at is not None:
+        raise invalid
+    if sessions.is_expired(key.expires_at):
+        raise invalid
+
+    user = await db.get(User, key.user_id)
+    # Scoped to the key's organization: a key can never reach outside the
+    # tenant it was created in, even if something about its owner changed.
+    if user is None or user.org_id != key.org_id:
+        raise invalid
+
+    user.api_key_role = key.role
+
+    now = sessions.utcnow()
+    last = sessions.as_aware(key.last_used_at)
+    if last is None or now - last > _LAST_USED_RESOLUTION:
+        key.last_used_at = now
+        await db.commit()
+
+    return user
+
+
+async def get_current_user(
+    db: AsyncSession = Depends(get_db),
+    token: Optional[str] = Depends(reusable_oauth2),
+    api_key: Optional[str] = Depends(api_key_header),
+) -> User:
+    """
+    Identify the caller, from an API key or an access token.
+
+    For an access token, these checks happen in order:
+        1. Is the signature valid and the token unexpired?  (jwt.decode)
+        2. Is it an ACCESS token, not a refresh token?
+        3. Has it been signed out (its jti is on the denylist)?
+        4. Does the user it names still exist?
+        5. Was it issued before the user's last password reset?
+    """
+    if api_key:
+        return await _user_from_api_key(db, api_key)
+
+    if not token:
+        raise _unauthorized("Not authenticated.")
+
+    token_data = decode_access_token(token)
+
+    # 3. Signed out. Without this, logout would only forget the token in the
+    # browser while any copy of it kept working until expiry.
+    if await sessions.is_access_token_revoked(db, token_data.jti):
+        raise _unauthorized("This session has been signed out.")
+
+    # 4. The token is genuine, but the user may have been deleted since it was
+    # issued -- a token stays valid for its full lifetime regardless.
+    try:
+        user_id = uuid.UUID(token_data.sub)
+    except ValueError:
+        raise _unauthorized("Could not validate credentials.") from None
+    user = await db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found.",
-        )
+        raise _unauthorized("Could not validate credentials.")
+
+    # 5. A password reset signs out every session that used the old password.
+    # `iat` is fractional (see core/security.py), so this is exact: a token
+    # minted a moment after the reset passes, one minted before it does not.
+    changed = sessions.as_aware(user.password_changed_at)
+    if changed is not None:
+        if token_data.iat is None or token_data.iat < changed.timestamp():
+            raise _unauthorized("Your password was changed. Please sign in again.")
 
     return user
 
@@ -166,6 +256,60 @@ async def get_current_active_user(
     return current_user
 
 
+def effective_role(user: User) -> Optional[str]:
+    """
+    The role this REQUEST acts with.
+
+    Normally just the user's role. For an API-key request it is the lower of
+    the key's role and the owner's role -- see `_user_from_api_key`.
+    """
+    return roles.lower_of(user.role, getattr(user, "api_key_role", None))
+
+
+def require_role(minimum: str):
+    """
+    Build a dependency that admits `minimum` and every role ranked above it.
+
+        current_user: User = Depends(deps.require_role("editor"))
+
+    Accepts the generic names (viewer / editor / admin) or the stored ones
+    (Employee / Manager / Admin) -- see core/roles.py. An unknown name raises
+    at IMPORT time, so a typo can never quietly lock everyone out or let
+    everyone in.
+
+    WHY A FUNCTION THAT RETURNS A FUNCTION
+    A dependency cannot take arguments of its own at request time, so the
+    argument is captured when the endpoint is DEFINED: `require_role("editor")`
+    runs once, at import, and returns the `checker` FastAPI calls on every
+    request.
+    """
+    wanted = roles.normalize_role(minimum)
+
+    async def checker(current_user: User = Depends(get_current_active_user)) -> User:
+        if not roles.at_least(effective_role(current_user), wanted):
+            # 403 Forbidden, NOT 401 Unauthorized:
+            #   401 -- "I do not know who you are."
+            #   403 -- "I know exactly who you are, and you may not do this."
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"This action requires the {wanted} role or higher.",
+            )
+        return current_user
+
+    checker.__name__ = f"require_{wanted.lower()}"
+    return checker
+
+
+# The three ready-made levels. Endpoints use these by name so the intent reads
+# straight off the signature:
+#     viewer  read, search, chat
+#     editor  + upload / delete / re-index documents, manage projects
+#     admin   + members, invites, API keys, audit log
+require_viewer = require_role(roles.VIEWER)
+require_editor = require_role(roles.EDITOR)
+require_admin = require_role(roles.ADMIN)
+
+
 class RoleChecker:
     """
     A dependency that also requires the user to hold one of several roles.
@@ -191,7 +335,7 @@ class RoleChecker:
         treat it as a dependency. Its own parameter is another dependency, so
         authentication and the active check still run first.
         """
-        if current_user.role not in self.allowed_roles:
+        if effective_role(current_user) not in self.allowed_roles:
             # 403 Forbidden, NOT 401 Unauthorized. The distinction is real:
             #   401 -- "I do not know who you are."
             #   403 -- "I know exactly who you are, and you may not do this."

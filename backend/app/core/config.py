@@ -39,7 +39,14 @@ import os
 from typing import List, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The development signing key, committed to the repository on purpose so the
+# project runs with zero setup. Because it is PUBLIC, it must never sign
+# production tokens -- the startup guard at the bottom of `Settings` compares
+# against this exact value.
+_DEFAULT_SECRET_KEY = "7e15291b0f19c25f1b1c55bc6d01e1498b671a532321bc36efc0d8f07df590ad"
 
 
 def _for_asyncpg(url: str) -> str:
@@ -160,7 +167,11 @@ class Settings(BaseSettings):
     # a token and log in as ANY user. The default below is acceptable for local
     # development only. On a real server, generate a fresh one with:
     #     openssl rand -hex 32
-    SECRET_KEY: str = "7e15291b0f19c25f1b1c55bc6d01e1498b671a532321bc36efc0d8f07df590ad"
+    #
+    # With ENV=production the app REFUSES TO START if this is still the
+    # committed default, or shorter than 32 characters. See the validator
+    # `_refuse_weak_secret_in_production` near the bottom of this class.
+    SECRET_KEY: str = _DEFAULT_SECRET_KEY
 
     # HS256 = sign using one shared secret (symmetric signing). Simple and
     # standard for a single backend that both issues and verifies its tokens.
@@ -172,6 +183,52 @@ class Settings(BaseSettings):
     # access token. This is what stops users being logged out every 30 minutes
     # while still keeping the short-lived access token.
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ------------------------------------------------------------------
+    # ACCOUNTS: passwords, invites, reset and verification links
+    # ------------------------------------------------------------------
+    # The shortest password signup and password reset will accept. Length is
+    # the single biggest factor in how long a password resists guessing, far
+    # more than "must contain a symbol" rules, which mostly produce
+    # "Password1!". See `password_problems` in core/security.py for the rules.
+    PASSWORD_MIN_LENGTH: int = 10
+
+    # How long a "reset your password" link works. Short, because the link is
+    # as good as the password for anyone who reads the email.
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # How long a "confirm your email address" link works.
+    EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 48
+
+    # How long an invitation to join an organization stays valid.
+    INVITE_EXPIRE_DAYS: int = 7
+
+    # When True, an account must confirm its email address before it can sign
+    # in. Off by default so local development and the demo work without an
+    # inbox; the verification flow itself always runs either way.
+    REQUIRE_EMAIL_VERIFICATION: bool = False
+
+    # ------------------------------------------------------------------
+    # OUTGOING EMAIL (invites, password reset, email verification)
+    # ------------------------------------------------------------------
+    # Links inside emails point at the FRONTEND, which owns the pages that
+    # read the token out of the URL. Left empty it falls back to the first
+    # FRONTEND_ORIGIN, then to http://localhost:3000 -- see `frontend_url`.
+    FRONTEND_URL: str = ""
+
+    # With SMTP_HOST empty, emails are not sent at all: the "console" sender
+    # writes them to the log instead, so a developer can copy the link from
+    # the terminal. Setting SMTP_HOST switches to real delivery -- see
+    # services/email.py. Nothing else needs to change.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    # STARTTLS on port 587 is the modern default. Set SMTP_USE_SSL instead for
+    # a server that wants TLS from the first byte (usually port 465).
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    EMAIL_FROM: str = "DocMinds <no-reply@docminds.local>"
 
     # ==================================================================
     # 6. OCR -- reading text out of images and scanned PDFs
@@ -346,7 +403,115 @@ class Settings(BaseSettings):
     # 11. FILE UPLOAD LIMITS
     # ==================================================================
     # 50 MB, written as a multiplication so the number stays human-readable.
+    # Enforced PER FILE while the upload is read in chunks (services/uploads.py),
+    # so an oversized file is refused with 413 as soon as it crosses the line,
+    # not after the whole thing has been read into memory.
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024
+
+    # How many files one upload request may carry. Together with the per-file
+    # limit this sets a ceiling on the WHOLE request body, which middleware in
+    # main.py checks before the multipart body is even parsed -- so a 10 GB
+    # POST is turned away at the door instead of being spooled to disk first.
+    MAX_FILES_PER_UPLOAD: int = 20
+
+    # ------------------------------------------------------------------
+    # ZIP SAFETY (services/extractor.py)
+    # ------------------------------------------------------------------
+    # A "zip bomb" is a tiny archive that expands to gigabytes -- 42 KB can
+    # unpack to 4.5 PB. Without limits, one upload fills the worker's disk.
+    # Each of these closes a different variant of that attack:
+    #
+    # most members one archive may hold (millions of empty files is a bomb too)
+    ZIP_MAX_ENTRIES: int = 1000
+    # total bytes ALL members may expand to, counted while actually unpacking
+    # (the sizes an archive declares about itself can be lies)
+    ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES: int = 500 * 1024 * 1024
+    # uncompressed / compressed for any one member. Real documents compress
+    # 2-10x; text maybe 20x. A bomb is in the thousands.
+    ZIP_MAX_COMPRESSION_RATIO: int = 100
+    # How deep archives inside archives are followed. 1 = a zip inside the
+    # uploaded zip is opened; a zip inside THAT is skipped. Recursive nesting
+    # is the classic way to multiply a bomb's expansion.
+    ZIP_MAX_NESTING_DEPTH: int = 1
+
+    # ==================================================================
+    # 12. FILE STORAGE -- where the original uploaded bytes live
+    # ==================================================================
+    #   local -> a directory on this machine's disk (backend/uploads by
+    #            default). Zero setup, but a cloud container's disk is often
+    #            wiped on restart, taking every original with it.
+    #   s3    -> any S3-compatible object store: AWS S3, Cloudflare R2,
+    #            MinIO, Backblaze B2. Survives restarts, can be versioned and
+    #            backed up. Needs `boto3` (in requirements.txt).
+    # See services/storage.py.
+    STORAGE_BACKEND: Literal["local", "s3"] = "local"
+
+    # Empty means backend/uploads. Set an absolute path to put files on a
+    # mounted volume instead.
+    LOCAL_STORAGE_DIR: str = ""
+
+    # Only read when STORAGE_BACKEND=s3. The bucket is required; the others
+    # are optional:
+    #   S3_REGION        e.g. "eu-west-1"; "auto" for Cloudflare R2
+    #   S3_ENDPOINT_URL  empty for AWS; the provider's URL for R2/MinIO/B2,
+    #                    e.g. https://<account>.r2.cloudflarestorage.com
+    #   S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY
+    #                    empty means boto3's normal credential chain (an IAM
+    #                    role, AWS_* environment variables, ~/.aws).
+    #   S3_KEY_PREFIX    prepended to every object key, so one bucket can be
+    #                    shared, e.g. "docminds/".
+    S3_BUCKET: str = ""
+    S3_REGION: str = ""
+    S3_ENDPOINT_URL: str = ""
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_KEY_PREFIX: str = ""
+
+    # ==================================================================
+    # 13. INGESTION DURABILITY -- what happens when processing goes wrong
+    # ==================================================================
+    # A TRANSIENT failure (database blip, embedding API rate limit, object
+    # store timeout) is retried this many times, waiting longer each time:
+    # roughly 2s, 4s, 8s ... capped at the backoff maximum below. A PERMANENT
+    # failure (corrupt file, no text, unsupported type) is not retried at all
+    # -- doing the same thing again would only fail the same way.
+    INGESTION_MAX_RETRIES: int = 3
+    INGESTION_RETRY_BACKOFF_MAX_SECONDS: int = 600
+
+    # Celery kills a task that runs too long. The SOFT limit raises an
+    # exception inside the task so it can record "timed out" on the document;
+    # the HARD limit is the backstop that kills the process if even that hangs.
+    INGESTION_SOFT_TIME_LIMIT_SECONDS: int = 1500
+    INGESTION_TIME_LIMIT_SECONDS: int = 1800
+
+    # A document still "processing" (or "pending") this long after it was last
+    # touched is assumed to be orphaned -- the worker died, the API restarted
+    # mid-job, the queue was flushed -- and is put back on the queue by the
+    # recovery routine. Must be comfortably LONGER than the hard time limit,
+    # or a slow-but-alive job would be started a second time.
+    INGESTION_STALE_AFTER_MINUTES: int = 45
+
+    # How often Celery beat runs the recovery routine. It also runs once when
+    # the API starts, unless INGESTION_RECOVER_ON_STARTUP is false.
+    INGESTION_RECOVERY_INTERVAL_MINUTES: int = 10
+    INGESTION_RECOVER_ON_STARTUP: bool = True
+
+    # ==================================================================
+    # 14. MALWARE SCANNING (optional) -- services/malware.py
+    # ==================================================================
+    #   off    -> no scanning (the default; nothing extra to install)
+    #   clamav -> every upload is streamed to a ClamAV daemon (clamd) before
+    #             it is processed. An infected file is marked failed and
+    #             quarantined, and its bytes are deleted from storage.
+    # If clamd is unreachable the job is retried and finally FAILS -- an
+    # unscanned file is never processed when scanning is switched on.
+    MALWARE_SCAN: Literal["off", "clamav"] = "off"
+    # TCP address of clamd (port 3310 is its standard). CLAMAV_SOCKET, if set,
+    # is a Unix socket path and wins over host/port.
+    CLAMAV_HOST: str = "localhost"
+    CLAMAV_PORT: int = 3310
+    CLAMAV_SOCKET: str = ""
+    CLAMAV_TIMEOUT_SECONDS: int = 60
 
     # ==================================================================
     # DERIVED VALUES
@@ -421,6 +586,97 @@ class Settings(BaseSettings):
         if self.REDIS_URL_OVERRIDE:
             return self.REDIS_URL_OVERRIDE
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @property
+    def frontend_url(self) -> str:
+        """
+        The base URL that links in emails point at, without a trailing slash.
+
+        FRONTEND_URL wins when set. Otherwise the first FRONTEND_ORIGIN is a
+        good guess (it is the deployed frontend), and localhost:3000 is the
+        development default.
+        """
+        if self.FRONTEND_URL:
+            return self.FRONTEND_URL.rstrip("/")
+        for origin in self.FRONTEND_ORIGIN.split(","):
+            if origin.strip():
+                return origin.strip().rstrip("/")
+        return "http://localhost:3000"
+
+    @property
+    def email_backend(self) -> str:
+        """`smtp` when an SMTP server is configured, otherwise `console`."""
+        return "smtp" if self.SMTP_HOST else "console"
+
+    # ------------------------------------------------------------------
+    # STARTUP GUARD
+    # ------------------------------------------------------------------
+    @model_validator(mode="after")
+    def _refuse_weak_secret_in_production(self) -> "Settings":
+        """
+        Refuse to start in production with a guessable SECRET_KEY.
+
+        The default SECRET_KEY above is committed to a public repository, so
+        anybody can read it -- and anybody holding it can sign a token that
+        says "I am the Admin of organization X". In development that does not
+        matter. In production it is a complete authentication bypass, and the
+        failure is silent: everything appears to work perfectly.
+
+        So the app fails LOUDLY instead, at startup, with the fix in the
+        message. Pydantic runs this validator when `Settings()` is created on
+        the last line of this file, which happens before uvicorn or Celery
+        serve a single request.
+        """
+        if self.ENV == "production":
+            if self.SECRET_KEY == _DEFAULT_SECRET_KEY:
+                raise ValueError(
+                    "SECRET_KEY is still the committed development default. "
+                    "Refusing to start with ENV=production. Generate a new "
+                    "one with `openssl rand -hex 32` and set it in the "
+                    "environment."
+                )
+            if len(self.SECRET_KEY) < 32:
+                raise ValueError(
+                    f"SECRET_KEY is only {len(self.SECRET_KEY)} characters. "
+                    "Refusing to start with ENV=production: use at least 32 "
+                    "random characters (`openssl rand -hex 32` gives 64)."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_bucket_for_s3(self) -> "Settings":
+        """
+        STORAGE_BACKEND=s3 without a bucket is a typo, not a choice.
+
+        Caught here, at startup, rather than on the first upload -- where it
+        would surface as a confusing boto3 error long after the deploy looked
+        healthy.
+        """
+        if self.STORAGE_BACKEND == "s3" and not self.S3_BUCKET:
+            raise ValueError("STORAGE_BACKEND=s3 needs S3_BUCKET to be set.")
+        return self
+
+    @property
+    def local_storage_dir(self) -> str:
+        """Where LocalStorage keeps files: LOCAL_STORAGE_DIR, or backend/uploads."""
+        if self.LOCAL_STORAGE_DIR:
+            return os.path.abspath(self.LOCAL_STORAGE_DIR)
+        # config.py -> core -> app -> backend, then /uploads. The same
+        # directory the upload endpoint has always written to.
+        backend_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        return os.path.join(backend_dir, "uploads")
+
+    @property
+    def max_upload_request_bytes(self) -> int:
+        """
+        The ceiling for a whole upload request body.
+
+        Every file at the per-file maximum, plus 1 MB for the multipart
+        boundaries and the small form fields (project id, chunk settings).
+        """
+        return self.MAX_UPLOAD_SIZE_BYTES * self.MAX_FILES_PER_UPLOAD + 1024 * 1024
 
     @property
     def cors_origins(self) -> List[str]:

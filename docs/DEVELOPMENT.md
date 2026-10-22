@@ -50,6 +50,17 @@ celery -A app.core.celery_app worker --loglevel=info   # add --pool=solo on Wind
 
 Both processes are required with the default `INGESTION_MODE=celery`. To run without a worker and Redis, set `INGESTION_MODE=inline`.
 
+Optionally, run Celery beat as well. It sends the recovery sweep that re-queues documents orphaned by a dead worker every `INGESTION_RECOVERY_INTERVAL_MINUTES`. The API also runs the sweep once at startup, so beat is not required for development.
+
+```bash
+celery -A app.core.celery_app beat --loglevel=info
+# or, with a single worker: celery -A app.core.celery_app worker -B --loglevel=info
+```
+
+With `--pool=solo` (Windows) Celery cannot enforce `INGESTION_SOFT_TIME_LIMIT_SECONDS` or `INGESTION_TIME_LIMIT_SECONDS`, because they rely on Unix signals. Retries and recovery still work.
+
+To try malware scanning locally, start ClamAV with `docker compose --profile scan up -d` and set `MALWARE_SCAN=clamav`. The first start downloads virus definitions and takes a minute or two.
+
 Postgres is mapped to host port **5433**, not 5432, to avoid clashing with a local installation. `docker compose down -v` deletes all data.
 
 ### Frontend
@@ -90,7 +101,50 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Informational; the bind address is set by the `uvicorn` command (the Docker image reads `PORT`) |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000`, `http://127.0.0.1:3000` | Always-allowed CORS origins |
 | `FRONTEND_ORIGIN` | *(empty)* | Additional allowed origins, comma-separated (deployed frontend URL) |
-| `MAX_UPLOAD_SIZE_BYTES` | `52428800` (50 MB) | Defined but not currently enforced by the upload endpoint |
+
+### Uploads
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_UPLOAD_SIZE_BYTES` | `52428800` (50 MB) | Per-file limit, counted while the upload is read in 1 MB chunks. Over it: `413` |
+| `MAX_FILES_PER_UPLOAD` | `20` | Files per upload request (`400` above it). With the per-file limit it sets the whole-request ceiling (`MAX_UPLOAD_SIZE_BYTES` x `MAX_FILES_PER_UPLOAD` + 1 MB), which middleware enforces with `413` before the body is parsed |
+| `ZIP_MAX_ENTRIES` | `1000` | Most files one uploaded archive may contain, nested archives included. Over it the archive fails |
+| `ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES` | `524288000` (500 MB) | Most bytes an archive may expand to, counted while unpacking (not trusted from the header) |
+| `ZIP_MAX_COMPRESSION_RATIO` | `100` | Highest uncompressed:compressed ratio for any member larger than 1 MB. Higher means a zip bomb, and the archive fails |
+| `ZIP_MAX_NESTING_DEPTH` | `1` | How many levels of zip-inside-zip are opened. `1` opens a zip inside the upload and skips a zip inside that; `0` skips all nested archives |
+
+### File storage
+
+| Variable | Default | Description |
+|---|---|---|
+| `STORAGE_BACKEND` | `local` | Where new uploads are stored: `local` (disk) or `s3` (any S3-compatible store; needs `boto3`). Each document records its backend, so switching does not orphan older files |
+| `LOCAL_STORAGE_DIR` | *(empty)* | Directory for `local`. Empty means `backend/uploads` |
+| `S3_BUCKET` | *(empty)* | Bucket name. Required when `STORAGE_BACKEND=s3`; the app refuses to start without it |
+| `S3_REGION` | *(empty)* | For example `eu-west-1`, or `auto` for Cloudflare R2. Empty lets boto3 decide |
+| `S3_ENDPOINT_URL` | *(empty)* | Empty for AWS. The provider URL for R2, MinIO or B2 |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | *(empty)* | Empty uses boto3's credential chain (IAM role, `AWS_*` variables, `~/.aws`) |
+| `S3_KEY_PREFIX` | *(empty)* | Prepended to every object key, for example `docminds/` |
+
+### Ingestion durability
+
+| Variable | Default | Description |
+|---|---|---|
+| `INGESTION_MAX_RETRIES` | `3` | Retries for a transient failure (database or network blip, rate limit, storage or scanner unavailable). Permanent failures are not retried |
+| `INGESTION_RETRY_BACKOFF_MAX_SECONDS` | `600` | Cap on the exponential backoff between retries (2 s, 4 s, 8 s, ...) |
+| `INGESTION_SOFT_TIME_LIMIT_SECONDS` | `1500` | A job running longer is stopped and the document marked failed (prefork pool only) |
+| `INGESTION_TIME_LIMIT_SECONDS` | `1800` | Hard limit: the worker process running the job is killed |
+| `INGESTION_STALE_AFTER_MINUTES` | `45` | A document `processing` or `pending` for longer is treated as orphaned and re-queued, or failed once it has used every attempt. Must exceed the hard time limit |
+| `INGESTION_RECOVERY_INTERVAL_MINUTES` | `10` | How often Celery beat runs the recovery sweep |
+| `INGESTION_RECOVER_ON_STARTUP` | `True` | Also run the sweep in the background when the API starts |
+
+### Malware scanning
+
+| Variable | Default | Description |
+|---|---|---|
+| `MALWARE_SCAN` | `off` | `off` or `clamav`. With `clamav`, every file is streamed to clamd before processing; an infected file is failed, flagged `quarantined` and deleted from storage. If clamd is unreachable the job is retried and then fails: an unscanned file is never processed |
+| `CLAMAV_HOST` / `CLAMAV_PORT` | `localhost` / `3310` | clamd's TCP address |
+| `CLAMAV_SOCKET` | *(empty)* | A Unix socket path; overrides host and port when set |
+| `CLAMAV_TIMEOUT_SECONDS` | `60` | Connect and read timeout for one scan |
 
 ### Database and queue
 
@@ -109,10 +163,27 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`) |
+| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`). With `ENV=production` the app refuses to start if it is the committed default or shorter than 32 characters |
 | `ALGORITHM` | `HS256` | JWT signing algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifetime |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifetime; also how long a signed-out token stays on the denylist |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime. Refresh tokens are stored hashed and rotated on every use |
+
+### Accounts and email
+
+| Variable | Default | Description |
+|---|---|---|
+| `PASSWORD_MIN_LENGTH` | `10` | Minimum password length for signup and password reset. Passwords also may not be all digits or equal to the email |
+| `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | `60` | Lifetime of a password reset link (single use) |
+| `EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS` | `48` | Lifetime of an email verification link (single use) |
+| `INVITE_EXPIRE_DAYS` | `7` | Lifetime of an organisation invite |
+| `REQUIRE_EMAIL_VERIFICATION` | `False` | When true, login is refused (`403`) until the email is verified |
+| `FRONTEND_URL` | *(empty)* | Base URL for links in emails (`/login?invite=`, `/reset-password?token=`, `/verify-email?token=`). Empty falls back to the first `FRONTEND_ORIGIN`, then `http://localhost:3000` |
+| `SMTP_HOST` | *(empty)* | Empty: emails are written to the API log (the "console" sender). Set: emails are delivered over SMTP |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | *(empty)* | SMTP credentials; login is skipped when the username is empty |
+| `SMTP_USE_TLS` | `True` | Upgrade the connection with STARTTLS |
+| `SMTP_USE_SSL` | `False` | Use implicit TLS from the first byte (usually port 465) instead of STARTTLS |
+| `EMAIL_FROM` | `DocMinds <no-reply@docminds.local>` | Sender address |
 
 ### OCR
 
@@ -192,9 +263,14 @@ python -m pytest -m "not gemini_live"     # skip the live Gemini test
 
 | Tier | Requires | Covers |
 |---|---|---|
-| Tier 1 | Nothing | Chunking, extraction dispatch, hashing, security, prompts, embeddings, schemas, database URL handling, the agent (scripted model) |
+| Tier 1 | Nothing | Chunking, extraction dispatch, hashing, security, prompts, embeddings, schemas, database URL handling, the agent (scripted model), roles and password policy (`test_access_control.py`) |
+| Tier 1 + 2 (`test_auth_flows.py`) | Nothing for the `[sqlite]` run; Postgres for the `[postgres]` run | Signup and invites, refresh rotation and logout, password reset, email verification, role enforcement, members admin, API keys, audit log, the locked-down task endpoints |
+| Tier 1 (`test_uploads.py`, `test_storage.py`, `test_zip_safety.py`, `test_malware.py`) | Nothing | Filename sanitizing, content sniffing, the streamed size limit, local and S3 storage (against a fake boto3 client), zip-bomb limits, the clamd protocol (against a fake daemon on a loopback socket) |
+| Tier 1 + 2 (`test_ingestion_durability.py`, `test_upload_hardening.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | The claim, retries, quarantine, the recovery sweep, inline retries and the Celery task options; the upload and preview endpoints (`413`, `415`, storage keys, queueing after the commit) |
 | Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, tenant isolation, cascades, the HTTP layer |
 | `gemini_live` marker | `GEMINI_API_KEY` | One call to the real Gemini embedding API |
+
+`test_auth_flows.py`, `test_ingestion_durability.py` and `test_upload_hardening.py` run every test twice (the last two build their SQLite database with `tests/sqlite_harness.py`). The `[sqlite]` run builds the schema from the models in an in-memory SQLite database (via `aiosqlite`) and always runs; it is acceptable there because the account system uses plain rows, not pgvector or JSONB queries. The `[postgres]` run uses the migrated database, which is what checks that the Alembic migration matches the models. Both replace bcrypt with SHA-256 for speed.
 
 Tier 2 tests skip, with a reason, when Postgres is unreachable or pgvector is missing. CI runs them against a pgvector service and fails if any test is skipped. They use the real database rather than SQLite because the queries depend on the `vector` type, the `<=>` operator and JSONB. `tests/test_agent.py` drives the real Pydantic AI agent and tools with a scripted model, so it needs no Groq key.
 
@@ -206,7 +282,7 @@ Tier 2 tests skip, with a reason, when Postgres is unreachable or pgvector is mi
 - Tests share one database, so use names that are unique per test to avoid unique-constraint collisions.
 - Confirm a new test can fail: break the code it covers and check that it goes red.
 
-Known gaps: binary PDF and Office extraction, real OCR engines, multipart upload, the ingestion task as a single run, and live Groq tool calling.
+Known gaps: binary PDF and Office extraction, real OCR engines, a real S3 bucket and a real ClamAV daemon (both are tested against fakes), Celery's own retry scheduling and time limits (the task options are checked, not exercised), and live Groq tool calling.
 
 ### Frontend unit tests (Vitest)
 
@@ -276,7 +352,10 @@ Alembic uses the synchronous psycopg2 URL. Always review a generated migration: 
 |---|---|
 | Chat shows "Demo mode -- no GROQ_API_KEY configured" | Set `GROQ_API_KEY` in `backend/.env`, restart the API, and confirm `/api/v1/health` reports `"api_key_configured": true` |
 | Deep research reports "The AI agent could not finish answering this question" | The exception name is included. `UsageLimitExceeded` means `AGENT_MAX_STEPS` was reached: raise it or narrow the question. A rate-limit error means the Groq quota is exhausted; retry later or use Quick answer. If `AGENT_MODEL` is set, confirm it supports tool calling |
-| Documents stay on Queued | No worker is consuming the queue. Start the Celery worker (with `--pool=solo` on Windows), check Redis with `docker ps`, and test the queue with `POST /api/v1/tasks/trigger-add` |
+| Documents stay on Queued | No worker is consuming the queue. Start the Celery worker (with `--pool=solo` on Windows), check Redis with `docker ps`, and test the queue with `POST /api/v1/tasks/trigger-add`. A document queued while Redis was down is re-queued by the recovery sweep after `INGESTION_STALE_AFTER_MINUTES` |
+| Upload refused with `413` | A file is over `MAX_UPLOAD_SIZE_BYTES`, or the request is over `MAX_UPLOAD_SIZE_BYTES` x `MAX_FILES_PER_UPLOAD`. Raise the setting or split the upload |
+| Upload refused with `415` | The extension is not one the extractor reads, or the bytes do not match it (for example a renamed file, or a text file saved as UTF-16; save it as UTF-8) |
+| Every document fails with "ClamAV returned no verdict" or "Cannot reach ClamAV" | `MALWARE_SCAN=clamav`, but clamd is not running, is still loading definitions, or refused the file as larger than its `StreamMaxLength`. Check `docker compose --profile scan ps` and raise `StreamMaxLength` in `clamd.conf` |
 | `expected 384 dimensions, not 1536` | `EMBEDDING_DIMENSION` does not match the provider, or the provider changed without re-processing. Fix the setting and re-upload affected documents |
 | Search returns nothing | No document is `completed` yet, or all matches score below `RETRIEVAL_MIN_SCORE`. Lower it temporarily (for example `0.05`) and inspect scores in the Search tab |
 | Answers are wrong | Use the Search tab: if the right passage is retrieved, the issue is generation (prompt, model); if not, it is retrieval (chunking, `top_k`, threshold, embeddings) |

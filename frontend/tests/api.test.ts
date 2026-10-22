@@ -28,7 +28,9 @@ import {
   api,
   clearToken,
   getErrorMessage,
+  getRefreshToken,
   getToken,
+  setRefreshToken,
   setToken,
   API_BASE,
 } from "@/lib/api";
@@ -463,5 +465,154 @@ describe("askQuestion", () => {
 
     expect(response.mode).toBe("agent");
     expect(response.steps).toEqual(steps);
+  });
+});
+
+// ======================================================================
+// Sessions: silent refresh and server-side logout
+// ======================================================================
+
+describe("silent refresh on a 401", () => {
+  it("trades the refresh token for a new pair and retries once", async () => {
+    setToken("expired-access");
+    setRefreshToken("the-refresh");
+    const mock = stubFetch(
+      reply(401, { detail: "expired" }),
+      reply(200, { access_token: "new-access", refresh_token: "new-refresh" }),
+      reply(200, [{ id: "p1" }])
+    );
+
+    const projects = await api.listProjects();
+
+    expect(projects).toEqual([{ id: "p1" }]);
+    expect(callUrl(mock, 1)).toContain("/auth/refresh");
+    expect(JSON.parse(callOptions(mock, 1).body)).toEqual({ refresh_token: "the-refresh" });
+    expect(callOptions(mock, 2).headers.Authorization).toBe("Bearer new-access");
+    expect(getToken()).toBe("new-access");
+    expect(getRefreshToken()).toBe("new-refresh");
+  });
+
+  it("signs out when the refresh is refused", async () => {
+    setToken("expired-access");
+    setRefreshToken("revoked-refresh");
+    stubFetch(reply(401, { detail: "expired" }), reply(401, { detail: "revoked" }));
+
+    await expect(api.listProjects()).rejects.toThrow(/session/i);
+    expect(getToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+    expect(window.location.href).toBe("/login");
+  });
+
+  it("does not loop when the retried request is also a 401", async () => {
+    setToken("expired-access");
+    setRefreshToken("the-refresh");
+    const mock = stubFetch(
+      reply(401, {}),
+      reply(200, { access_token: "a", refresh_token: "r" }),
+      reply(401, {})
+    );
+
+    await expect(api.listProjects()).rejects.toThrow(/session/i);
+    expect(mock).toHaveBeenCalledTimes(3);
+  });
+
+  it("shares ONE refresh between simultaneous 401s", async () => {
+    // The backend treats a refresh token presented twice as stolen and ends
+    // the session, so two parallel refreshes would sign the user out.
+    setToken("expired-access");
+    setRefreshToken("the-refresh");
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/auth/refresh")) {
+        return reply(200, { access_token: "new-access", refresh_token: "new-refresh" });
+      }
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      return headers.Authorization === "Bearer new-access" ? reply(200, []) : reply(401, {});
+    });
+    vi.stubGlobal("fetch", mock);
+
+    await Promise.all([api.listProjects(), api.listChatSessions()]);
+
+    const refreshes = mock.mock.calls.filter(([url]) => String(url).includes("/auth/refresh"));
+    expect(refreshes).toHaveLength(1);
+  });
+});
+
+describe("login and logout tokens", () => {
+  it("login stores the refresh token too", async () => {
+    stubFetch(reply(200, { access_token: "a", refresh_token: "the-refresh" }));
+
+    await api.login("ada@example.com", "a-password");
+
+    expect(getRefreshToken()).toBe("the-refresh");
+  });
+
+  it("logout clears both tokens and asks the backend to revoke them", async () => {
+    setToken("the-access");
+    setRefreshToken("the-refresh");
+    const mock = stubFetch(reply(204));
+
+    api.logout();
+
+    expect(getToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+    expect(callUrl(mock)).toContain("/auth/logout");
+    expect(callOptions(mock).headers.Authorization).toBe("Bearer the-access");
+    expect(JSON.parse(callOptions(mock).body)).toEqual({ refresh_token: "the-refresh" });
+  });
+
+  it("logout with nothing stored makes no request", () => {
+    const mock = stubFetch();
+    api.logout();
+    expect(mock).not.toHaveBeenCalled();
+  });
+});
+
+describe("account and admin endpoints", () => {
+  it("signup with an invite sends the token instead of an org name", async () => {
+    const mock = stubFetch(reply(201, { id: "u", email: "a@b.com", role: "Employee" }));
+
+    await api.signup("a@b.com", "a-long-password", "Ignored Org", "invite-token");
+
+    const body = JSON.parse(callOptions(mock).body);
+    expect(body).toEqual({ email: "a@b.com", password: "a-long-password", invite_token: "invite-token" });
+  });
+
+  it("signup without an invite sends the org name", async () => {
+    const mock = stubFetch(reply(201, { id: "u", email: "a@b.com", role: "Admin" }));
+
+    await api.signup("a@b.com", "a-long-password", "Acme");
+
+    expect(JSON.parse(callOptions(mock).body).org_name).toBe("Acme");
+  });
+
+  it("builds the audit log query from only the filters given", async () => {
+    setToken("t");
+    const mock = stubFetch(reply(200, { items: [], total: 0, limit: 20, offset: 40 }));
+
+    await api.listAuditLogs({ limit: 20, offset: 40, action: "member.", user_id: undefined });
+
+    expect(callUrl(mock)).toMatch(/\/org\/audit-logs\?limit=20&offset=40&action=member\.$/);
+  });
+
+  it("asks for a viewer API key by default", async () => {
+    setToken("t");
+    const mock = stubFetch(reply(201, { key: "dm_x" }));
+
+    await api.createApiKey("CI");
+
+    expect(JSON.parse(callOptions(mock).body)).toEqual({
+      name: "CI",
+      role: "viewer",
+      expires_in_days: null,
+    });
+  });
+
+  it("sends password reset confirmation with the backend's field names", async () => {
+    const mock = stubFetch(reply(200, { detail: "ok" }));
+
+    await api.confirmPasswordReset("tok", "a-new-password");
+
+    expect(callUrl(mock)).toContain("/auth/password-reset/confirm");
+    expect(JSON.parse(callOptions(mock).body)).toEqual({ token: "tok", new_password: "a-new-password" });
   });
 });

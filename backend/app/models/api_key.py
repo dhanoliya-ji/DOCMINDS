@@ -35,7 +35,8 @@ someone identify which of their keys is which, without ever revealing one.
 
 import datetime
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -95,6 +96,28 @@ class APIKey(Base):
     # Lets a key be revoked instantly without deleting the row, so its audit
     # history survives.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # The most a request made with this key may do: Employee (viewer),
+    # Manager (editor) or Admin. Capped further at request time by the role of
+    # the user who owns the key, so demoting a person demotes their keys too.
+    # `server_default` gives rows created before this column existed the
+    # safest value rather than NULL.
+    role: Mapped[str] = mapped_column(
+        String(50), default="Employee", server_default="Employee", nullable=False
+    )
+
+    # When the key last authenticated a request, so an Admin can spot keys
+    # nobody uses any more and revoke them. Updated at most every few minutes
+    # to avoid a database write on every single request.
+    last_used_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # When it was revoked. `is_active` says THAT it was; this says WHEN, for
+    # the API keys screen and the audit trail.
+    revoked_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Optional expiry. Nullable means "never expires". Short-lived keys are the
     # safer default for anything handed to a third party.

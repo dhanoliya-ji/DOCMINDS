@@ -65,16 +65,17 @@ Services contain all domain logic and never import FastAPI, so the same function
 |---|---|---|
 | Entry point | `main.py` | Builds the FastAPI app, CORS, mounts routers, `GET /` and `GET /api/v1/health` |
 | `core/` | `config.py` | Every setting, read once from the environment / `backend/.env` via pydantic-settings and validated at startup |
-| | `security.py` | bcrypt password hashing (passlib); JWT creation and decoding with a `type` claim (`access` / `refresh`) |
+| | `security.py` | bcrypt password hashing (passlib); JWT creation with `type`, `jti` and fractional `iat` claims; opaque token and API key generation and SHA-256 hashing; the password policy |
+| | `roles.py` | The role ranking `Admin` (admin) > `Manager` (editor) > `Employee` (viewer), and the generic aliases |
 | | `celery_app.py` | The Celery app; Redis as broker and result backend, `task_track_started`, results expire after 24 h |
 | `db/` | `session.py` | Async engine (asyncpg, `NullPool`) and `SessionLocal` (`expire_on_commit=False`, `autoflush=False`) |
 | | `base_class.py` | Declarative `Base`; derives plural snake_case table names from class names |
-| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint |
-| `models/` | `organization.py`, `user.py`, `project.py`, `document.py`, `chunk.py`, `chat.py`, `api_key.py`, `audit.py` | 11 SQLAlchemy tables, UUID primary keys, cascading foreign keys |
-| `schemas/` | `user.py`, `token.py`, `organization.py`, `project.py`, `document.py` | Pydantic request/response shapes (`Base` / `Create` / `Update` / `Out`); `*Out` use `from_attributes=True` |
+| | `migrations/` | Alembic revisions: initial schema; then `a1b2c3d4e5f6`: `vector` extension, embedding column fixed at `vector(384)` (existing embeddings deleted), HNSW index, per-project dedup constraint; then `c3d5e7f9a2b4`: invites, refresh tokens, access-token denylist, emailed tokens, API key roles, `users.password_changed_at`, audit index |
+| `models/` | `organization.py`, `user.py`, `project.py`, `document.py`, `chunk.py`, `chat.py`, `api_key.py`, `audit.py`, `invite.py`, `refresh_token.py`, `revoked_token.py`, `user_token.py` | 15 SQLAlchemy tables, UUID primary keys, cascading foreign keys |
+| `schemas/` | `user.py`, `token.py`, `organization.py`, `project.py`, `document.py`, `account.py` | Pydantic request/response shapes (`Base` / `Create` / `Update` / `Out`); `*Out` use `from_attributes=True`. `account.py` covers reset, verification, members, invites, API keys and the audit log |
 | | `rag.py` | Search and chat contract: `SearchRequest`, `ChatRequest` (`mode`), `Citation`, `AgentStep`, `ChatResponse`, `FeedbackCreate` |
-| `api/` | `deps.py` | `get_db`, `get_current_user`, `get_current_active_user`, `RoleChecker` |
-| | `v1/auth.py`, `users.py`, `projects.py`, `documents.py`, `search.py`, `chat.py`, `tasks.py` | One router per resource, mounted under `/api/v1` |
+| `api/` | `deps.py` | `get_db`, `get_current_user` (Bearer JWT or `X-API-Key`), `get_current_active_user`, `require_role` / `require_viewer` / `require_editor` / `require_admin`, `RoleChecker` |
+| | `v1/auth.py`, `users.py`, `projects.py`, `documents.py`, `search.py`, `chat.py`, `tasks.py`, `org.py` | One router per resource, mounted under `/api/v1`. `org.py` is the admin-only members, invites, API keys and audit log router |
 | `services/` | `extractor.py` | `DocumentExtractor`: 19 file extensions to text with page markers |
 | | `ocr.py` | `OCRService`: Tesseract, EasyOCR, PaddleOCR or mock |
 | | `chunker.py` | `ChunkerService`: page-aware chunking, token counts via `tiktoken` |
@@ -82,6 +83,9 @@ Services contain all domain logic and never import FastAPI, so the same function
 | | `retrieval.py` | `RetrievalService`: tenant-scoped pgvector search, chat history |
 | | `llm.py` | `LLMService`: numbered-excerpt prompt, Groq call, demo fallback |
 | | `agent.py` | `run_agent`: Pydantic AI agent, its three tools and the citation registry |
+| | `sessions.py` | Refresh-token issue, rotation and revocation; the access-token denylist; single-use emailed tokens |
+| | `audit.py` | `record`: stage an audit row in the caller's transaction |
+| | `email.py` | Invite, reset and verification emails; console sender by default, SMTP when `SMTP_HOST` is set; never raises |
 | `tasks/` | `ingestion.py` | `process_document_task` / `async_process_document`: the ingestion pipeline |
 | | `test.py` | `add_numbers_task`, `dummy_process_document_task`: queue diagnostics |
 
@@ -430,7 +434,7 @@ sequenceDiagram
 
 ## Data model
 
-Eleven tables. Every row traces back to one organisation, which is what makes the `org_id` filter enforceable. Foreign keys cascade on delete, except `audit_logs.user_id`, which is `SET NULL` so the audit trail survives a deleted user.
+Fifteen tables. Every row traces back to one organisation, which is what makes the `org_id` filter enforceable. Foreign keys cascade on delete, except `audit_logs.user_id` and `invites.invited_by`, which are `SET NULL` so the audit trail and pending invites survive a deleted user.
 
 ```mermaid
 erDiagram
@@ -447,6 +451,10 @@ erDiagram
     CHUNKS ||--o{ CHUNK_EMBEDDINGS : "embedded as"
     CHAT_SESSIONS ||--o{ CHAT_MESSAGES : contains
     CHAT_MESSAGES ||--o{ FEEDBACKS : "rated by"
+    ORGANIZATIONS ||--o{ INVITES : sends
+    USERS |o--o{ INVITES : "invited by"
+    USERS ||--o{ REFRESH_TOKENS : "signed in as"
+    USERS ||--o{ USER_TOKENS : "emailed"
 
     ORGANIZATIONS {
         uuid id PK
@@ -460,6 +468,7 @@ erDiagram
         uuid org_id FK
         bool is_active
         bool is_verified
+        datetime password_changed_at
     }
     PROJECTS {
         uuid id PK
@@ -520,8 +529,11 @@ erDiagram
         string hashed_key UK
         uuid user_id FK
         uuid org_id FK
+        string role
         bool is_active
         datetime expires_at
+        datetime last_used_at
+        datetime revoked_at
     }
     AUDIT_LOGS {
         uuid id PK
@@ -531,19 +543,51 @@ erDiagram
         uuid org_id FK
         uuid user_id FK
     }
+    INVITES {
+        uuid id PK
+        uuid org_id FK
+        string email
+        string role
+        string token_hash UK
+        datetime expires_at
+        datetime accepted_at
+        datetime revoked_at
+        uuid invited_by FK
+    }
+    REFRESH_TOKENS {
+        uuid id PK
+        uuid user_id FK
+        string token_hash UK
+        uuid family_id
+        datetime expires_at
+        datetime revoked_at
+    }
+    REVOKED_TOKENS {
+        string jti PK
+        datetime expires_at
+    }
+    USER_TOKENS {
+        uuid id PK
+        uuid user_id FK
+        string purpose
+        string token_hash UK
+        datetime expires_at
+        datetime used_at
+    }
 ```
 
 - `chunk_embeddings.embedding` is declared as `Vector(EMBEDDING_DIMENSION)` in the model, but the database column is `vector(384)`, fixed by migration `a1b2c3d4e5f6` (`EMBEDDING_DIM = 384`), with an HNSW `vector_cosine_ops` index. `EMBEDDING_DIMENSION` must match it; inserting a vector of a different length fails. A provider with a different output size (OpenAI `text-embedding-3-small` is 1536) needs a new Alembic migration that alters the column, then re-processing of every document.
 - `duplicate_hash` (SHA-256 of the file content) is unique per `(project_id, duplicate_hash)`, not globally. The HNSW index, the `vector` extension and this constraint are defined in migration `a1b2c3d4e5f6_rag_vector_index.py`, not in the model files.
 - `documents.meta_data` (JSONB) holds pipeline results: language, word and page counts, chunk count and strategy, embedding model, OCR use, processing time, and `error` when `failed`. The attribute is named `meta_data` because `metadata` is reserved by SQLAlchemy.
 - `chat_messages.citations` (JSONB) stores the citations returned with each answer.
-- `api_keys` and `audit_logs` exist in the schema but no endpoint uses them yet.
+- Every token the server issues other than access tokens -- invite, refresh, reset, verification, API key -- is stored only as a SHA-256 hash. `revoked_tokens` holds access-token `jti`s until the token would have expired; logout prunes expired rows.
+- `audit_logs` has a composite index on `(org_id, created_at)` for the audit log endpoint.
 
 ---
 
 ## Authentication and tenant isolation
 
-Login returns a short-lived access token and a longer-lived refresh token. Every protected endpoint declares `Depends(deps.get_current_active_user)`, so the endpoint body never runs for an invalid token, and queries are filtered by `current_user.org_id`.
+Login returns a short-lived access token and a rotating refresh token. Every protected endpoint declares `Depends(deps.get_current_active_user)` or a role dependency built on it, so the endpoint body never runs for an invalid credential, and queries are filtered by `current_user.org_id`.
 
 ```mermaid
 sequenceDiagram
@@ -554,52 +598,106 @@ sequenceDiagram
     participant PG as Postgres
     B->>AUTH: POST /auth/login as an OAuth2 form, username and password
     AUTH->>PG: load user by email, bcrypt verify_password
+    AUTH->>PG: store SHA-256 of the refresh token, new family, audit user.login
     AUTH-->>B: access_token for 30 min and refresh_token for 7 days
-    B->>B: setToken saves the access token in localStorage
-    B->>API: request with Authorization Bearer token
+    B->>API: request with Authorization Bearer token, or X-API-Key
     API->>DEPS: get_current_user
-    DEPS->>DEPS: jwt.decode with SECRET_KEY and HS256, require type access
-    alt bad signature, expired, or not an access token
-        DEPS-->>B: 401, apiFetch clears the token and redirects to /login
+    alt X-API-Key
+        DEPS->>PG: look up the key by hash; active, unrevoked, unexpired
+        DEPS->>DEPS: effective role is the lower of the key role and the owner role
+    else Bearer token
+        DEPS->>DEPS: jwt.decode with SECRET_KEY and HS256, require type access
+        DEPS->>PG: jti on the revoked_tokens denylist? load User by sub
+        DEPS->>DEPS: refuse if iat is before users.password_changed_at
     end
-    DEPS->>PG: load User by the sub claim
     DEPS->>DEPS: get_current_active_user, 400 if is_active is false
-    opt RoleChecker on POST /projects/
-        DEPS->>DEPS: role must be Admin or Manager, else 403
+    opt require_role on the endpoint
+        DEPS->>DEPS: effective role ranked below the minimum, 403
     end
     API->>PG: query filtered by current_user.org_id
-    PG-->>API: only this organisation's rows
     API-->>B: response
 ```
 
 | | Access token | Refresh token |
 |---|---|---|
 | Lifetime | 30 minutes (`ACCESS_TOKEN_EXPIRE_MINUTES`) | 7 days (`REFRESH_TOKEN_EXPIRE_DAYS`) |
-| Claims | user id, role, `org_id`, `type=access` | user id, `type=refresh` |
+| Claims | user id, role, `org_id`, `type=access`, `jti`, `iat` | user id, `type=refresh`, `jti` |
+| Server state | Denylisted by `jti` on logout | Row in `refresh_tokens` (hash, family, `revoked_at`) |
 | Used for | Every request | `POST /auth/refresh` |
 
+### Signup and invites
+
+- Signup **without** an invite always creates a new organisation and makes the user its Admin. Any `role` in the body is ignored, and `org_id` without an invite is refused with `400`.
+- Joining an existing organisation requires an invite token. An Admin creates the invite for one email address and one role (`POST /org/invites`); the token is emailed and returned once, and only its hash is stored. Signup with the token must use the same email; the role comes from the invite and the account is marked verified. Invites expire after `INVITE_EXPIRE_DAYS`, work once, and can be revoked.
+
+### Roles
+
+| Stored role | Alias | May |
+|---|---|---|
+| `Employee` | viewer | Read projects and documents, search, chat, rate answers |
+| `Manager` | editor | Everything a viewer may, plus upload documents and create projects |
+| `Admin` | admin | Everything an editor may, plus members, invites, API keys, the audit log and the task diagnostics |
+
+`deps.require_role("editor")` admits that role and every role ranked above it; `require_viewer`, `require_editor` and `require_admin` are the three ready-made dependencies. The stored names are unchanged from earlier releases, so existing rows and tokens keep working. Endpoints for deleting and re-indexing documents should use `require_editor`.
+
+### Sessions
+
+- `/auth/refresh` revokes the presented refresh token and issues a new pair in the same family. Presenting an already-revoked token (a rotated or signed-out one) revokes the whole family, ending the session for both the legitimate user and whoever copied the token. Refresh tokens issued before migration `c3d5e7f9a2b4` have no row and are refused.
+- `/auth/logout` denylists the access token's `jti` until its expiry and revokes the refresh token's family. It always returns `204`.
+- A password reset sets `password_changed_at` and revokes every refresh token, so all existing sessions end. Deactivating or removing a member also revokes their refresh tokens; `is_active` stops their access tokens immediately.
+
+### Passwords and email
+
+- Policy (`security.password_problems`): at least `PASSWORD_MIN_LENGTH` (10) characters, not all digits, not the email address or its local part. Violations return `422` listing every problem.
+- `POST /auth/password-reset/request` returns the same `202` body whether or not the email exists, and sends the email after the response. The single-use link expires after `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES`.
+- A self-service signup receives a verification link; `REQUIRE_EMAIL_VERIFICATION=true` makes login wait for it.
+- Emails go to the API log unless `SMTP_HOST` is set. A sending failure is logged and never fails the request.
+
+### API keys
+
+Admins create keys with a name, a role (default viewer, never above their own) and an optional expiry. The key (`dm_...`) is returned once; the database keeps a 12-character prefix and the SHA-256 hash. Requests send it as `X-API-Key`. The request acts as the key's owner, scoped to the key's organisation, with the lower of the key's role and the owner's current role. `last_used_at` is updated at most every five minutes.
+
+### Audit log
+
+`services/audit.record` stages a row in the same transaction as the change it describes. Actions written: `user.signup`, `user.login`, `user.login_failed`, `user.logout`, `user.email_verified`, `password.reset_requested`, `password.reset`, `invite.create`, `invite.revoke`, `invite.accept`, `member.role_change`, `member.deactivate`, `member.reactivate`, `member.remove`, `document.upload`, `api_key.create`, `api_key.revoke` (and `document.delete` for a delete endpoint, which should call `audit.record` the same way). `GET /org/audit-logs` pages through them newest first with `limit`, `offset`, `action` (exact, or a prefix ending in `.`), `user_id`, `since` and `until`. The IP is `request.client.host`, so run uvicorn with `--proxy-headers` behind a proxy.
+
+### Other rules
+
 - The `type` claim is checked, so a refresh token cannot be used as an access token.
-- An invalid, expired or wrong-type token returns `401`; an inactive account `400`; a role not admitted by `RoleChecker` `403`.
-- A row owned by another user or organisation returns `404`, not `403`, so its existence is not revealed.
-- `RoleChecker(["Admin", "Manager"])` currently guards only `POST /projects/`.
+- An invalid, expired, signed-out or wrong-type credential returns `401`; an inactive account `400`; a role below the endpoint's minimum `403`.
+- A row owned by another user or organisation returns `404`, not `403`, so its existence is not revealed. This includes members, invites and API keys on the admin endpoints.
 - Path ids are typed `uuid.UUID`, so a malformed id is rejected with `422` before any query runs.
-- Response models filter output, so fields such as `hashed_password` cannot reach a client.
-- The frontend does not call `/auth/refresh`; when the access token expires the user is returned to `/login`.
+- Response models filter output, so fields such as `hashed_password`, token hashes and API key hashes cannot reach a client.
+- With `ENV=production`, the app refuses to start if `SECRET_KEY` is the committed default or shorter than 32 characters, and `/api/v1/tasks/*` returns `404`. Elsewhere those diagnostics require an Admin.
+- The frontend (`lib/api.ts`) stores both tokens. On a `401` it calls `/auth/refresh` once, through a single shared in-flight promise so simultaneous `401`s cannot present the same refresh token twice (which the backend would treat as theft), then retries the request; if the refresh fails the user is returned to `/login`. Signing out clears both tokens locally and calls `/auth/logout`. `lib/api.ts` also has typed methods for every new account and admin endpoint, but there are no screens for invites, password reset, email verification, members, API keys or the audit log yet.
 
 ---
 
 ## API surface
 
-Interactive OpenAPI docs are served at `/docs`. Everything except signup, login, refresh, the health checks and the `tasks` diagnostics requires `Authorization: Bearer <token>`.
+Interactive OpenAPI docs are served at `/docs`. Everything except signup, login, refresh, logout, invite preview, password reset, email verification and the health checks requires `Authorization: Bearer <token>` or `X-API-Key: <key>`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/v1/auth/signup` | Create a user; with `org_name` also creates an organisation the user administers, with `org_id` joins one |
+| `POST` | `/api/v1/auth/signup` | Create a user. Without `invite_token`: a new organisation (optional `org_name`) with the user as Admin. With `invite_token`: join the inviting organisation with the invited role |
 | `POST` | `/api/v1/auth/login` | OAuth2 password form (`username`, `password`), returns access and refresh tokens |
-| `POST` | `/api/v1/auth/refresh` | Exchange a refresh token for a new pair |
+| `POST` | `/api/v1/auth/refresh` | Rotate a refresh token for a new pair |
+| `POST` | `/api/v1/auth/logout` | Denylist the bearer access token and revoke the refresh token in the body (`refresh_token`); always `204` |
+| `GET` | `/api/v1/auth/invites/{token}` | Invite preview: email, role, organisation name, expiry |
+| `POST` | `/api/v1/auth/password-reset/request` | Email a reset link (`email`); same `202` whether or not the account exists |
+| `POST` | `/api/v1/auth/password-reset/confirm` | Set a new password (`token`, `new_password`); ends all sessions |
+| `POST` | `/api/v1/auth/verify-email` | Confirm an email address (`token`) |
+| `POST` | `/api/v1/auth/verify-email/resend` | Send a new verification email to the signed-in user |
 | `GET` | `/api/v1/users/me` | The current user |
-| `GET` / `POST` | `/api/v1/projects/` | List projects / create one (Admin or Manager) |
-| `POST` | `/api/v1/documents/upload` | Multipart upload (`project_id`, `files`, optional chunk options); returns `202` with `pending` rows |
+| `GET` / `POST` | `/api/v1/projects/` | List projects / create one (editor or admin) |
+| `GET` | `/api/v1/org/members` | Members of the organisation (admin) |
+| `PATCH` / `DELETE` | `/api/v1/org/members/{id}` | Change `role` / `is_active`, or remove a member (admin; not yourself, never the last admin) |
+| `POST` / `GET` | `/api/v1/org/invites` | Invite an email with a role (token returned once) / list invites with status (admin) |
+| `DELETE` | `/api/v1/org/invites/{id}` | Revoke a pending invite (admin) |
+| `POST` / `GET` | `/api/v1/org/api-keys` | Create a key (`name`, `role`, `expires_in_days`; key returned once) / list keys (admin) |
+| `DELETE` | `/api/v1/org/api-keys/{id}` | Revoke a key (admin) |
+| `GET` | `/api/v1/org/audit-logs` | Audit entries, newest first; `limit`, `offset`, `action`, `user_id`, `since`, `until` (admin) |
+| `POST` | `/api/v1/documents/upload` | Multipart upload (`project_id`, `files`, optional chunk options), editor or admin; returns `202` with `pending` rows |
 | `GET` | `/api/v1/documents/?project_id=` | Documents with status and processing metadata |
 | `GET` | `/api/v1/documents/{id}/preview` | The original file |
 | `POST` | `/api/v1/search/` | Semantic search only: chunks with scores, no LLM |
@@ -608,8 +706,8 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `POST` | `/api/v1/chat/sessions/{id}/messages` | Ask a question: `message` (1-4000 chars), optional `top_k` (1-20), optional `mode` (`rag` or `agent`) |
 | `DELETE` | `/api/v1/chat/sessions/{id}` | Delete a conversation |
 | `POST` | `/api/v1/chat/messages/{id}/feedback` | Rate an answer (`1` or `-1`) |
-| `POST` | `/api/v1/tasks/trigger-add`, `/api/v1/tasks/trigger-document` | Queue diagnostics (`503` in inline mode) |
-| `GET` | `/api/v1/tasks/status/{task_id}` | Celery task state |
+| `POST` | `/api/v1/tasks/trigger-add`, `/api/v1/tasks/trigger-document` | Queue diagnostics (admin; `503` in inline mode; `404` with `ENV=production`) |
+| `GET` | `/api/v1/tasks/status/{task_id}` | Celery task state (admin; `404` with `ENV=production`) |
 | `GET` | `/`, `/api/v1/health` | Liveness and configuration report (LLM provider, model, whether a key is configured, embedding settings) |
 
 Search and chat are deliberately separate: search shows exactly what retrieval returned, which distinguishes a retrieval problem from a generation problem.

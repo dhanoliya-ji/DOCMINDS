@@ -20,7 +20,8 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Semantic search:** page-aware chunking, configurable embeddings (local, OpenAI, Gemini) and HNSW-indexed cosine search in pgvector.
 - **Grounded answers:** every answer cites numbered excerpts mapped to file and page; weak matches are discarded so the system can say it does not know.
 - **Two chat modes:** a single-pass RAG pipeline, or a Pydantic AI agent with search, list and read tools.
-- **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search.
+- **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search. Existing organisations can only be joined by invite.
+- **Access control:** viewer, editor and admin roles; member management, invites, API keys and an audit log for admins; rotating refresh tokens, server-side logout, password reset and email verification.
 - **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments.
 - **Runs offline:** deterministic mock providers for OCR, embeddings and the LLM allow development and testing without API keys.
 
@@ -141,7 +142,8 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `INGESTION_MODE` | `celery` | `celery` (worker) or `inline` (API processes uploads) |
 | `DATABASE_URL` | *(empty)* | Postgres connection string; overrides `POSTGRES_*` |
 | `REDIS_URL_OVERRIDE` | *(empty)* | Redis URL; overrides `REDIS_HOST` / `REDIS_PORT` |
-| `SECRET_KEY` | development value | JWT signing key; must be replaced in any deployment |
+| `SECRET_KEY` | development value | JWT signing key; must be replaced in any deployment (the app will not start with `ENV=production` and the default) |
+| `SMTP_HOST` | *(empty)* | SMTP server for invite, reset and verification emails; empty writes them to the log |
 
 The complete reference, including OCR, retrieval and chunking settings, is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference).
 

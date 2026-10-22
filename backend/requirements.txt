@@ -121,6 +121,16 @@ pydantic-ai-slim[groq]==1.107.9
 #            paid OpenAI embeddings instead of the free local model.
 openai==3.31.0
 
+# boto3 : OPTIONAL. Only used when STORAGE_BACKEND=s3, to keep uploaded files
+#            in an S3-compatible object store (AWS S3, Cloudflare R2, MinIO,
+#            Backblaze B2) instead of on the server's disk.
+#
+#            Imported lazily inside services/storage.py, so with the default
+#            STORAGE_BACKEND=local it is never loaded, and the app still starts
+#            if it is missing. (The optional ClamAV scan needs no package at
+#            all: services/malware.py speaks clamd's protocol over a socket.)
+boto3==1.43.92
+
 # ---- TESTING ---------------------------------------------------------
 # Needed only to RUN the test suite, never by the application itself.
 # They are listed here rather than in a separate requirements-dev.txt so that
@@ -142,3 +152,11 @@ pytest-asyncio==1.4.0
 #            (It also arrives as a dependency of the groq and openai clients;
 #            it is pinned here because the tests import it directly.)
 httpx==0.28.1
+
+# aiosqlite : an async SQLite driver, used ONLY by tests/test_auth_flows.py.
+#            The account system (signup, sessions, invites, API keys, audit)
+#            is plain rows -- no pgvector, no JSONB queries -- so those flows
+#            also run against an in-memory SQLite database. That keeps the
+#            whole auth system covered by `SKIP_DB_TESTS=1 pytest` on a
+#            machine with no Docker; CI runs the same tests on Postgres too.
+aiosqlite==0.21.0

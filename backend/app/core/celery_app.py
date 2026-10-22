@@ -83,6 +83,26 @@ celery_app.conf.update(
     # its memory.
     result_expires=86400,
 
+    # ---- Durability ----
+    # Fetch ONE message at a time. By default a worker grabs several in
+    # advance; combined with acks_late (set on the ingestion task) a crashed
+    # worker would then strand every pre-fetched document until Redis's
+    # visibility timeout passed. With one at a time, only the job actually
+    # running is affected.
+    worker_prefetch_multiplier=1,
+
+    # ---- Periodic jobs (Celery BEAT) ----
+    # Beat is a tiny scheduler process that sends a task on a timer, like
+    # cron. Here it sends the sweep that finds documents orphaned by a dead
+    # worker and puts them back on the queue (tasks/ingestion.py). Start it
+    # with `celery ... beat`, or `worker -B` when there is a single worker.
+    beat_schedule={
+        "recover-stuck-documents": {
+            "task": "app.tasks.ingestion.recover_stuck_documents_task",
+            "schedule": settings.INGESTION_RECOVERY_INTERVAL_MINUTES * 60.0,
+        },
+    },
+
     # Explicitly import the tasks package on worker start-up. A task the worker
     # has never imported is not registered, and any job for it fails with
     # "Received unregistered task" -- a genuinely confusing error, because the

@@ -5,7 +5,7 @@ WHAT THIS FILE DOES
 -------------------
 Endpoints for getting files into the system and back out again.
 
-    POST /documents/upload              upload one or more files
+    POST /documents/upload              upload one or more files (editor+)
     GET  /documents/?project_id=...     list a project's documents + status
     GET  /documents/{id}/preview        download the original file
 
@@ -21,12 +21,13 @@ eventually time out on a large scan.
 So this endpoint does only the fast part:
 
     1. validate the project and the caller's access to it
-    2. hash the bytes and check for a duplicate
-    3. work out the version number
-    4. write the file to disk
-    5. create a Document row with status "pending"
-    6. drop a job id onto the Redis queue
-    7. reply immediately
+    2. VALIDATE every file: size (413), type and content (415), safe name
+    3. hash the bytes and check for a duplicate
+    4. work out the version number
+    5. store the file (local disk or S3) under a server-chosen key
+    6. create a Document row with status "pending"
+    7. commit, THEN drop a job id onto the Redis queue
+    8. reply immediately
 
 A Celery worker then does the real work (see tasks/ingestion.py), and the
 frontend polls the list endpoint until `status` reads "completed".
@@ -41,12 +42,27 @@ work is never repeated for a file the project already has.
 
 VERSIONING -- uploading a file whose NAME already exists stores it as version
 2, 3 and so on rather than overwriting. Nothing is silently lost.
+
+WHAT THE UPLOAD REFUSES, AND WITH WHICH STATUS
+----------------------------------------------
+    400  no files' worth of usable names, an empty file, too many files
+    413  a file over MAX_UPLOAD_SIZE_BYTES -- or a whole request over the
+         ceiling, which middleware in main.py refuses before it is parsed
+    415  an extension extractor.py cannot read, or bytes that do not match
+         the extension (a renamed .exe called report.pdf)
+    503  the storage backend is unreachable
+
+One bad file refuses the whole request, and nothing is stored: every file is
+validated before any of them is written. See services/uploads.py for the
+checks and services/storage.py for where the bytes go.
 """
 
-import hashlib
+import asyncio
+import mimetypes
 import os
 import uuid
 from typing import List
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -55,10 +71,11 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,20 +85,18 @@ from app.models.project import Project
 from app.models.user import User
 from app.schemas.document import DocumentOut
 from app.core.config import settings
-from app.tasks.ingestion import async_process_document, process_document_task
+from app.services import audit, uploads
+from app.services.storage import (
+    LocalStorage,
+    Storage,
+    StorageError,
+    StorageObjectNotFound,
+    get_storage,
+    new_key,
+)
+from app.tasks.ingestion import process_document_task, run_inline_ingestion
 
 router = APIRouter()
-
-# Where uploaded files are written: backend/uploads/.
-#
-# Built by walking up from this file (api/v1/ -> api/ -> app/ -> backend/) and
-# resolved to an absolute path, so it does not depend on which directory the
-# server was launched from.
-UPLOAD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "uploads")
-)
-# `exist_ok=True` so a restart does not fail on an existing directory.
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @router.post(
@@ -92,6 +107,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def upload_documents(
     # Injected by FastAPI. Used only when INGESTION_MODE is "inline".
     background_tasks: BackgroundTasks,
+    # The raw request, only so the audit entry can record the caller's IP.
+    request: Request,
     # `Form(...)` and `File(...)` rather than a JSON body, because file uploads
     # use multipart/form-data -- JSON cannot carry binary data.
     project_id: uuid.UUID = Form(...),
@@ -102,7 +119,9 @@ async def upload_documents(
     chunk_size: int = Form(500),
     chunk_overlap: int = Form(50),
     db: AsyncSession = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_active_user),
+    # Uploading changes what everyone in the organization searches, so it
+    # needs the editor role (Manager) or above. Viewers get 403.
+    current_user: User = Depends(deps.require_editor),
 ):
     """
     Accept one or more files and queue them for background processing.
@@ -132,122 +151,187 @@ async def upload_documents(
             detail="You do not have permission to upload to this project.",
         )
 
-    processed_docs = []
-    skipped_duplicates = []
-
-    for file in files:
-        # Read the whole file into memory. Fine for the 50 MB documents this
-        # app targets; a system handling multi-gigabyte files would need to
-        # stream to disk in chunks instead.
-        content = await file.read()
-
-        # ------------------------------------------------------------------
-        # 2. DEDUPLICATION
-        # ------------------------------------------------------------------
-        # SHA-256 of the CONTENT, so a renamed copy is still detected.
-        sha256_hash = hashlib.sha256(content).hexdigest()
-
-        statement_dup = select(Document).where(
-            Document.project_id == project_id,
-            Document.duplicate_hash == sha256_hash,
-        )
-        result_dup = await db.execute(statement_dup)
-
-        if result_dup.scalar_one_or_none():
-            # Already present in THIS project. Skip it rather than repeating
-            # the expensive OCR and embedding work.
-            print(f"[Upload] Skipping duplicate file: {file.filename}")
-            skipped_duplicates.append(file.filename)
-            continue
-
-        # ------------------------------------------------------------------
-        # 3. VERSIONING
-        # ------------------------------------------------------------------
-        # Same name, different contents (the hash check above already ruled out
-        # an identical file) means this is a revision. Find the highest version
-        # so far and add one.
-        statement_version = select(func.max(Document.version)).where(
-            Document.project_id == project_id,
-            Document.filename == file.filename,
-        )
-        result_version = await db.execute(statement_version)
-        # `or 0` because max() returns NULL when there are no matching rows,
-        # which arrives in Python as None.
-        max_version = result_version.scalar() or 0
-        new_version = max_version + 1
-
-        # ------------------------------------------------------------------
-        # 4. WRITE TO DISK
-        # ------------------------------------------------------------------
-        extension = os.path.splitext(file.filename)[1].lstrip(".").lower()
-
-        # A uuid prefix so two users uploading "report.pdf" cannot overwrite
-        # each other. The original name is preserved in the database column.
-        unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
-
-        with open(file_path, "wb") as handle:
-            handle.write(content)
-
-        # ------------------------------------------------------------------
-        # 5. CREATE THE DATABASE RECORD
-        # ------------------------------------------------------------------
-        document = Document(
-            filename=file.filename,
-            file_type=extension,
-            file_size=len(content),
-            file_path=file_path,
-            # The worker moves this through processing -> completed | failed.
-            status="pending",
-            duplicate_hash=sha256_hash,
-            version=new_version,
-            meta_data={
-                "original_filename": file.filename,
-                # The worker reads these back when it chunks the document.
-                "chunk_strategy": chunk_strategy,
-                "chunk_size": chunk_size,
-                "chunk_overlap": chunk_overlap,
-            },
-            project_id=project_id,
-        )
-        db.add(document)
-        # `flush` assigns document.id, which the Celery job needs, without
-        # committing yet.
-        await db.flush()
-
-        # ------------------------------------------------------------------
-        # 6. QUEUE THE BACKGROUND JOB
-        # ------------------------------------------------------------------
-        # `.delay()` does NOT run the function. It serialises the argument,
-        # pushes a message onto Redis and returns instantly. A worker process
-        # picks it up and runs the real pipeline there.
-        #
-        # INGESTION_MODE=inline has no worker: the job is scheduled further
-        # down, once the commit has made the row visible to its own session.
-        if settings.INGESTION_MODE == "celery":
-            process_document_task.delay(str(document.id))
-
-        processed_docs.append(document)
-
-    # Every file was a duplicate, so there is nothing to report on.
-    if not processed_docs:
+    if len(files) > settings.MAX_FILES_PER_UPLOAD:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "No files processed. All uploaded files were detected as "
-                f"duplicates: {', '.join(skipped_duplicates)}"
-            ),
+            detail=f"At most {settings.MAX_FILES_PER_UPLOAD} files can be uploaded at once.",
         )
 
-    await db.commit()
+    # ------------------------------------------------------------------
+    # 2. VALIDATE EVERY FILE BEFORE STORING ANY OF THEM
+    # ------------------------------------------------------------------
+    # Each file is copied to a temporary file in 1 MB chunks, counted
+    # (413 the moment it is too big), hashed, and content-sniffed (415 if
+    # the bytes do not match the extension). See services/uploads.py.
+    #
+    # All files are checked FIRST, so one bad file in a batch of ten is
+    # refused before anything has been stored or written to the database --
+    # the request either succeeds as a whole or changes nothing.
+    spooled: list[uploads.SpooledUpload] = []
+    stored: list[tuple[Storage, str]] = []
+    try:
+        for file in files:
+            try:
+                spooled.append(
+                    await uploads.spool_upload(file, settings.MAX_UPLOAD_SIZE_BYTES)
+                )
+            except uploads.UploadRejected as rejected:
+                raise HTTPException(
+                    status_code=rejected.status_code, detail=rejected.message
+                ) from rejected
+
+        storage = get_storage()
+        processed_docs = []
+        skipped_duplicates = []
+        # Hashes accepted earlier in THIS request. The database check below
+        # cannot see them yet in every case, and two identical files in one
+        # upload would otherwise collide on the (project, hash) unique index.
+        seen_hashes: set[str] = set()
+
+        for item in spooled:
+            # --------------------------------------------------------------
+            # 3. DEDUPLICATION
+            # --------------------------------------------------------------
+            # SHA-256 of the CONTENT, so a renamed copy is still detected.
+            statement_dup = select(Document).where(
+                Document.project_id == project_id,
+                Document.duplicate_hash == item.sha256,
+            )
+            result_dup = await db.execute(statement_dup)
+
+            if item.sha256 in seen_hashes or result_dup.scalar_one_or_none():
+                # Already present in THIS project. Skip it rather than
+                # repeating the expensive OCR and embedding work.
+                print(f"[Upload] Skipping duplicate file: {item.filename}")
+                skipped_duplicates.append(item.filename)
+                continue
+            seen_hashes.add(item.sha256)
+
+            # --------------------------------------------------------------
+            # 4. VERSIONING
+            # --------------------------------------------------------------
+            # Same name, different contents (the hash check above already
+            # ruled out an identical file) means this is a revision. Find the
+            # highest version so far and add one. The name compared is the
+            # SANITIZED one, which is also the one stored.
+            statement_version = select(func.max(Document.version)).where(
+                Document.project_id == project_id,
+                Document.filename == item.filename,
+            )
+            result_version = await db.execute(statement_version)
+            # `or 0` because max() returns NULL when there are no matching
+            # rows, which arrives in Python as None.
+            max_version = result_version.scalar() or 0
+            new_version = max_version + 1
+
+            # --------------------------------------------------------------
+            # 5. STORE THE BYTES
+            # --------------------------------------------------------------
+            # Under a key the server invents -- "<project>/<uuid>.<ext>" --
+            # never the client's filename (see services/storage.py). On a
+            # thread, because copying 50 MB or uploading it to S3 blocks.
+            key = new_key(project_id, item.extension)
+            try:
+                await asyncio.to_thread(storage.save, key, item.path)
+            except StorageError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="File storage is temporarily unavailable. Please try again.",
+                ) from exc
+            stored.append((storage, key))
+
+            # --------------------------------------------------------------
+            # 6. CREATE THE DATABASE RECORD
+            # --------------------------------------------------------------
+            document = Document(
+                filename=item.filename,
+                file_type=item.extension,
+                file_size=item.size,
+                file_path=key,
+                storage_backend=storage.name,
+                # The worker moves this through processing -> completed | failed.
+                status="pending",
+                duplicate_hash=item.sha256,
+                version=new_version,
+                meta_data={
+                    "original_filename": item.filename,
+                    # The worker reads these back when it chunks the document.
+                    "chunk_strategy": chunk_strategy,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
+                },
+                project_id=project_id,
+            )
+            db.add(document)
+            # `flush` assigns document.id without committing yet.
+            await db.flush()
+
+            # Staged in the same transaction as the Document row, so the log
+            # can never claim an upload that was rolled back.
+            await audit.record(
+                db, "document.upload", org_id=current_user.org_id, user_id=current_user.id,
+                request=request,
+                details={
+                    "document_id": document.id,
+                    "project_id": project_id,
+                    "filename": item.filename,
+                    "file_size": item.size,
+                    "version": new_version,
+                },
+            )
+
+            processed_docs.append(document)
+
+        # Every file was a duplicate, so there is nothing to report on.
+        if not processed_docs:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "No files processed. All uploaded files were detected as "
+                    f"duplicates: {', '.join(skipped_duplicates)}"
+                ),
+            )
+
+        await db.commit()
+    except BaseException:
+        # Anything stored before the failure has no database row pointing at
+        # it, and never will. Remove it rather than leave orphans behind.
+        for used_storage, key in stored:
+            try:
+                await asyncio.to_thread(used_storage.delete, key)
+            except Exception as cleanup_error:  # pragma: no cover - best effort
+                print(f"[Upload] Could not remove orphaned object {key}: {cleanup_error}")
+        raise
+    finally:
+        for item in spooled:
+            item.discard()
+
     for document in processed_docs:
         await db.refresh(document)
 
-    if settings.INGESTION_MODE == "inline":
-        # Runs after the response is sent, so the upload still returns at once
-        # with status "pending" and the frontend's polling works unchanged.
-        for document in processed_docs:
-            background_tasks.add_task(async_process_document, str(document.id))
+    # ------------------------------------------------------------------
+    # 7. QUEUE THE BACKGROUND JOBS -- after the commit
+    # ------------------------------------------------------------------
+    # After, not before: a worker that picked the job up before the commit
+    # landed would find no row to claim and drop it.
+    #
+    # `.delay()` does NOT run the function. It serialises the argument,
+    # pushes a message onto Redis and returns instantly. A worker process
+    # picks it up and runs the real pipeline there.
+    for document in processed_docs:
+        if settings.INGESTION_MODE == "celery":
+            try:
+                process_document_task.delay(str(document.id))
+            except Exception as exc:
+                # Redis is down. The upload itself succeeded and is safely
+                # stored as "pending"; the recovery sweep re-queues it once
+                # the queue is back, so the user is not told it failed.
+                print(f"[Upload] Could not queue {document.id}; recovery will retry: {exc}")
+        else:
+            # INGESTION_MODE=inline: runs after the response is sent, so the
+            # upload still returns at once with status "pending" and the
+            # frontend's polling works unchanged.
+            background_tasks.add_task(run_inline_ingestion, str(document.id))
 
     return processed_docs
 
@@ -331,17 +415,62 @@ async def preview_document(
             detail="You do not have access to preview this document.",
         )
 
-    # The row can outlive the file -- most commonly on a cloud host with an
-    # ephemeral disk, where uploads are wiped on restart. Search still works in
-    # that situation, because the chunks and vectors live in Postgres; only the
-    # original download is unavailable, so we say so clearly.
-    if not os.path.exists(document.file_path):
+    # A file the malware scan rejected has had its bytes deleted; say so
+    # plainly instead of a confusing "not found".
+    if (document.meta_data or {}).get("quarantined"):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This file was quarantined by the malware scan and cannot be downloaded.",
+        )
+
+    storage = get_storage(document.storage_backend)
+    headers = {
+        # Never let a browser second-guess the type and render, say, an
+        # uploaded .html file as a live page on this API's origin.
+        "X-Content-Type-Options": "nosniff",
+    }
+
+    # LOCAL DISK: `FileResponse` streams the file rather than loading it all
+    # into memory, supports HTTP range requests (which PDF viewers use to
+    # fetch one page at a time), and `filename=` sets the name the browser
+    # saves it under -- the original, not the storage key.
+    if isinstance(storage, LocalStorage):
+        path = storage.path_for(document.file_path)
+        if not os.path.isfile(path):
+            # The row can outlive the file -- most commonly on a cloud host
+            # with an ephemeral disk, where uploads are wiped on restart.
+            # Search still works in that situation, because the chunks and
+            # vectors live in Postgres; only the original download is
+            # unavailable, so we say so clearly.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File has been deleted from server storage.",
+            )
+        return FileResponse(path, filename=document.filename, headers=headers)
+
+    # OBJECT STORAGE: streamed through the API in 1 MB pieces. Proxying,
+    # rather than redirecting the browser to a pre-signed S3 URL, keeps the
+    # bucket private and needs no CORS rules on it -- and the ownership check
+    # above stays the only way in.
+    try:
+        chunks = await asyncio.to_thread(storage.iter_bytes, document.file_path)
+    except StorageObjectNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File has been deleted from server storage.",
-        )
+        ) from exc
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage is temporarily unavailable. Please try again.",
+        ) from exc
 
-    # `FileResponse` streams the file rather than loading it all into memory,
-    # and `filename=` sets the name the browser saves it under -- the original,
-    # not our uuid-prefixed one on disk.
-    return FileResponse(document.file_path, filename=document.filename)
+    media_type = mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
+    # RFC 6266 / 5987: `filename*` carries a UTF-8 name safely, whatever
+    # characters it contains.
+    headers["Content-Disposition"] = (
+        f"attachment; filename*=UTF-8''{quote(document.filename)}"
+    )
+    # A plain (synchronous) iterator: Starlette runs it on a worker thread,
+    # so the blocking S3 reads never stall the event loop.
+    return StreamingResponse(chunks, media_type=media_type, headers=headers)
