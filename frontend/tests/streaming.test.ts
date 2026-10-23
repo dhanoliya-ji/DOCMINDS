@@ -83,6 +83,22 @@ describe("parseSseBuffer", () => {
 describe("streamQuestion", () => {
   const done = { assistant_message: { id: "a1", content: "Hello world" }, citations: [], model: "m" };
 
+  it("passes a reset on, so a discarded draft can be cleared", async () => {
+    const body = [
+      sse("token", { text: "Let me check. " }),
+      sse("reset", {}),
+      sse("token", { text: "Hello world" }),
+      sse("done", done),
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamingReply([body])));
+    const calls: string[] = [];
+    await api.streamQuestion("s1", "hi", { mode: "agent" }, {
+      onToken: (t) => calls.push(`token:${t}`),
+      onReset: () => calls.push("reset"),
+    });
+    expect(calls).toEqual(["token:Let me check. ", "reset", "token:Hello world"]);
+  });
+
   it("calls each handler in order and returns the saved answer", async () => {
     const body = [
       sse("start", { session_id: "s1", user_message_id: "u1", mode: "rag", title: "Hi" }),
@@ -312,5 +328,36 @@ describe("uploadFile", () => {
     const error = await pending.catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(415);
+  });
+});
+
+describe("collaboration calls", () => {
+  it("hit the right endpoints", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonReply(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.createShareLink("message", "m1", 7);
+    await api.listShareLinks("session", "s1");
+    await api.revokeShareLink("x1");
+    await api.createPrompt("T", "B", "org");
+    await api.compareDocuments("a", "b", "  fees ");
+    const sent = fetchMock.mock.calls.map(([url, options]) => [
+      String(url).replace(/^.*\/api\/v1/, ""), options?.method ?? "GET", options?.body ? JSON.parse(options.body) : null,
+    ]);
+    expect(sent).toEqual([
+      ["/shares", "POST", { kind: "message", target_id: "m1", expires_in_days: 7 }],
+      ["/shares?kind=session&target_id=s1", "GET", null],
+      ["/shares/x1", "DELETE", null],
+      ["/prompts", "POST", { title: "T", body: "B", scope: "org" }],
+      ["/compare", "POST", { document_a: "a", document_b: "b", focus: "fees" }],
+    ]);
+  });
+
+  it("reads a public share WITHOUT the signed-in user's token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonReply(200, { kind: "message", title: "t" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.getPublicShare("dms_abc");
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toContain("/api/v1/public/shares/dms_abc");
+    expect(options?.headers?.Authorization).toBeUndefined();
   });
 });

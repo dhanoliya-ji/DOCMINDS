@@ -27,6 +27,7 @@ const messages: AreaMessages = {
     "project.tab.documents": "Documents",
     "project.tab.search": "Search",
     "project.tab.chat": "Ask AI",
+    "project.tab.compare": "Compare",
     "project.viewOnly": "You have view-only access to this project. Ask an editor or admin to upload documents.",
     "project.dismissError": "Dismiss error",
     "project.loading": "Loading documents",
@@ -75,6 +76,7 @@ const messages: AreaMessages = {
     "project.tab.documents": "दस्तावेज़",
     "project.tab.search": "खोज",
     "project.tab.chat": "AI से पूछें",
+    "project.tab.compare": "तुलना करें",
     "project.viewOnly":
       "इस प्रोजेक्ट तक आपकी पहुँच केवल देखने की है। दस्तावेज़ अपलोड करने के लिए किसी एडिटर या एडमिन से कहें।",
     "project.dismissError": "त्रुटि हटाएँ",

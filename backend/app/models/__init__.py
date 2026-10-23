@@ -44,8 +44,10 @@ from app.models.document import Document
 from app.models.invite import Invite
 from app.models.organization import Organization
 from app.models.project import Project
+from app.models.prompt import PromptTemplate
 from app.models.refresh_token import RefreshToken
 from app.models.revoked_token import RevokedToken
+from app.models.share import ShareLink
 from app.models.usage import UsageEvent
 from app.models.user import User
 from app.models.user_token import UserToken
@@ -69,6 +71,9 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Feedback",
+    # ---- Collaboration: public share links and the prompt library ----
+    "ShareLink",
+    "PromptTemplate",
     # ---- Access and accountability ----
     "APIKey",
     "AuditLog",

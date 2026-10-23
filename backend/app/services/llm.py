@@ -133,7 +133,29 @@ EXCERPT_REMINDER = (
 #   Rule 4   : make each claim traceable to a source
 #   Rule 5   : keep answers readable
 #   Rule 6   : stop a document from giving the model orders (prompt injection)
+#   Rule 7   : let numeric answers arrive as a table or a chart the UI draws
 # ----------------------------------------------------------------------
+
+# Rule 7, shared with agent.py. The web UI renders a Markdown table as a real
+# table and a ```chart block as a bar / line / pie chart with an accessible
+# data table underneath (frontend components/AnswerChart.tsx). "Only numbers
+# stated in the excerpts" keeps a chart as grounded as a sentence: drawing a
+# figure the documents never gave would be a hallucination with axes.
+TABLES_AND_CHARTS_RULE = """When the answer compares several items or contains numeric data, you
+   may present it as a Markdown table. When the numbers can be compared
+   (amounts per year, counts per category, shares of a total), you may ALSO
+   add one chart as a fenced code block whose language is `chart`, holding
+   JSON only, for example:
+   ```chart
+   {"type": "bar", "title": "Refunds per quarter", "labels": ["Q1", "Q2"],
+    "series": [{"name": "Refunds", "values": [12, 18]}], "unit": "%"}
+   ```
+   "type" is "bar", "line" or "pie" (pie: exactly one series). Every value
+   must be a plain number that appears in the excerpts; never estimate,
+   convert or extrapolate. Put the citations in the sentence or table that
+   introduces the chart, not inside the JSON. Do not add a chart for a
+   single number or for text."""
+
 SYSTEM_PROMPT = f"""You are a precise enterprise document analyst.
 
 You will be given NUMBERED EXCERPTS from a company's internal documents,
@@ -152,6 +174,7 @@ Follow these rules strictly:
 5. Be concise and direct. Use short paragraphs or bullet points. Do not repeat
    the question back to the user, and do not add a preamble.
 6. {UNTRUSTED_CONTENT_RULE}
+7. {TABLES_AND_CHARTS_RULE}
 """
 
 # How many earlier messages of the conversation are sent with each question:
@@ -593,6 +616,51 @@ class LLMService:
             logger.error("Streaming failed", extra={"error": describe(exc)}, exc_info=exc)
             stats["model"] = "error"
             yield "The AI service is temporarily unavailable."
+
+    # ==================================================================
+    # STEP 2c: A PLAIN COMPLETION, FOR CALLERS WITH THEIR OWN PROMPT
+    # ==================================================================
+
+    @staticmethod
+    def is_keyless() -> bool:
+        """True when no real model can be called (demo mode)."""
+        return settings.LLM_PROVIDER == "mock" or not settings.GROQ_API_KEY
+
+    @classmethod
+    async def complete(cls, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """
+        One completion of `messages` exactly as given -- for features that
+        write their own prompt, such as document comparison
+        (services/compare.py). Same client, retries and fallback model as
+        generate_answer.
+
+        Returns {"text", "tokens_used", "prompt_tokens", "completion_tokens",
+        "latency", "model"}. Never raises for a model failure: `model` is
+        "mock" in demo mode and "error" when nothing could answer, both with
+        empty text, so the caller can fall back to something useful.
+        """
+        started_at = time.perf_counter()
+        empty = {"text": "", "tokens_used": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        if cls.is_keyless():
+            return {**empty, "latency": 0.0, "model": "mock"}
+        try:
+            completion, model = await cls._complete(cls._client(), messages)
+        except Exception as exc:
+            logger.error("The model could not complete", extra={"error": describe(exc)}, exc_info=exc)
+            return {**empty, "latency": round(time.perf_counter() - started_at, 3), "model": "error"}
+        choices = getattr(completion, "choices", None) or []
+        usage = getattr(completion, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        return {
+            "text": ((choices[0].message.content if choices else "") or "").strip(),
+            "tokens_used": int(getattr(usage, "total_tokens", 0) or 0)
+            or prompt_tokens + completion_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "latency": round(time.perf_counter() - started_at, 3),
+            "model": model,
+        }
 
     # ==================================================================
     # THE CALL ITSELF: retries, then the fallback model

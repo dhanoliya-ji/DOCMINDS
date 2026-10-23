@@ -56,10 +56,14 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
+from app.api.v1.compare import router as compare_router
 from app.api.v1.documents import router as documents_router
 from app.api.v1.org import router as org_router
 from app.api.v1.projects import router as projects_router
+from app.api.v1.prompts import router as prompts_router
 from app.api.v1.search import router as search_router
+from app.api.v1.shares import public_router as public_shares_router
+from app.api.v1.shares import router as shares_router
 from app.api.v1.sso import router as sso_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.users import router as users_router
@@ -277,6 +281,21 @@ app.include_router(
 )
 app.include_router(
     chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["RAG Chat"]
+)
+
+# --- Collaboration: comparison, the prompt library, public share links ---
+app.include_router(
+    compare_router, prefix=f"{settings.API_V1_STR}/compare", tags=["Document comparison"]
+)
+app.include_router(
+    prompts_router, prefix=f"{settings.API_V1_STR}/prompts", tags=["Prompt library"]
+)
+app.include_router(
+    shares_router, prefix=f"{settings.API_V1_STR}/shares", tags=["Share links"]
+)
+# NO authentication: what anyone holding a share link may read.
+app.include_router(
+    public_shares_router, prefix=f"{settings.API_V1_STR}/public", tags=["Public"]
 )
 
 

@@ -20,6 +20,8 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Semantic search:** page-aware chunking, configurable embeddings (local, OpenAI, Gemini) and HNSW-indexed cosine search in pgvector.
 - **Grounded answers:** every answer cites numbered excerpts mapped to file and page; weak matches are discarded so the system can say it does not know.
 - **Two chat modes:** a single-pass RAG pipeline, or a Pydantic AI agent with search, list and read tools.
+- **Answers you can judge and pass on:** each answer carries a high / medium / low confidence badge computed from retrieval scores and citation coverage (with the reasons), renders Markdown tables and bar / line / pie charts drawn from figures in the documents, and streams token by token in both modes. Answers, conversations and projects can be shared through read-only public links (expiring, revocable, audited, stored only as an HMAC), and a prompt library offers built-in, personal and team-shared prompts.
+- **Document comparison:** pick two documents and get a structured list of what was added, removed or changed, each difference citing the passages on both sides.
 - **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search. Existing organisations can only be joined by invite.
 - **Access control:** viewer, editor and admin roles; member management, invites, API keys, an audit log and a usage page for admins under `/settings`; rotating refresh tokens with silent refresh in the browser, server-side logout, password reset and email verification pages. The frontend hides actions a role cannot perform and sends a Content-Security-Policy and other security headers.
 - **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments. Transient failures are retried with backoff, a database claim stops a job running twice, and a recovery sweep re-queues documents orphaned by a dead worker.
@@ -154,7 +156,7 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `STORAGE_BACKEND` | `local` | `local` (`backend/uploads`) or `s3` (any S3-compatible bucket; set `S3_BUCKET` and friends) |
 | `MALWARE_SCAN` | `off` | `off` or `clamav` (scan every upload with a clamd daemon before processing) |
 | `MAX_UPLOAD_SIZE_BYTES` | `104857600` | Per-file upload limit (100 MB), enforced while the file streams in |
-| `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload) |
+| `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload, `RATE_LIMIT_SHARE_VIEW` per IP for public links, `RATE_LIMIT_COMPARE` per user) |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API, so per-IP limits see the real client address (1 on Render) |
 | `QUOTA_MONTHLY_TOKENS` | `1000000` | AI tokens per organisation per month; `0` is unlimited (also `QUOTA_MAX_DOCUMENTS`, `QUOTA_MAX_STORAGE_BYTES`) |
 | `LLM_FALLBACK_MODEL` | *(empty)* | Groq model used when the main one keeps failing or is retired |
