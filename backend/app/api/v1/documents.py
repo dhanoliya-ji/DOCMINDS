@@ -108,10 +108,38 @@ from app.services.storage import (
     Storage,
     StorageError,
     StorageObjectNotFound,
+    StorageUnavailableError,
     get_storage,
     new_key,
 )
 from app.tasks.ingestion import process_document_task, run_inline_ingestion
+
+
+def _storage_http_error(exc: StorageError) -> HTTPException:
+    """
+    Turn a storage failure into a reply, and log the REAL reason.
+
+    Only an outage (no answer, a 5xx, throttling) is worth "try again". A
+    refusal -- wrong key, unknown bucket, no permission -- is a configuration
+    mistake that retrying never fixes, and saying "temporarily unavailable"
+    for it sends whoever is debugging in the wrong direction. The precise
+    reason goes to the server log only: it names buckets and keys.
+    """
+    logger.error("Storage operation failed: %s", exc)
+    if isinstance(exc, StorageUnavailableError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage is temporarily unavailable. Please try again.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=(
+            "File storage refused the request. This is a server configuration "
+            "problem (storage credentials, bucket name or permissions); the "
+            "server log has the details."
+        ),
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -325,10 +353,7 @@ async def upload_documents(
             try:
                 await asyncio.to_thread(storage.save, key, item.path)
             except StorageError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="File storage is temporarily unavailable. Please try again.",
-                ) from exc
+                raise _storage_http_error(exc) from exc
             stored.append((storage, key))
 
             # --------------------------------------------------------------
@@ -570,10 +595,7 @@ async def preview_document(
             detail="File has been deleted from server storage.",
         ) from exc
     except StorageError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="File storage is temporarily unavailable. Please try again.",
-        ) from exc
+        raise _storage_http_error(exc) from exc
 
     # RFC 6266 / 5987: `filename*` carries a UTF-8 name safely, whatever
     # characters it contains.
