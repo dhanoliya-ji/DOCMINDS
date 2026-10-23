@@ -112,7 +112,7 @@ from app.services.storage import (
     get_storage,
     new_key,
 )
-from app.tasks.ingestion import process_document_task, run_inline_ingestion
+from app.tasks import ingestion
 
 
 def _storage_http_error(exc: StorageError) -> HTTPException:
@@ -197,7 +197,7 @@ def _not_yet_cleared_by_scan(document: Document) -> bool:
     dependencies=[Depends(deps.rate_limit_by_user("upload"))],
 )
 async def upload_documents(
-    # Injected by FastAPI. Used only when INGESTION_MODE is "inline".
+    # Injected by FastAPI; see `_queue_for_processing`.
     background_tasks: BackgroundTasks,
     # The raw request, only so the audit entry can record the caller's IP.
     request: Request,
@@ -434,28 +434,42 @@ async def upload_documents(
     # After, not before: a worker that picked the job up before the commit
     # landed would find no row to claim and drop it.
     #
-    # `.delay()` does NOT run the function. It serialises the argument,
-    # pushes a message onto Redis and returns instantly. A worker process
-    # picks it up and runs the real pipeline there.
+    #   celery  `.delay()` does NOT run the function. It serialises the id,
+    #           pushes a message onto Redis and returns instantly. A worker
+    #           process picks it up and runs the real pipeline there.
+    #   inline  the id goes on the API's own in-process queue
+    #           (ingestion.InlineQueue), worked one document at a time on the
+    #           application's event loop -- NOT inside this request. The
+    #           202 goes back at once; the job carries on after the request
+    #           has ended, and the frontend's polling shows its progress.
     for document in processed_docs:
-        if settings.INGESTION_MODE == "celery":
-            try:
-                process_document_task.delay(str(document.id))
-            except Exception as exc:
-                # Redis is down. The upload itself succeeded and is safely
-                # stored as "pending"; the recovery sweep re-queues it once
-                # the queue is back, so the user is not told it failed.
-                logger.warning(
-                    "Could not queue document; the recovery sweep will retry",
-                    extra={"document_id": str(document.id), "error": repr(exc)},
-                )
-        else:
-            # INGESTION_MODE=inline: runs after the response is sent, so the
-            # upload still returns at once with status "pending" and the
-            # frontend's polling works unchanged.
-            background_tasks.add_task(run_inline_ingestion, str(document.id))
+        _queue_for_processing(document.id, background_tasks)
 
     return processed_docs
+
+
+def _queue_for_processing(document_id, background_tasks: BackgroundTasks) -> None:
+    """
+    Hand a committed document to the ingestion pipeline, never raising.
+
+    In inline mode the hand-over itself is deferred until the response has
+    been sent (a background task that only SUBMITS to the queue, which takes
+    microseconds): the job then never starts while this request's database
+    session is still open. The work runs on the queue, not in the request.
+    """
+    if settings.INGESTION_MODE != "celery":
+        background_tasks.add_task(ingestion.submit_inline, str(document_id))
+        return
+    try:
+        ingestion.dispatch(str(document_id))
+    except Exception as exc:
+        # Redis is down. The upload itself succeeded and is safely stored as
+        # "pending"; the recovery sweep re-queues it once the queue is back,
+        # so the user is not told it failed.
+        logger.warning(
+            "Could not queue document; the recovery sweep will retry",
+            extra={"document_id": str(document_id), "error": repr(exc)},
+        )
 
 
 @router.get("/", response_model=List[DocumentOut])
@@ -751,6 +765,13 @@ async def reindex_document(
     "completed" again; the pipeline (tasks/ingestion.py, stage 4) deletes
     the old chunks before writing the new ones, so nothing is duplicated.
     Returns 202 for the same reason the upload does.
+
+    RE-INDEX RESUMES. On a FAILED or PAUSED document whose chunks were all
+    saved with the same chunk settings, the pipeline does not start again:
+    it skips straight to embedding the chunks that have no vector yet. So
+    "failed at 900 of 1,200" continues from 901. A completed document, or
+    new chunk settings, rebuild from the file. A paused document (waiting
+    for the embedding rate limit) may be re-indexed to resume it NOW.
     """
     document = await get_org_document(db, document_id, current_user)
 
@@ -759,7 +780,8 @@ async def reindex_document(
             status_code=status.HTTP_410_GONE,
             detail="This file was quarantined by the malware scan and cannot be processed.",
         )
-    if document.status in ("pending", "processing"):
+    paused = document.status == "pending" and document.resume_after is not None
+    if document.status in ("pending", "processing") and not paused:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This document is already queued or being processed.",
@@ -780,6 +802,7 @@ async def reindex_document(
     document.status = "pending"
     document.error_message = None
     document.processing_started_at = None
+    document.resume_after = None
 
     await audit.record(
         db, "document.reindex", org_id=current_user.org_id, user_id=current_user.id,
@@ -790,16 +813,7 @@ async def reindex_document(
     await db.refresh(document)
 
     # Queued AFTER the commit, exactly like an upload.
-    if settings.INGESTION_MODE == "celery":
-        try:
-            process_document_task.delay(str(document.id))
-        except Exception as exc:
-            logger.warning(
-                "Could not queue re-index; the recovery sweep will retry",
-                extra={"document_id": str(document.id), "error": repr(exc)},
-            )
-    else:
-        background_tasks.add_task(run_inline_ingestion, str(document.id))
+    _queue_for_processing(document.id, background_tasks)
     return document
 
 

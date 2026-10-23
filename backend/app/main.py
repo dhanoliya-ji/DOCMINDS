@@ -117,12 +117,30 @@ async def lifespan(_app: FastAPI):
     The recovery is started in the BACKGROUND rather than awaited: the API
     begins answering requests -- and health checks -- immediately, instead of
     waiting on a database query that may take a while to time out.
+
+    INGESTION_MODE=inline also starts the API's own recovery SWEEP (there is
+    no Celery beat to run it): every INGESTION_INLINE_SWEEP_SECONDS it
+    resumes documents paused for a rate limit once their time has come. On
+    shutdown the in-process ingestion queue is stopped; a document it was
+    working on records itself as paused and due, and the next start resumes
+    it from the last saved batch.
     """
     if settings.INGESTION_RECOVER_ON_STARTUP:
         job = asyncio.create_task(_recover_on_startup())
         _startup_jobs.add(job)
         job.add_done_callback(_startup_jobs.discard)
+    sweeper = None
+    if settings.INGESTION_MODE == "inline":
+        from app.tasks.ingestion import inline_sweeper
+
+        sweeper = asyncio.create_task(inline_sweeper())
     yield
+    if sweeper is not None:
+        sweeper.cancel()
+        await asyncio.gather(sweeper, return_exceptions=True)
+    from app.tasks.ingestion import inline_queue
+
+    await inline_queue.stop()
 
 
 # ----------------------------------------------------------------------

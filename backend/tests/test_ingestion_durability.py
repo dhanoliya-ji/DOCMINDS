@@ -385,14 +385,19 @@ class TestOutcomes:
         waiting = await db.get(document_id)
         assert waiting.status == "pending"
         assert "unreachable" in waiting.error_message
-        # Rolled back: no half-written chunks from the failed attempt.
-        assert await db.chunk_count(document_id) == 0
+        # The chunks were committed before embedding began, so the retry
+        # RESUMES at embedding rather than extracting the file again. They
+        # are invisible to search until the document is "completed".
+        chunks_before = await db.chunk_count(document_id)
+        assert chunks_before > 0
+        assert waiting.meta_data["chunking_complete"] is True
 
         monkeypatch.setattr(EmbeddingService, "get_embeddings", real)
         assert await async_process_document(str(document_id)) == "completed"
 
         done = await db.get(document_id)
         assert done.status == "completed"
+        assert await db.chunk_count(document_id) == chunks_before
         assert done.attempts == 2
         assert done.error_message is None
         assert "error" not in done.meta_data

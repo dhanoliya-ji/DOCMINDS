@@ -107,7 +107,7 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 
 | Variable | Default | Description |
 |---|---|---|
-| `MAX_UPLOAD_SIZE_BYTES` | `52428800` (50 MB) | Per-file limit, counted while the upload is read in 1 MB chunks. Over it: `413` |
+| `MAX_UPLOAD_SIZE_BYTES` | `104857600` (100 MB) | Per-file limit, counted while the upload is read in 1 MB chunks. Over it: `413` |
 | `MAX_FILES_PER_UPLOAD` | `20` | Files per upload request (`400` above it). With the per-file limit it sets the whole-request ceiling (`MAX_UPLOAD_SIZE_BYTES` x `MAX_FILES_PER_UPLOAD` + 1 MB), which middleware enforces with `413` before the body is parsed |
 | `ZIP_MAX_ENTRIES` | `1000` | Most files one uploaded archive may contain, nested archives included. Over it the archive fails |
 | `ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES` | `524288000` (500 MB) | Most bytes an archive may expand to, counted while unpacking (not trusted from the header) |
