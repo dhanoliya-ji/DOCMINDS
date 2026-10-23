@@ -271,7 +271,12 @@ async def claim_document(db, document_id, *, force: bool = False) -> Optional[Do
 
     if result.rowcount != 1:
         return None
-    return await db.get(Document, document_id, populate_existing=True)
+    # The UPDATE bypassed the session, so any Document already loaded in it is
+    # stale (attempts still the old value). Expire everything and read the row
+    # afresh; `populate_existing` alone is not honoured by every SQLAlchemy
+    # version for an object already in the identity map.
+    db.expire_all()
+    return await db.get(Document, document_id)
 
 
 # ======================================================================
