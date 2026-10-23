@@ -67,6 +67,22 @@ describe("describeProgress", () => {
     expect(line).toContain("900 of 1,200 chunks done, resumes automatically");
   });
 
+  it("speaks Hindi when asked, with the same numbers", () => {
+    expect(
+      describeProgress({ stage: "extracting", pages_done: 40, pages_total: 1200 }, now, "hi"),
+    ).toBe("पृष्ठ 40 / 1,200 पढ़ा जा रहा है");
+    expect(describeProgress({ stage: "embedding", embedded: 340, total: 1200 }, now, "hi")).toBe(
+      "1,200 में से 340 खंड एम्बेड हुए",
+    );
+    const line = describeProgress(
+      { stage: "paused", embedded: 900, total: 1200, resume_at: "2026-10-23T12:02:00Z" },
+      now,
+      "hi",
+    );
+    expect(line).toContain("(लगभग 2 मिनट)");
+    expect(line).toContain("अपने आप फिर शुरू होगा");
+  });
+
   it("says nothing once finished", () => {
     expect(describeProgress({ stage: "completed" })).toBeNull();
     expect(describeProgress(null)).toBeNull();

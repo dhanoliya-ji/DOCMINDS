@@ -15,7 +15,7 @@
  *     server has each feature on
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAxe } from "vitest-axe";
@@ -44,6 +44,8 @@ const platformMocks = vi.hoisted(() => ({
   disconnect: vi.fn(),
   browse: vi.fn(),
   importItems: vi.fn(),
+  getImport: vi.fn(),
+  listImports: vi.fn(),
   listLinkedDocuments: vi.fn(),
   setAutoSync: vi.fn(),
   syncDocument: vi.fn(),
@@ -138,6 +140,7 @@ beforeEach(() => {
   platformMocks.listConnections.mockResolvedValue([CONNECTION]);
   platformMocks.listLinkedDocuments.mockResolvedValue([LINKED]);
   platformMocks.getAnalytics.mockResolvedValue(OVERVIEW);
+  platformMocks.listImports.mockResolvedValue([]);
 });
 
 describe("Plan and billing", () => {
@@ -201,9 +204,16 @@ describe("Cloud imports", () => {
         items: [{ id: "f1", name: "Leave policy", kind: "file", importable: true, has_children: false }],
         next_cursor: null,
       });
-    platformMocks.importItems.mockResolvedValue([
-      { item_id: "f1", status: "imported", document_id: "d9", detail: "Leave policy.docx" },
-    ]);
+    const job = (status: string, item: Record<string, unknown>) => ({
+      id: "j1", connection_id: "c1", project_id: "p1", provider: "google_drive", status,
+      auto_sync: true, counts: {}, created_at: null, finished_at: null,
+      items: [{ item_id: "f1", name: null, document_id: null, detail: null, ...item }],
+    });
+    // 202 with every item pending, then the poll sees it downloading, then done.
+    platformMocks.importItems.mockResolvedValue(job("queued", { status: "pending" }));
+    platformMocks.getImport
+      .mockResolvedValueOnce(job("running", { status: "downloading", name: "Leave policy" }))
+      .mockResolvedValueOnce(job("completed", { status: "imported", name: "Leave policy", document_id: "d9" }));
     render(<IntegrationsPage />);
     await user.click(await screen.findByRole("button", { name: "Browse" }));
     await user.click(await screen.findByRole("button", { name: "Open Policies" }));
@@ -211,7 +221,41 @@ describe("Cloud imports", () => {
     await user.click(await screen.findByRole("checkbox", { name: "Leave policy" }));
     await user.click(screen.getByRole("button", { name: "Import 1 selected" }));
     expect(platformMocks.importItems).toHaveBeenCalledWith("c1", "p1", ["f1"], true);
-    expect(await screen.findByText("Imported")).toBeInTheDocument();
+    expect(await screen.findByText("Waiting")).toBeInTheDocument();
+    expect(await screen.findByText("Downloading...", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText("Imported", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText("Import finished")).toBeInTheDocument();
+    expect(platformMocks.getImport).toHaveBeenCalledWith("j1");
+  });
+
+  it("does not bring back an import that already finished", async () => {
+    platformMocks.listImports.mockResolvedValue([
+      {
+        id: "j2", connection_id: "c1", project_id: "p1", provider: "google_drive", status: "completed",
+        auto_sync: true, counts: { failed: 1 }, created_at: null, finished_at: null,
+        items: [{ item_id: "x", name: "tool.exe", status: "failed", document_id: null, detail: "not supported" }],
+      },
+    ]);
+    render(<IntegrationsPage />);
+    await screen.findByRole("button", { name: "Browse" });
+    expect(screen.queryByText("tool.exe")).not.toBeInTheDocument();
+  });
+
+  it("links to the provider's page when access cannot be revoked by API", async () => {
+    platformMocks.listConnections.mockResolvedValue([{ ...CONNECTION, provider: "onedrive" }]);
+    platformMocks.disconnect.mockResolvedValue({
+      revoked: false, manage_url: "https://myapps.microsoft.com", detail: null,
+    });
+    render(<IntegrationsPage />);
+    const hold = await screen.findByRole("button", { name: /Hold to disconnect/ });
+    fireEvent.pointerDown(hold);
+    expect(
+      await screen.findByText(/could not revoke DocMinds' access automatically/, {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(platformMocks.disconnect).toHaveBeenCalledWith("c1");
+    expect(screen.getByRole("link", { name: "Open the account's app settings" })).toHaveAttribute(
+      "href", "https://myapps.microsoft.com",
+    );
   });
 
   it("lists imported documents and syncs one now", async () => {

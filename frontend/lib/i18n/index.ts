@@ -2,7 +2,8 @@
  * i18n/index.ts
  * =============
  * A deliberately small translation layer: English (the default) and Hindi
- * for the app shell, the auth pages, chat and upload.
+ * for the app shell, the auth pages, chat, upload and the ingestion
+ * progress line.
  *
  * WHY NOT next-intl
  * -----------------
@@ -44,6 +45,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import auth from "./auth";
 import chat from "./chat";
 import platform from "./platform";
+import progress from "./progress";
 import shell from "./shell";
 import upload from "./upload";
 
@@ -60,7 +62,7 @@ export type AreaMessages = { en: Dictionary; hi: Partial<Dictionary> };
 
 /** Every area's strings, merged per language. */
 const MESSAGES: Record<Locale, Dictionary> = { en: {}, hi: {} };
-for (const area of [auth, chat, platform, shell, upload] as AreaMessages[]) {
+for (const area of [auth, chat, platform, progress, shell, upload] as AreaMessages[]) {
   Object.assign(MESSAGES.en, area.en);
   Object.assign(MESSAGES.hi, area.hi);
 }

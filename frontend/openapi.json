@@ -1119,6 +1119,42 @@
         "title": "DailyUsers",
         "type": "object"
       },
+      "DisconnectOut": {
+        "description": "The local disconnect always happens; this says whether the provider\nalso revoked DocMinds' access, and where to remove it by hand if not.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "manage_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manage Url"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "title": "DisconnectOut",
+        "type": "object"
+      },
       "DocumentOut": {
         "description": "A document as returned by the API.\n\nNote `file_path` is deliberately absent. It is stored on the model, but\nexposing a server filesystem path to a client tells an attacker about your\ndirectory layout for no benefit. Downloads go through\n`/documents/{id}/preview`, which checks ownership before serving the file.",
         "properties": {
@@ -1568,36 +1604,8 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "ImportRequest": {
-        "properties": {
-          "auto_sync": {
-            "default": true,
-            "title": "Auto Sync",
-            "type": "boolean"
-          },
-          "item_ids": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 50,
-            "minItems": 1,
-            "title": "Item Ids",
-            "type": "array"
-          },
-          "project_id": {
-            "format": "uuid",
-            "title": "Project Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "item_ids"
-        ],
-        "title": "ImportRequest",
-        "type": "object"
-      },
-      "ImportResult": {
+      "ImportItemOut": {
+        "description": "One picked item's progress in a background import.",
         "properties": {
           "detail": {
             "anyOf": [
@@ -1625,13 +1633,26 @@
             "title": "Item Id",
             "type": "string"
           },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "status": {
             "enum": [
+              "pending",
+              "downloading",
               "imported",
               "duplicate",
               "already_imported",
               "skipped",
-              "error"
+              "failed"
             ],
             "title": "Status",
             "type": "string"
@@ -1641,7 +1662,129 @@
           "item_id",
           "status"
         ],
-        "title": "ImportResult",
+        "title": "ImportItemOut",
+        "type": "object"
+      },
+      "ImportJobOut": {
+        "description": "A background import: POST .../import answers with this (202), and\nGET /integrations/imports/{id} reports it until `status` is \"completed\".",
+        "properties": {
+          "auto_sync": {
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Counts",
+            "type": "object"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "provider",
+          "status",
+          "auto_sync",
+          "items"
+        ],
+        "title": "ImportJobOut",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "properties": {
+          "auto_sync": {
+            "default": true,
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Item Ids",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "item_ids"
+        ],
+        "title": "ImportRequest",
         "type": "object"
       },
       "InviteCreate": {
@@ -5450,7 +5593,7 @@
     },
     "/api/v1/documents/{document_id}/reindex": {
       "post": {
-        "description": "Process a document again from its stored file (editor+, audited).\n\nWHEN YOU WANT THIS\n  * it failed, and the cause has since been fixed (OCR installed, a\n    provider key added);\n  * EMBEDDING_PROVIDER or the model changed -- retrieval only compares\n    vectors from the CURRENT model, so older documents stop matching\n    until they are re-embedded;\n  * you want different chunking (pass chunk_strategy / chunk_size /\n    chunk_overlap in the body).\n\nThe document goes back to \"pending\" and leaves search until it is\n\"completed\" again; the pipeline (tasks/ingestion.py, stage 4) deletes\nthe old chunks before writing the new ones, so nothing is duplicated.\nReturns 202 for the same reason the upload does.",
+        "description": "Process a document again from its stored file (editor+, audited).\n\nWHEN YOU WANT THIS\n  * it failed, and the cause has since been fixed (OCR installed, a\n    provider key added);\n  * EMBEDDING_PROVIDER or the model changed -- retrieval only compares\n    vectors from the CURRENT model, so older documents stop matching\n    until they are re-embedded;\n  * you want different chunking (pass chunk_strategy / chunk_size /\n    chunk_overlap in the body).\n\nThe document goes back to \"pending\" and leaves search until it is\n\"completed\" again; the pipeline (tasks/ingestion.py, stage 4) deletes\nthe old chunks before writing the new ones, so nothing is duplicated.\nReturns 202 for the same reason the upload does.\n\nRE-INDEX RESUMES. On a FAILED or PAUSED document whose chunks were all\nsaved with the same chunk settings, the pipeline does not start again:\nit skips straight to embedding the chunks that have no vector yet. So\n\"failed at 900 of 1,200\" continues from 901. A completed document, or\nnew chunk settings, rebuild from the file. A paused document (waiting\nfor the embedding rate limit) may be re-indexed to resume it NOW.",
         "operationId": "reindex_document_api_v1_documents__document_id__reindex_post",
         "parameters": [
           {
@@ -5592,7 +5735,7 @@
     },
     "/api/v1/integrations/connections/{connection_id}": {
       "delete": {
-        "description": "Remove the connection and its tokens. Documents it imported stay, but\nstop syncing (\"disconnected\"). To also revoke DocMinds' access at the\nprovider, remove the app in the provider's own account settings.",
+        "description": "Remove the connection and its tokens. Documents it imported stay, but\nstop syncing (\"disconnected\"). Then, best effort, revoke DocMinds'\naccess at the provider: Google and Notion have an API for it; for\nMicrosoft and Confluence (no such API) `manage_url` links to the page\nwhere the person removes the app. A failed revocation never fails the\ndisconnect -- it is logged, and reported here.",
         "operationId": "disconnect_api_v1_integrations_connections__connection_id__delete",
         "parameters": [
           {
@@ -5607,7 +5750,14 @@
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisconnectOut"
+                }
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
@@ -5637,7 +5787,7 @@
     },
     "/api/v1/integrations/connections/{connection_id}/import": {
       "post": {
-        "description": "Import the picked items into a project. One result per item; the\nimported ones are queued for ingestion like an upload (status\n\"pending\"), and remember their source for sync.",
+        "description": "Import the picked items into a project, in the background. Answers 202\nwith the job at once; poll GET /integrations/imports/{id} for each\nitem's progress. Imported items are queued for ingestion like an upload\n(document status \"pending\") and remember their source for sync.",
         "operationId": "import_items_api_v1_integrations_connections__connection_id__import_post",
         "parameters": [
           {
@@ -5662,15 +5812,11 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ImportResult"
-                  },
-                  "title": "Response Import Items Api V1 Integrations Connections  Connection Id  Import Post",
-                  "type": "array"
+                  "$ref": "#/components/schemas/ImportJobOut"
                 }
               }
             },
@@ -6033,6 +6179,133 @@
           }
         ],
         "summary": "Sync Document",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/imports": {
+      "get": {
+        "description": "The organization's most recent import jobs, newest first.",
+        "operationId": "list_imports_api_v1_integrations_imports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImportJobOut"
+                  },
+                  "title": "Response List Imports Api V1 Integrations Imports Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Imports",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/imports/{import_id}": {
+      "get": {
+        "description": "One import job: its status and every item's progress.",
+        "operationId": "get_import_api_v1_integrations_imports__import_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJobOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Import",
         "tags": [
           "Cloud imports"
         ]

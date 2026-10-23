@@ -57,6 +57,14 @@ class OneDrive(Provider):
     name = "OneDrive & SharePoint"
     allowed_hosts = ("login.microsoftonline.com", "graph.microsoft.com")
     redirect_hosts = (".sharepoint.com", ".1drv.com", ".onedrive.com", ".livefilestore.com", ".svc.ms")
+    # Microsoft has no endpoint that revokes ONE app's delegated grant with
+    # the app's own token: deleting the oauth2PermissionGrant needs an
+    # admin-consented directory permission, and /me/revokeSignInSessions
+    # would sign the person out of EVERY app. So `revoke` stays the base
+    # "unsupported", and the person is sent here (work or school accounts;
+    # personal accounts: https://account.live.com/consent/Manage). Tokens we
+    # held are deleted locally; the access token expires within the hour.
+    manage_access_url = "https://myapps.microsoft.com"
 
     def configured(self) -> bool:
         return bool(settings.CONNECTOR_MICROSOFT_CLIENT_ID and settings.CONNECTOR_MICROSOFT_CLIENT_SECRET)

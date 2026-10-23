@@ -43,6 +43,10 @@ class Confluence(Provider):
     id = "confluence"
     name = "Confluence"
     allowed_hosts = ("auth.atlassian.com", "api.atlassian.com")
+    # Atlassian's OAuth 2.0 (3LO) documents no token revocation endpoint, so
+    # `revoke` stays the base "unsupported": the person removes the app on
+    # this page. The tokens we held are deleted locally either way.
+    manage_access_url = "https://id.atlassian.com/manage-profile/apps"
 
     def configured(self) -> bool:
         return bool(settings.CONNECTOR_CONFLUENCE_CLIENT_ID and settings.CONNECTOR_CONFLUENCE_CLIENT_SECRET)

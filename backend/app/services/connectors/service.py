@@ -9,8 +9,12 @@ Everything between the API and the providers:
     save_connection             store (or refresh) a connection, encrypted
     call                        run a provider call with a fresh token,
                                 refreshing once on a 401
-    import_items                picker selection -> Documents, queued for
-                                ingestion exactly like an upload
+    create_import / run_import  picker selection -> a BACKGROUND job ->
+                                Documents, queued for ingestion exactly like
+                                an upload; per-item progress on the job
+    resume_imports              re-send jobs orphaned by a restart
+    revoke                      best-effort revocation at the provider when
+                                a connection is removed
     sync_link / sync_due        has the source changed? re-import + re-index
 
 THE OAUTH STATE
@@ -61,7 +65,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import jwt
 from fastapi import Request
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import roles
@@ -71,11 +75,23 @@ from app.models.connector import (
     ACTIVE,
     DISCONNECTED,
     ERROR,
+    IMPORT_COMPLETED,
+    IMPORT_QUEUED,
+    IMPORT_RUNNING,
+    ITEM_ALREADY_IMPORTED,
+    ITEM_DOWNLOADING,
+    ITEM_DUPLICATE,
+    ITEM_FAILED,
+    ITEM_IMPORTED,
+    ITEM_PENDING,
+    ITEM_SKIPPED,
+    ITEM_UNFINISHED,
     SOURCE_DELETED,
     SYNC_ERROR,
     SYNCED,
     SYNCING,
     ConnectorConnection,
+    ConnectorImport,
     ConnectorItem,
 )
 from app.models.document import Document
@@ -323,11 +339,22 @@ def _queue(document_id: uuid.UUID) -> None:
 
 
 # ======================================================================
-# 4. IMPORT
+# 4. IMPORT (in the background)
 # ======================================================================
+#
+#   POST .../import -> create_import (validate, record "queued") -> 202
+#                   -> dispatch_import: Celery task, or the in-process queue
+#   run_import      -> claim -> each item: pending -> downloading ->
+#                      imported | duplicate | already_imported | skipped
+#                      | failed, saved after every step so the page can poll
+#                      GET /integrations/imports/{id}
 
 
-async def import_items(
+def _entry(item_id: str) -> Dict[str, Any]:
+    return {"item_id": item_id, "name": None, "status": ITEM_PENDING, "document_id": None, "detail": None}
+
+
+async def create_import(
     db: AsyncSession,
     *,
     connection: ConnectorConnection,
@@ -336,149 +363,398 @@ async def import_items(
     item_ids: List[str],
     auto_sync: bool,
     request: Optional[Request] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Import each picked item into `project`. Returns one result per id:
-        {"item_id", "status": imported | duplicate | already_imported |
-         skipped | error, "document_id", "detail"}
+) -> ConnectorImport:
+    """Record the job (status "queued"); the caller commits and then dispatches it."""
+    job = ConnectorImport(
+        org_id=user.org_id,
+        connection_id=connection.id,
+        project_id=project.id,
+        user_id=user.id,
+        provider=connection.provider,
+        auto_sync=auto_sync,
+        status=IMPORT_QUEUED,
+        items=[_entry(item_id) for item_id in item_ids],
+    )
+    db.add(job)
+    await db.flush()
+    await audit.record(
+        db, "connector.import", org_id=user.org_id, user_id=user.id, request=request,
+        details={"import_id": job.id, "connection_id": connection.id, "project_id": project.id,
+                 "provider": connection.provider, "items": len(item_ids)},
+    )
+    return job
 
-    Each item is committed on its own, so one failure (a file too large, a
-    page that vanished) does not undo the others. A full quota stops the rest.
-    """
-    results: List[Dict[str, Any]] = []
-    allowance = await usage.upload_allowance(db, user.org_id)
-    storage = get_storage()
 
-    for item_id in item_ids:
-        result: Dict[str, Any] = {"item_id": item_id, "status": "error", "document_id": None, "detail": None}
-        results.append(result)
-        path: Optional[str] = None
-        stored_key: Optional[str] = None
+def dispatch_import(import_id: uuid.UUID) -> None:
+    """
+    Start the job in whichever way INGESTION_MODE says -- the same split as
+    tasks/ingestion.dispatch. A failure here (Redis down) leaves the job
+    "queued"; the recovery (resume_imports) sends it again.
+    """
+    from app.tasks import connectors as connector_tasks
+
+    try:
+        if settings.INGESTION_MODE == "celery":
+            connector_tasks.run_import_task.delay(str(import_id))
+        else:
+            connector_tasks.inline_import_queue.submit(str(import_id))
+    except Exception as exc:
+        logger.warning(
+            "Could not start the import; the recovery will retry",
+            extra={"import_id": str(import_id), "error": repr(exc)},
+        )
+
+
+def _claimable(cutoff: datetime.datetime):
+    """Queued, or running with a heartbeat older than `cutoff` (orphaned)."""
+    return or_(
+        ConnectorImport.status == IMPORT_QUEUED,
+        and_(
+            ConnectorImport.status == IMPORT_RUNNING,
+            or_(ConnectorImport.heartbeat_at.is_(None), ConnectorImport.heartbeat_at < cutoff),
+        ),
+    )
+
+
+def _stale_cutoff(now: datetime.datetime) -> datetime.datetime:
+    return now - datetime.timedelta(minutes=settings.CONNECTOR_IMPORT_STALE_MINUTES)
+
+
+async def claim_import(db: AsyncSession, import_id: uuid.UUID, *, now: Optional[datetime.datetime] = None) -> bool:
+    """Take the job for this worker; False if another one has it or it is finished."""
+    now = now or utcnow()
+    result = await db.execute(
+        update(ConnectorImport)
+        .where(ConnectorImport.id == import_id, _claimable(_stale_cutoff(now)))
+        .values(status=IMPORT_RUNNING, heartbeat_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return result.rowcount == 1
+
+
+class _ImportAborted(Exception):
+    """Stop the whole job: the connection or project went away."""
+
+
+async def _import_one(
+    db: AsyncSession,
+    *,
+    job: ConnectorImport,
+    connection: ConnectorConnection,
+    entry: Dict[str, Any],
+    allowance,
+    storage,
+    save: Callable[[], Awaitable[None]],
+) -> None:
+    """
+    Import one picked item, recording each step in `entry`. The upload
+    path's rules apply (see the module docstring). Refusals raise
+    ConnectorError / QuotaExceeded BEFORE anything is added to the session,
+    so there is nothing to roll back.
+    """
+    project_id = job.project_id
+    still_connected = (
+        await db.execute(select(ConnectorConnection.id).where(ConnectorConnection.id == connection.id))
+    ).scalar_one_or_none()
+    if still_connected is None:
+        raise _ImportAborted("The connection was removed during the import.")
+
+    item = await call(db, connection, lambda p, t, i=entry["item_id"]: p.get_item(t, i))
+    entry["name"] = item.name[:512]
+    if not item.importable:
+        entry.update(status=ITEM_SKIPPED, detail=f"'{item.name}' is a folder or a type that cannot be imported.")
+        return
+    linked = (
+        await db.execute(
+            select(ConnectorItem.document_id).where(
+                ConnectorItem.project_id == project_id,
+                ConnectorItem.provider == connection.provider,
+                ConnectorItem.external_id == item.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if linked:
+        entry.update(status=ITEM_ALREADY_IMPORTED, document_id=str(linked),
+                     detail=f"'{item.name}' is already in this project; use Sync now to update it.")
+        return
+
+    entry["status"] = ITEM_DOWNLOADING
+    await save()
+
+    path: Optional[str] = None
+    stored_key: Optional[str] = None
+    try:
+        path, checked = await _fetch_to_temp(db, connection, item)
+        duplicate = (
+            await db.execute(
+                select(Document.id).where(
+                    Document.project_id == project_id, Document.duplicate_hash == checked.sha256
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate:
+            entry.update(status=ITEM_DUPLICATE, document_id=str(duplicate),
+                         detail=f"'{checked.filename}' is identical to a document already in this project.")
+            return
+
+        allowance.admit(checked.size)
+        version = (
+            await db.execute(
+                select(func.max(Document.version)).where(
+                    Document.project_id == project_id, Document.filename == checked.filename
+                )
+            )
+        ).scalar() or 0
+
+        stored_key = new_key(project_id, checked.extension)
         try:
-            item = await call(db, connection, lambda p, t, i=item_id: p.get_item(t, i))
-            if not item.importable:
-                result.update(status="skipped", detail=f"'{item.name}' is a folder or a type that cannot be imported.")
-                continue
-            linked = (
-                await db.execute(
-                    select(ConnectorItem.document_id).where(
-                        ConnectorItem.project_id == project.id,
-                        ConnectorItem.provider == connection.provider,
-                        ConnectorItem.external_id == item.id,
-                    )
-                )
-            ).scalar_one_or_none()
-            if linked:
-                result.update(status="already_imported", document_id=str(linked),
-                              detail=f"'{item.name}' is already in this project; use Sync now to update it.")
-                continue
+            await asyncio.to_thread(storage.save, stored_key, path)
+        except StorageError as exc:
+            logger.error("Storage operation failed during import: %s", exc)
+            stored_key = None
+            raise ConnectorError("File storage is unavailable; the file was not imported.") from exc
 
-            path, checked = await _fetch_to_temp(db, connection, item)
-            duplicate = (
-                await db.execute(
-                    select(Document.id).where(
-                        Document.project_id == project.id, Document.duplicate_hash == checked.sha256
-                    )
-                )
-            ).scalar_one_or_none()
-            if duplicate:
-                result.update(status="duplicate", document_id=str(duplicate),
-                              detail=f"'{checked.filename}' is identical to a document already in this project.")
-                continue
-
-            allowance.admit(checked.size)
-            version = (
-                await db.execute(
-                    select(func.max(Document.version)).where(
-                        Document.project_id == project.id, Document.filename == checked.filename
-                    )
-                )
-            ).scalar() or 0
-
-            stored_key = new_key(project.id, checked.extension)
-            try:
-                await asyncio.to_thread(storage.save, stored_key, path)
-            except StorageError as exc:
-                logger.error("Storage operation failed during import: %s", exc)
-                stored_key = None
-                raise ConnectorError("File storage is unavailable; the file was not imported.") from exc
-
-            document = Document(
-                filename=checked.filename,
-                file_type=checked.extension,
-                file_size=checked.size,
-                file_path=stored_key,
-                storage_backend=storage.name,
-                status="pending",
-                duplicate_hash=checked.sha256,
-                version=version + 1,
-                meta_data={
-                    "original_filename": checked.filename,
-                    "chunk_strategy": settings.DEFAULT_CHUNK_STRATEGY,
-                    "chunk_size": settings.DEFAULT_CHUNK_SIZE,
-                    "chunk_overlap": settings.DEFAULT_CHUNK_OVERLAP,
-                    "source": {"provider": connection.provider, "external_id": item.id, "web_url": item.web_url},
-                },
-                project_id=project.id,
+        document = Document(
+            filename=checked.filename,
+            file_type=checked.extension,
+            file_size=checked.size,
+            file_path=stored_key,
+            storage_backend=storage.name,
+            status="pending",
+            duplicate_hash=checked.sha256,
+            version=version + 1,
+            meta_data={
+                "original_filename": checked.filename,
+                "chunk_strategy": settings.DEFAULT_CHUNK_STRATEGY,
+                "chunk_size": settings.DEFAULT_CHUNK_SIZE,
+                "chunk_overlap": settings.DEFAULT_CHUNK_OVERLAP,
+                "source": {"provider": connection.provider, "external_id": item.id, "web_url": item.web_url},
+            },
+            project_id=project_id,
+        )
+        db.add(document)
+        await db.flush()
+        now = utcnow()
+        db.add(
+            ConnectorItem(
+                document_id=document.id,
+                connection_id=connection.id,
+                org_id=job.org_id,
+                project_id=project_id,
+                provider=connection.provider,
+                external_id=item.id,
+                external_name=item.name[:512],
+                revision=item.revision,
+                web_url=item.web_url,
+                auto_sync=job.auto_sync,
+                sync_status=SYNCING,
+                last_synced_at=now,
+                last_checked_at=now,
             )
-            db.add(document)
-            await db.flush()
-            now = utcnow()
-            db.add(
-                ConnectorItem(
-                    document_id=document.id,
-                    connection_id=connection.id,
-                    org_id=user.org_id,
-                    project_id=project.id,
-                    provider=connection.provider,
-                    external_id=item.id,
-                    external_name=item.name[:512],
-                    revision=item.revision,
-                    web_url=item.web_url,
-                    auto_sync=auto_sync,
-                    sync_status=SYNCING,
-                    last_synced_at=now,
-                    last_checked_at=now,
-                )
-            )
-            # The same action an upload records, so the audit log and the
-            # document.uploaded webhook cover imports with no extra code.
-            await audit.record(
-                db, "document.upload", org_id=user.org_id, user_id=user.id, request=request,
-                details={
-                    "document_id": document.id,
-                    "project_id": project.id,
-                    "filename": checked.filename,
-                    "file_size": checked.size,
-                    "version": version + 1,
-                    "source": connection.provider,
-                    "external_id": item.id,
-                },
-            )
+        )
+        # The same action an upload records, so the audit log and the
+        # document.uploaded webhook cover imports with no extra code.
+        await audit.record(
+            db, "document.upload", org_id=job.org_id, user_id=job.user_id,
+            details={
+                "document_id": document.id,
+                "project_id": project_id,
+                "filename": checked.filename,
+                "file_size": checked.size,
+                "version": version + 1,
+                "source": connection.provider,
+                "external_id": item.id,
+                "import_id": job.id,
+            },
+        )
+        entry.update(status=ITEM_IMPORTED, document_id=str(document.id), detail=checked.filename)
+        await save()  # commits the document, its link and this entry together
+        stored_key = None  # now owned by the committed row
+        _queue(document.id)
+    finally:
+        if stored_key:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(storage.delete, stored_key)
+        if path:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
+def _fail_unfinished(items: List[Dict[str, Any]], message: str) -> None:
+    for entry in items:
+        if entry["status"] in ITEM_UNFINISHED:
+            entry.update(status=ITEM_FAILED, detail=message)
+
+
+async def run_import(import_id, session_factory=None) -> str:
+    """
+    Work one import job to the end. Returns "completed", or "busy" when
+    another worker holds it (or it is already finished). Every item is
+    committed on its own, so one failure (a file too large, a page that
+    vanished) does not undo the others; a full quota fails the rest.
+    """
+    import_id = uuid.UUID(str(import_id))
+    factory = session_factory or SessionLocal
+    async with factory() as db:
+        if not await claim_import(db, import_id):
+            return "busy"
+        job = await db.get(ConnectorImport, import_id)
+        if job is None:  # pragma: no cover - deleted between claim and read
+            return "busy"
+        items = [dict(entry) for entry in job.items or []]
+
+        async def save() -> None:
+            job.items = [dict(entry) for entry in items]
+            job.heartbeat_at = utcnow()
             await db.commit()
-            stored_key = None  # now owned by the committed row
-            _queue(document.id)
-            result.update(status="imported", document_id=str(document.id), detail=checked.filename)
-        # Every refusal below happens BEFORE anything is added to the session,
-        # so there is nothing to roll back (and a rollback would expire the
-        # loaded rows this loop still reads).
-        except usage.QuotaExceeded as exc:
-            result.update(status="error", detail=exc.message)
-            break
-        except ConnectorError as exc:
-            result.update(status="error", detail=exc.message)
-        finally:
-            if stored_key:
-                with contextlib.suppress(Exception):
-                    await asyncio.to_thread(storage.delete, stored_key)
-            if path:
-                with contextlib.suppress(OSError):
-                    os.remove(path)
-    return results
+
+        connection = await db.get(ConnectorConnection, job.connection_id) if job.connection_id else None
+        project = await db.get(Project, job.project_id)
+        try:
+            if connection is None or project is None:
+                raise _ImportAborted("The connection or project was removed before the import ran.")
+            allowance = await usage.upload_allowance(db, job.org_id)
+            storage = get_storage()
+            for entry in items:
+                if entry["status"] not in ITEM_UNFINISHED:
+                    continue  # finished before an interruption
+                try:
+                    await _import_one(db, job=job, connection=connection, entry=entry,
+                                      allowance=allowance, storage=storage, save=save)
+                except usage.QuotaExceeded as exc:
+                    entry.update(status=ITEM_FAILED, detail=exc.message)
+                    _fail_unfinished(items, exc.message)
+                    break
+                except ConnectorError as exc:
+                    entry.update(status=ITEM_FAILED, detail=exc.message)
+                await save()
+        except _ImportAborted as exc:
+            _fail_unfinished(items, str(exc))
+        except asyncio.CancelledError:
+            # The API is shutting down: hand the job back, so the next start
+            # resumes it (the items already finished are skipped).
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            with contextlib.suppress(Exception):
+                await asyncio.shield(_requeue(factory, import_id, items))
+            raise
+        except Exception as exc:
+            logger.error("Import job failed", extra={"import_id": str(import_id), "error": repr(exc)})
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            await db.refresh(job)
+            _fail_unfinished(items, "The import failed unexpectedly; try again.")
+        job.items = [dict(entry) for entry in items]
+        job.status = IMPORT_COMPLETED
+        job.heartbeat_at = job.finished_at = utcnow()
+        await db.commit()
+    return "completed"
+
+
+async def _requeue(factory, import_id: uuid.UUID, items: List[Dict[str, Any]]) -> None:
+    for entry in items:
+        if entry["status"] == ITEM_DOWNLOADING:
+            entry["status"] = ITEM_PENDING
+    async with factory() as db:
+        await db.execute(
+            update(ConnectorImport)
+            .where(ConnectorImport.id == import_id)
+            .values(status=IMPORT_QUEUED, heartbeat_at=None, items=items)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+
+async def resume_imports(session_factory=None, *, now: Optional[datetime.datetime] = None) -> int:
+    """Send again every unfinished job nobody is working on. Returns how many."""
+    factory = session_factory or SessionLocal
+    now = now or utcnow()
+    async with factory() as db:
+        ids = (
+            await db.execute(
+                select(ConnectorImport.id)
+                .where(_claimable(_stale_cutoff(now)))
+                .order_by(ConnectorImport.created_at)
+                .limit(100)
+            )
+        ).scalars().all()
+    for import_id in ids:
+        dispatch_import(import_id)
+    if ids:
+        logger.info("Resumed cloud imports", extra={"count": len(ids)})
+    return len(ids)
+
+
+async def import_finished(import_id, session_factory=None) -> bool:
+    """True when the job is completed or gone (nothing left to retry)."""
+    async with (session_factory or SessionLocal)() as db:
+        job = await db.get(ConnectorImport, uuid.UUID(str(import_id)))
+        return job is None or job.status == IMPORT_COMPLETED
+
+
+def import_view(job: ConnectorImport) -> Dict[str, Any]:
+    """One import job as the API reports it."""
+    items = list(job.items or [])
+    counts: Dict[str, int] = {}
+    for entry in items:
+        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+    return {
+        "id": job.id,
+        "connection_id": job.connection_id,
+        "project_id": job.project_id,
+        "provider": job.provider,
+        "status": job.status,
+        "auto_sync": job.auto_sync,
+        "items": items,
+        "counts": counts,
+        "created_at": _aware(job.created_at),
+        "finished_at": _aware(job.finished_at),
+    }
 
 
 # ======================================================================
-# 5. SYNC
+# 5. DISCONNECT: best-effort revocation at the provider
+# ======================================================================
+
+
+async def revoke(connection: ConnectorConnection) -> Dict[str, Any]:
+    """
+    Ask the provider to revoke DocMinds' grant, when it has an API for it.
+    NEVER raises: the local disconnect has already happened and must not
+    depend on the provider being reachable. Returns
+        {"revoked": bool, "manage_url": str | None, "detail": str | None}
+    where `manage_url` is the provider's own page for removing the app by
+    hand (shown when revocation is unsupported or failed).
+    """
+    provider = get_provider(connection.provider)
+    manage_url = getattr(provider, "manage_access_url", None) if provider else None
+    if provider is None:
+        return {"revoked": False, "manage_url": None, "detail": None}
+    try:
+        tokens = TokenSet.from_dict(decrypt_tokens(connection.encrypted_tokens))
+        revoked = await provider.revoke(tokens)
+    except Exception as exc:
+        logger.warning(
+            "Revoking the connection at the provider failed; the local disconnect stands",
+            extra={"provider": connection.provider, "connection_id": str(connection.id), "error": repr(exc)},
+        )
+        return {
+            "revoked": False,
+            "manage_url": manage_url,
+            "detail": f"{provider.name} could not be reached to revoke access; remove DocMinds there by hand.",
+        }
+    if revoked:
+        return {"revoked": True, "manage_url": None, "detail": None}
+    return {
+        "revoked": False,
+        "manage_url": manage_url,
+        "detail": f"{provider.name} has no API to revoke access; remove DocMinds in your {provider.name} account.",
+    }
+
+
+# ======================================================================
+# 6. SYNC
 # ======================================================================
 
 

@@ -40,7 +40,7 @@ from app.services.connectors import crypto, http, service
 from app.services.connectors.base import Provider, RemoteItem, TokenSet, check_id
 from app.services.connectors.confluence import Confluence
 from app.services.connectors.google_drive import GoogleDrive
-from app.services.connectors.notion import block_to_markdown, page_title
+from app.services.connectors.notion import Notion, block_to_markdown, page_title
 from app.services.connectors.onedrive import OneDrive, split_id
 from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
     env,
@@ -335,7 +335,12 @@ class FakeProvider(Provider):
 
 
 @pytest.fixture
-def fake(monkeypatch):
+def fake(monkeypatch, env):
+    from app.tasks import connectors as connector_tasks
+
+    env.import_jobs = []
+    monkeypatch.setattr(connector_tasks.run_import_task, "delay", lambda import_id: env.import_jobs.append(import_id))
+    monkeypatch.setattr(settings, "INGESTION_MODE", "celery")
     provider = FakeProvider()
     monkeypatch.setitem(connectors.PROVIDERS, "fake", provider)
     monkeypatch.setattr(settings, "CONNECTORS_ENABLED", True)
@@ -360,12 +365,26 @@ async def _connect(env) -> str:
     return connection["id"]
 
 
-async def _import(env, connection_id, *ids):
+async def _start_import(env, connection_id, *ids):
     return await env.client.post(
         f"{API}/integrations/connections/{connection_id}/import",
         headers=env.headers,
         json={"project_id": env.project_id, "item_ids": list(ids)},
     )
+
+
+async def _import(env, connection_id, *ids):
+    """Start an import (202, every item pending), run the background job the
+    way the worker would, and return the finished job's items."""
+    started = await _start_import(env, connection_id, *ids)
+    assert started.status_code == 202, started.text
+    job = started.json()
+    assert job["status"] == "queued" and {i["status"] for i in job["items"]} == {"pending"}
+    assert env.import_jobs[-1] == job["id"]  # dispatched after the commit
+    assert await service.run_import(job["id"], env.factory) == "completed"
+    polled = await env.client.get(f"{API}/integrations/imports/{job['id']}", headers=env.headers)
+    assert polled.status_code == 200 and polled.json()["status"] == "completed"
+    return polled.json()["items"]
 
 
 async def _link(env, document_id) -> ConnectorItem:
@@ -409,12 +428,10 @@ class TestThroughTheApi:
         assert browse.status_code == 200
         assert [i["id"] for i in browse.json()["items"]] == ["f1", "folder1"]
 
-        response = await _import(env, connection_id, "f1", "folder1", "missing")
-        assert response.status_code == 200, response.text
-        results = {r["item_id"]: r for r in response.json()}
-        assert results["f1"]["status"] == "imported"
+        results = {r["item_id"]: r for r in await _import(env, connection_id, "f1", "folder1", "missing")}
+        assert results["f1"]["status"] == "imported" and results["f1"]["name"] == "notes.txt"
         assert results["folder1"]["status"] == "skipped"
-        assert results["missing"]["status"] == "error"
+        assert results["missing"]["status"] == "failed" and results["missing"]["detail"]
         document_id = results["f1"]["document_id"]
         assert queued == [document_id]  # the upload path's ingestion entry point
 
@@ -425,7 +442,7 @@ class TestThroughTheApi:
         assert (link.external_id, link.revision) == ("f1", "r1")
 
         again = await _import(env, connection_id, "f1")
-        assert again.json()[0]["status"] == "already_imported"
+        assert again[0]["status"] == "already_imported"
 
         listed = await env.client.get(f"{API}/integrations/documents", headers=env.headers,
                                       params={"project_id": env.project_id})
@@ -438,13 +455,13 @@ class TestThroughTheApi:
         fake.files["bad"] = ["tool.exe", b"MZ\x00\x00", "r"]
         fake.files["fake"] = ["image.png", b"not a png", "r"]
         connection_id = await _connect(env)
-        results = (await _import(env, connection_id, "bad", "fake")).json()
-        assert [r["status"] for r in results] == ["error", "error"]
+        results = await _import(env, connection_id, "bad", "fake")
+        assert [r["status"] for r in results] == ["failed", "failed"]
         assert await env.documents() == [] and env.stored_files() == []
 
     async def test_sync_now(self, env, fake, queued):
         connection_id = await _connect(env)
-        document_id = (await _import(env, connection_id, "f1")).json()[0]["document_id"]
+        document_id = (await _import(env, connection_id, "f1"))[0]["document_id"]
         sync = f"{API}/integrations/documents/{document_id}/sync"
 
         busy = await env.client.post(sync, headers=env.headers)
@@ -471,7 +488,7 @@ class TestThroughTheApi:
 
     async def test_a_401_refreshes_once(self, env, fake, queued):
         connection_id = await _connect(env)
-        document_id = (await _import(env, connection_id, "f1")).json()[0]["document_id"]
+        document_id = (await _import(env, connection_id, "f1"))[0]["document_id"]
         await env.update_document(document_id, status="completed")
         fake.fail_next_with_401 = True
         response = await env.client.post(f"{API}/integrations/documents/{document_id}/sync", headers=env.headers)
@@ -482,7 +499,7 @@ class TestThroughTheApi:
 
     async def test_periodic_sweep(self, env, fake, queued, monkeypatch):
         connection_id = await _connect(env)
-        document_id = (await _import(env, connection_id, "f1")).json()[0]["document_id"]
+        document_id = (await _import(env, connection_id, "f1"))[0]["document_id"]
         await env.update_document(document_id, status="completed")
         fake.files["f1"][1] = TEXT + b" Changed."
         fake.files["f1"][2] = "r9"
@@ -495,9 +512,11 @@ class TestThroughTheApi:
 
     async def test_disconnect_keeps_documents(self, env, fake, queued):
         connection_id = await _connect(env)
-        document_id = (await _import(env, connection_id, "f1")).json()[0]["document_id"]
+        document_id = (await _import(env, connection_id, "f1"))[0]["document_id"]
         response = await env.client.delete(f"{API}/integrations/connections/{connection_id}", headers=env.headers)
-        assert response.status_code == 204
+        assert response.status_code == 200
+        # The fake provider has no revocation API: the reply says so.
+        assert response.json()["revoked"] is False
         assert len(await env.documents()) == 1
         link = await _link(env, document_id)
         assert link.connection_id is None and link.sync_status == "disconnected"
@@ -538,3 +557,114 @@ def test_beat_schedule_has_the_sync():
 def test_document_model_unchanged_for_imports():
     # Imports are plain Document rows: nothing in the pipeline is import-specific.
     assert not hasattr(Document, "connector")
+
+
+class TestBackgroundImports:
+    async def test_bad_ids_are_refused_before_any_job(self, env, fake, queued):
+        connection_id = await _connect(env)
+        response = await _start_import(env, connection_id, "../etc")
+        assert response.status_code == 400
+        assert env.import_jobs == []
+
+    async def test_progress_is_visible_while_running(self, env, fake, queued, monkeypatch):
+        fake.files["f2"] = ["second.txt", TEXT + b" Second.", "r1"]
+        connection_id = await _connect(env)
+        job = (await _start_import(env, connection_id, "f1", "f2")).json()
+        seen = []
+        original = fake.fetch
+
+        async def watching_fetch(tokens, item, dest_path):
+            polled = await env.client.get(f"{API}/integrations/imports/{job['id']}", headers=env.headers)
+            seen.append([i["status"] for i in polled.json()["items"]])
+            return await original(tokens, item, dest_path)
+
+        monkeypatch.setattr(fake, "fetch", watching_fetch)
+        await service.run_import(job["id"], env.factory)
+        assert seen == [["downloading", "pending"], ["imported", "downloading"]]
+        listed = await env.client.get(f"{API}/integrations/imports", headers=env.headers)
+        assert listed.json()[0]["counts"] == {"imported": 2}
+
+    async def test_a_claimed_job_is_not_run_twice_and_resumes_when_stale(self, env, fake, queued):
+        connection_id = await _connect(env)
+        job = (await _start_import(env, connection_id, "f1")).json()
+        import_id = uuid.UUID(job["id"])
+        async with env.factory() as db:
+            assert await service.claim_import(db, import_id) is True  # a worker that then died
+        assert await service.run_import(import_id, env.factory) == "busy"
+        assert await service.resume_imports(env.factory) == 0
+        later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+            minutes=settings.CONNECTOR_IMPORT_STALE_MINUTES + 1)
+        assert await service.resume_imports(env.factory, now=later) == 1
+        async with env.factory() as db:
+            assert await service.claim_import(db, import_id, now=later) is True
+            job_row = await db.get(service.ConnectorImport, import_id)
+            job_row.heartbeat_at = None
+            await db.commit()
+        assert await service.run_import(import_id, env.factory) == "completed"
+        assert len(await env.documents()) == 1
+
+    async def test_disconnect_mid_import_fails_the_rest(self, env, fake, queued):
+        connection_id = await _connect(env)
+        job = (await _start_import(env, connection_id, "f1")).json()
+        await env.client.delete(f"{API}/integrations/connections/{connection_id}", headers=env.headers)
+        await service.run_import(job["id"], env.factory)
+        polled = (await env.client.get(f"{API}/integrations/imports/{job['id']}", headers=env.headers)).json()
+        assert polled["status"] == "completed" and polled["items"][0]["status"] == "failed"
+        assert await env.documents() == []
+
+    async def test_other_orgs_job_is_not_found(self, env, fake):
+        response = await env.client.get(f"{API}/integrations/imports/{uuid.uuid4()}", headers=env.headers)
+        assert response.status_code == 404
+
+
+class TestRevocation:
+    async def test_revocation_failure_never_fails_the_disconnect(self, env, fake, monkeypatch):
+        async def broken(tokens):
+            raise http.ConnectorUnavailable("down", 503)
+
+        fake.manage_access_url = "https://fake.example/apps"
+        monkeypatch.setattr(fake, "revoke", broken)
+        connection_id = await _connect(env)
+        response = await env.client.delete(f"{API}/integrations/connections/{connection_id}", headers=env.headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["revoked"] is False and body["manage_url"] == "https://fake.example/apps"
+        assert (await env.client.get(f"{API}/integrations/connections", headers=env.headers)).json() == []
+
+    async def test_a_successful_revocation(self, env, fake, monkeypatch):
+        calls = []
+
+        async def ok(tokens):
+            calls.append(tokens.access_token)
+            return True
+
+        monkeypatch.setattr(fake, "revoke", ok)
+        connection_id = await _connect(env)
+        response = await env.client.delete(f"{API}/integrations/connections/{connection_id}", headers=env.headers)
+        assert response.json() == {"revoked": True, "manage_url": None, "detail": None}
+        assert calls == ["access-1"]
+
+    async def test_google_revokes_the_refresh_token(self, fake_net):
+        routes, calls = fake_net
+        routes[("POST", "https://oauth2.googleapis.com/revoke")] = lambda r: httpx.Response(200, json={})
+        assert await GoogleDrive().revoke(TokenSet("a", "r")) is True
+        assert calls[-1].content == b"token=r"
+
+    async def test_google_already_revoked_counts_as_revoked(self, fake_net):
+        routes, _ = fake_net
+        routes[("POST", "https://oauth2.googleapis.com/revoke")] = lambda r: httpx.Response(400, json={"error": "x"})
+        assert await GoogleDrive().revoke(TokenSet("a", "r")) is True
+
+    async def test_notion_revokes(self, fake_net, monkeypatch):
+        monkeypatch.setattr(settings, "CONNECTOR_NOTION_CLIENT_ID", "id")
+        monkeypatch.setattr(settings, "CONNECTOR_NOTION_CLIENT_SECRET", "secret")
+        routes, calls = fake_net
+        routes[("POST", "https://api.notion.com/v1/oauth/revoke")] = lambda r: httpx.Response(200, json={})
+        assert await Notion().revoke(TokenSet("a")) is True
+        assert b'"token"' in calls[-1].content and calls[-1].headers["authorization"].startswith("Basic ")
+
+    async def test_microsoft_and_confluence_cannot_revoke_and_link_instead(self):
+        assert await OneDrive().revoke(TokenSet("a", "r")) is False
+        assert await Confluence().revoke(TokenSet("a", "r")) is False
+        assert OneDrive.manage_access_url.startswith("https://")
+        assert Confluence.manage_access_url.startswith("https://id.atlassian.com/")

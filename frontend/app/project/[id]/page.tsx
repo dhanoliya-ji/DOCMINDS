@@ -71,6 +71,7 @@ import DocumentActions from "@/components/DocumentActions";
 import SearchPanel from "@/components/SearchPanel";
 import UploadZone from "@/components/UploadZone";
 import { api, DocumentItem, getErrorMessage, getToken } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { describeProgress, documentProgress } from "@/lib/progress";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
@@ -113,6 +114,8 @@ export default function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const router = useRouter();
+  // The reader's language, for the live ingestion progress line.
+  const { locale } = useT();
 
   // The signed-in user's role decides whether the upload zone is offered.
   const { user, loading: userLoading } = useCurrentUser();
@@ -555,13 +558,13 @@ export default function ProjectPage({
                               every batch: pages read, chunks embedded, or a
                               rate-limit pause and when it resumes. */}
                           {(doc.status === "pending" || doc.status === "processing") &&
-                            describeProgress(documentProgress(doc)) && (
+                            describeProgress(documentProgress(doc), undefined, locale) && (
                               <div
                                 className="mt-1 text-xs"
                                 style={{ color: "var(--text-muted)" }}
                                 data-testid="document-progress"
                               >
-                                {describeProgress(documentProgress(doc))}
+                                {describeProgress(documentProgress(doc), undefined, locale)}
                               </div>
                             )}
                           {doc.status === "pending" &&

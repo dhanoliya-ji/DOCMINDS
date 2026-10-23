@@ -3,7 +3,7 @@ connector.py  (database models)
 ===============================
 WHAT THIS FILE DOES
 -------------------
-Defines the two tables behind cloud imports (services/connectors/):
+Defines the three tables behind cloud imports (services/connectors/):
 
     connector_connections   one OAuth connection of an organization to a
                             provider -- Google Drive, OneDrive / SharePoint,
@@ -12,6 +12,10 @@ Defines the two tables behind cloud imports (services/connectors/):
     connector_items         one imported document's link back to its source:
                             the provider's id for the file, the revision we
                             imported, and how the last sync went.
+    connector_imports       one "Import" press: the picked items and how far
+                            the BACKGROUND import of each has got
+                            (pending -> downloading -> imported | failed ...),
+                            so the page can poll it.
 
 WHY THE TOKENS ARE ENCRYPTED, NOT HASHED
 ----------------------------------------
@@ -31,6 +35,21 @@ THE DELETE RULES
                             and its sync_status "disconnected", so the page
                             can say why they no longer update.
 
+IMPORT JOBS
+-----------
+POST /connections/{id}/import only validates and records a job (status
+"queued"), then returns 202; downloading, storing and queueing for ingestion
+happen in the background (service.run_import). The job's `items` is a JSON
+list, one entry per picked id, written by the ONE worker that holds the job:
+
+    {"item_id", "name", "status", "document_id", "detail"}
+    status: pending | downloading | imported | duplicate | already_imported
+            | skipped | failed
+
+`heartbeat_at` is renewed after every item; a job whose heartbeat is older
+than CONNECTOR_IMPORT_STALE_MINUTES was orphaned (the process died) and is
+resumed by the startup recovery, skipping the items already finished.
+
 SYNC STATUS
 -----------
     synced         the copy we hold is the source's current revision
@@ -46,6 +65,7 @@ import uuid
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, true
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -54,6 +74,22 @@ from app.db.base_class import Base
 # Connection states.
 ACTIVE = "active"
 ERROR = "error"   # a refresh failed; reconnecting fixes it
+
+# Import job states.
+IMPORT_QUEUED = "queued"
+IMPORT_RUNNING = "running"
+IMPORT_COMPLETED = "completed"
+
+# Import item states.
+ITEM_PENDING = "pending"
+ITEM_DOWNLOADING = "downloading"
+ITEM_IMPORTED = "imported"
+ITEM_FAILED = "failed"
+# Finished without a new document, and not an error.
+ITEM_DUPLICATE = "duplicate"
+ITEM_ALREADY_IMPORTED = "already_imported"
+ITEM_SKIPPED = "skipped"
+ITEM_UNFINISHED = (ITEM_PENDING, ITEM_DOWNLOADING)
 
 # Link (document) sync states.
 SYNCED = "synced"
@@ -138,3 +174,40 @@ class ConnectorItem(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ConnectorImport(Base):
+    """One background import: the items picked in one "Import" press."""
+
+    __tablename__ = "connector_imports"
+    __table_args__ = (
+        # The recovery sweep: unfinished jobs with an old heartbeat.
+        Index("ix_connector_imports_status_heartbeat", "status", "heartbeat_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # SET NULL: disconnecting mid-import fails the remaining items, it does
+    # not delete the record of what was imported.
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("connector_connections.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    auto_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=IMPORT_QUEUED, server_default=IMPORT_QUEUED
+    )
+    items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    heartbeat_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

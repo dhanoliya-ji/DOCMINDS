@@ -15,9 +15,16 @@ files or pages into a project, and keep them in sync.
     GET    /integrations/connections                    the organization's
                                                         connections
     DELETE /integrations/connections/{id}               disconnect (imported
-                                                        documents stay)
+                                                        documents stay), and
+                                                        revoke at the provider
+                                                        where it has an API
     GET    /integrations/connections/{id}/items         the file/page picker
-    POST   /integrations/connections/{id}/import        import into a project
+    POST   /integrations/connections/{id}/import        import into a project,
+                                                        in the BACKGROUND: 202
+                                                        and a job to poll
+    GET    /integrations/imports?connection_id=         recent import jobs
+    GET    /integrations/imports/{import_id}            one job, per-item
+                                                        progress
     POST   /integrations/connections/{id}/sync          "Sync now", every
                                                         document it imported
     GET    /integrations/documents?project_id=          imported documents and
@@ -30,8 +37,27 @@ WHO MAY
 Editors and admins: importing changes what the whole organization searches,
 exactly like an upload, so viewers get 403. Every route answers 404 while
 CONNECTORS_ENABLED is off. Connecting, disconnecting, importing and syncing
-are audited (connector.connect, connector.disconnect, document.upload,
-document.sync).
+are audited (connector.connect, connector.disconnect, connector.import,
+document.upload per imported file, document.sync).
+
+IMPORTS RUN IN THE BACKGROUND
+-----------------------------
+Downloading a dozen files can take minutes -- far longer than a request
+should be held open (or than a proxy allows). The import endpoint only
+checks the request (connection, project, item count and id format), records
+a job and answers 202; the download, the upload rules, storage and the
+ingestion dispatch run in the background (service.run_import: a Celery task,
+or the in-process queue with INGESTION_MODE=inline). The page polls the job:
+each item goes pending -> downloading -> imported (or duplicate,
+already_imported, skipped, failed with the reason).
+
+DISCONNECTING REVOKES WHERE IT CAN
+----------------------------------
+The connection and its tokens are deleted locally FIRST and committed;
+then the provider is asked to revoke the grant (Google, Notion). Microsoft
+and Atlassian have no API for that, so the reply carries `manage_url`, the
+provider's own page for removing the app. A revocation failure is logged and
+reported, never turned into a failed disconnect.
 
 THE CALLBACK
 ------------
@@ -53,15 +79,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.connector import DISCONNECTED, ConnectorConnection, ConnectorItem
+from app.models.connector import DISCONNECTED, ConnectorConnection, ConnectorImport, ConnectorItem
 from app.models.document import Document
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.integrations import (
     AuthorizeOut,
     ConnectionOut,
+    DisconnectOut,
+    ImportJobOut,
     ImportRequest,
-    ImportResult,
     LinkedDocumentOut,
     LinkUpdate,
     ProviderOut,
@@ -71,6 +98,7 @@ from app.schemas.integrations import (
 from app.services import audit
 from app.services.connectors import PROVIDERS, get_provider
 from app.services.connectors import service
+from app.services.connectors.base import check_id
 from app.services.connectors.http import ConnectorAuthError, ConnectorError, ConnectorUnavailable
 
 
@@ -191,7 +219,7 @@ async def list_connections(
     return rows.scalars().all()
 
 
-@router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/connections/{connection_id}", response_model=DisconnectOut)
 async def disconnect(
     connection_id: uuid.UUID,
     request: Request,
@@ -200,8 +228,11 @@ async def disconnect(
 ):
     """
     Remove the connection and its tokens. Documents it imported stay, but
-    stop syncing ("disconnected"). To also revoke DocMinds' access at the
-    provider, remove the app in the provider's own account settings.
+    stop syncing ("disconnected"). Then, best effort, revoke DocMinds'
+    access at the provider: Google and Notion have an API for it; for
+    Microsoft and Confluence (no such API) `manage_url` links to the page
+    where the person removes the app. A failed revocation never fails the
+    disconnect -- it is logged, and reported here.
     """
     connection = await _connection(db, current_user, connection_id)
     links = await db.execute(select(ConnectorItem).where(ConnectorItem.connection_id == connection.id))
@@ -212,8 +243,13 @@ async def disconnect(
         db, "connector.disconnect", org_id=current_user.org_id, user_id=current_user.id, request=request,
         details={"provider": connection.provider, "account": connection.account_label, "connection_id": connection.id},
     )
+    # Keep what revocation needs; the row (and its ciphertext) is deleted now.
+    held = ConnectorConnection(
+        id=connection.id, provider=connection.provider, encrypted_tokens=connection.encrypted_tokens
+    )
     await db.delete(connection)
     await db.commit()
+    return await service.revoke(held)
 
 
 # ======================================================================
@@ -243,7 +279,8 @@ async def browse(
 
 @router.post(
     "/connections/{connection_id}/import",
-    response_model=List[ImportResult],
+    response_model=ImportJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
     # As heavy as an upload (download, then extraction and embedding).
     dependencies=[Depends(deps.rate_limit_by_user("upload"))],
 )
@@ -255,9 +292,10 @@ async def import_items(
     current_user: User = Depends(deps.require_editor),
 ):
     """
-    Import the picked items into a project. One result per item; the
-    imported ones are queued for ingestion like an upload (status
-    "pending"), and remember their source for sync.
+    Import the picked items into a project, in the background. Answers 202
+    with the job at once; poll GET /integrations/imports/{id} for each
+    item's progress. Imported items are queued for ingestion like an upload
+    (document status "pending") and remember their source for sync.
     """
     connection = await _connection(db, current_user, connection_id)
     project = await db.get(Project, payload.project_id)
@@ -269,10 +307,51 @@ async def import_items(
             detail=f"At most {settings.MAX_FILES_PER_UPLOAD} items can be imported at once.",
         )
     item_ids = list(dict.fromkeys(payload.item_ids))  # duplicates in one request: once
-    return await service.import_items(
+    try:
+        for item_id in item_ids:
+            check_id(item_id)
+    except ConnectorError as exc:
+        raise _http_error(exc) from exc
+    job = await service.create_import(
         db, connection=connection, project=project, user=current_user,
         item_ids=item_ids, auto_sync=payload.auto_sync, request=request,
     )
+    await db.commit()
+    service.dispatch_import(job.id)  # after the commit: the worker must see the row
+    return service.import_view(job)
+
+
+@router.get("/imports", response_model=List[ImportJobOut])
+async def list_imports(
+    connection_id: Optional[uuid.UUID] = None,
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_editor),
+):
+    """The organization's most recent import jobs, newest first."""
+    statement = (
+        select(ConnectorImport)
+        .where(ConnectorImport.org_id == current_user.org_id)
+        .order_by(ConnectorImport.created_at.desc())
+        .limit(limit)
+    )
+    if connection_id is not None:
+        statement = statement.where(ConnectorImport.connection_id == connection_id)
+    rows = await db.execute(statement)
+    return [service.import_view(job) for job in rows.scalars().all()]
+
+
+@router.get("/imports/{import_id}", response_model=ImportJobOut)
+async def get_import(
+    import_id: uuid.UUID,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_editor),
+):
+    """One import job: its status and every item's progress."""
+    job = await db.get(ConnectorImport, import_id)
+    if job is None or job.org_id != current_user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found.")
+    return service.import_view(job)
 
 
 # ======================================================================

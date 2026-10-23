@@ -821,6 +821,13 @@ export interface paths {
          *     "completed" again; the pipeline (tasks/ingestion.py, stage 4) deletes
          *     the old chunks before writing the new ones, so nothing is duplicated.
          *     Returns 202 for the same reason the upload does.
+         *
+         *     RE-INDEX RESUMES. On a FAILED or PAUSED document whose chunks were all
+         *     saved with the same chunk settings, the pipeline does not start again:
+         *     it skips straight to embedding the chunks that have no vector yet. So
+         *     "failed at 900 of 1,200" continues from 901. A completed document, or
+         *     new chunk settings, rebuild from the file. A paused document (waiting
+         *     for the embedding rate limit) may be re-indexed to resume it NOW.
          */
         post: operations["reindex_document_api_v1_documents__document_id__reindex_post"];
         delete?: never;
@@ -913,8 +920,11 @@ export interface paths {
         /**
          * Disconnect
          * @description Remove the connection and its tokens. Documents it imported stay, but
-         *     stop syncing ("disconnected"). To also revoke DocMinds' access at the
-         *     provider, remove the app in the provider's own account settings.
+         *     stop syncing ("disconnected"). Then, best effort, revoke DocMinds'
+         *     access at the provider: Google and Notion have an API for it; for
+         *     Microsoft and Confluence (no such API) `manage_url` links to the page
+         *     where the person removes the app. A failed revocation never fails the
+         *     disconnect -- it is logged, and reported here.
          */
         delete: operations["disconnect_api_v1_integrations_connections__connection_id__delete"];
         options?: never;
@@ -933,9 +943,10 @@ export interface paths {
         put?: never;
         /**
          * Import Items
-         * @description Import the picked items into a project. One result per item; the
-         *     imported ones are queued for ingestion like an upload (status
-         *     "pending"), and remember their source for sync.
+         * @description Import the picked items into a project, in the background. Answers 202
+         *     with the job at once; poll GET /integrations/imports/{id} for each
+         *     item's progress. Imported items are queued for ingestion like an upload
+         *     (document status "pending") and remember their source for sync.
          */
         post: operations["import_items_api_v1_integrations_connections__connection_id__import_post"];
         delete?: never;
@@ -1029,6 +1040,46 @@ export interface paths {
          * @description Check this document's source now, and re-import it if it changed.
          */
         post: operations["sync_document_api_v1_integrations_documents__document_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Imports
+         * @description The organization's most recent import jobs, newest first.
+         */
+        get: operations["list_imports_api_v1_integrations_imports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/imports/{import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Import
+         * @description One import job: its status and every item's progress.
+         */
+        get: operations["get_import_api_v1_integrations_imports__import_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2223,6 +2274,19 @@ export interface components {
             date: string;
         };
         /**
+         * DisconnectOut
+         * @description The local disconnect always happens; this says whether the provider
+         *     also revoked DocMinds' access, and where to remove it by hand if not.
+         */
+        DisconnectOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Manage Url */
+            manage_url?: string | null;
+            /** Revoked */
+            revoked: boolean;
+        };
+        /**
          * DocumentOut
          * @description A document as returned by the API.
          *
@@ -2453,6 +2517,66 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * ImportItemOut
+         * @description One picked item's progress in a background import.
+         */
+        ImportItemOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Item Id */
+            item_id: string;
+            /** Name */
+            name?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "downloading" | "imported" | "duplicate" | "already_imported" | "skipped" | "failed";
+        };
+        /**
+         * ImportJobOut
+         * @description A background import: POST .../import answers with this (202), and
+         *     GET /integrations/imports/{id} reports it until `status` is "completed".
+         */
+        ImportJobOut: {
+            /** Auto Sync */
+            auto_sync: boolean;
+            /** Connection Id */
+            connection_id?: string | null;
+            /**
+             * Counts
+             * @default {}
+             */
+            counts: {
+                [key: string]: number;
+            };
+            /** Created At */
+            created_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Items */
+            items: components["schemas"]["ImportItemOut"][];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed";
+        };
         /** ImportRequest */
         ImportRequest: {
             /**
@@ -2467,20 +2591,6 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
-        };
-        /** ImportResult */
-        ImportResult: {
-            /** Detail */
-            detail?: string | null;
-            /** Document Id */
-            document_id?: string | null;
-            /** Item Id */
-            item_id: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "imported" | "duplicate" | "already_imported" | "skipped" | "error";
         };
         /**
          * InviteCreate
@@ -4613,11 +4723,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DisconnectOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -4646,12 +4758,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportResult"][];
+                    "application/json": components["schemas"]["ImportJobOut"];
                 };
             };
             /** @description Validation Error */
@@ -4817,6 +4929,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_imports_api_v1_integrations_imports_get: {
+        parameters: {
+            query?: {
+                connection_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_api_v1_integrations_imports__import_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobOut"];
                 };
             };
             /** @description Validation Error */

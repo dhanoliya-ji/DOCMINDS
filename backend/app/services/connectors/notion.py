@@ -27,7 +27,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.connectors.base import FetchedFile, Provider, RemoteItem, TokenSet, path_id
-from app.services.connectors.http import ConnectorAuthError, SourceNotFound, TooLarge, request
+from app.services.connectors.http import ConnectorAuthError, ConnectorError, SourceNotFound, TooLarge, request
 
 API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
@@ -96,6 +96,9 @@ class Notion(Provider):
     id = "notion"
     name = "Notion"
     allowed_hosts = ("api.notion.com",)
+    # Where a person removes the integration by hand (Settings -> Connections
+    # in the Notion app) when revocation fails.
+    manage_access_url = "https://www.notion.so/profile/integrations"
 
     def configured(self) -> bool:
         return bool(settings.CONNECTOR_NOTION_CLIENT_ID and settings.CONNECTOR_NOTION_CLIENT_SECRET)
@@ -136,6 +139,24 @@ class Notion(Provider):
             what="Refreshing the Notion connection", auth=self._basic(), as_json=True,
         )
         return TokenSet.from_oauth(body, previous=tokens)
+
+    async def revoke(self, tokens: TokenSet) -> bool:
+        """Notion's token revocation endpoint (POST /v1/oauth/revoke, client
+        credentials as Basic auth). A 400 means the token is already invalid,
+        which is the outcome we want; anything else is raised, so the person
+        is shown where to remove the integration by hand."""
+        if not tokens.access_token:
+            return True
+        try:
+            await request(
+                "POST", f"{API}/oauth/revoke", allowed=self.allowed_hosts, what="Revoking Notion access",
+                json={"token": tokens.access_token}, auth=self._basic(),
+                headers={"Notion-Version": NOTION_VERSION},
+            )
+        except ConnectorError as exc:
+            if exc.status_code != 400:
+                raise
+        return True
 
     def _page(self, raw: Dict[str, Any]) -> RemoteItem:
         return RemoteItem(

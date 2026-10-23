@@ -22,7 +22,9 @@ export type Provider = Schema<"ProviderOut">;
 export type Connection = Schema<"ConnectionOut">;
 export type RemoteItem = Schema<"RemoteItemOut">;
 export type RemoteItemPage = Schema<"RemoteItemPage">;
-export type ImportResult = Schema<"ImportResult">;
+export type ImportJob = Schema<"ImportJobOut">;
+export type ImportItem = Schema<"ImportItemOut">;
+export type DisconnectResult = Schema<"DisconnectOut">;
 export type LinkedDocument = Schema<"LinkedDocumentOut">;
 export type SyncResult = Schema<"SyncResult">;
 export type BillingStatus = Schema<"BillingStatus">;
@@ -53,18 +55,25 @@ export const platformApi = {
     return apiFetch<Connection[]>("/integrations/connections");
   },
   disconnect(connectionId: string) {
-    return apiFetch<void>(`/integrations/connections/${connectionId}`, { method: "DELETE" });
+    return apiFetch<DisconnectResult>(`/integrations/connections/${connectionId}`, { method: "DELETE" });
   },
   browse(connectionId: string, options: { parent?: string; q?: string; cursor?: string } = {}) {
     return apiFetch<RemoteItemPage>(
       `/integrations/connections/${connectionId}/items${query(options)}`
     );
   },
+  /** Starts a BACKGROUND import (202): poll getImport until status is "completed". */
   importItems(connectionId: string, projectId: string, itemIds: string[], autoSync = true) {
-    return apiFetch<ImportResult[]>(`/integrations/connections/${connectionId}/import`, {
+    return apiFetch<ImportJob>(`/integrations/connections/${connectionId}/import`, {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, item_ids: itemIds, auto_sync: autoSync }),
     });
+  },
+  getImport(importId: string) {
+    return apiFetch<ImportJob>(`/integrations/imports/${importId}`);
+  },
+  listImports(connectionId?: string) {
+    return apiFetch<ImportJob[]>(`/integrations/imports${query({ connection_id: connectionId })}`);
   },
   listLinkedDocuments(projectId?: string) {
     return apiFetch<LinkedDocument[]>(`/integrations/documents${query({ project_id: projectId })}`);

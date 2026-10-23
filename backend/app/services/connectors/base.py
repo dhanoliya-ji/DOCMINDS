@@ -13,6 +13,9 @@ the API never need to know which provider they are talking to:
     Provider.get_item(tokens, item_id)            one item's CURRENT revision
     Provider.fetch(tokens, item, dest_dir)        the bytes, in a format the
                                                   extractor reads
+    Provider.revoke(tokens)                       revoke our grant at the
+                                                  provider on disconnect;
+                                                  False = no API for it
 
 Plus the plain data it passes around: TokenSet, RemoteItem, FetchedFile.
 
@@ -141,6 +144,9 @@ class Provider:
     allowed_hosts: Tuple[str, ...] = ()
     # Extra hosts a DOWNLOAD may be redirected to (pre-signed file URLs).
     redirect_hosts: Tuple[str, ...] = ()
+    # The provider's own page where a person removes DocMinds' access by
+    # hand -- shown after a disconnect when `revoke` cannot do it.
+    manage_access_url: Optional[str] = None
 
     def configured(self) -> bool:  # pragma: no cover - overridden
         return False
@@ -153,6 +159,12 @@ class Provider:
 
     async def refresh(self, tokens: TokenSet) -> TokenSet:
         raise ConnectorAuthError("This connection has expired. Reconnect it.")
+
+    async def revoke(self, tokens: TokenSet) -> bool:
+        """Revoke DocMinds' grant at the provider. True when revoked; False when
+        the provider offers no API for it. May raise ConnectorError (the
+        caller logs it and carries on -- the local disconnect stands)."""
+        return False
 
     async def list_items(
         self,

@@ -22,10 +22,12 @@ from urllib.parse import urlencode
 
 from app.core.config import settings
 from app.services.connectors.base import FetchedFile, Provider, RemoteItem, TokenSet, check_id, path_id
-from app.services.connectors.http import download, request
+from app.services.connectors.http import ConnectorError, download, request
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+# https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 API = "https://www.googleapis.com/drive/v3"
 SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
@@ -57,6 +59,7 @@ class GoogleDrive(Provider):
     id = "google_drive"
     name = "Google Drive"
     allowed_hosts = ("accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com")
+    manage_access_url = "https://myaccount.google.com/connections"
 
     def configured(self) -> bool:
         return bool(settings.CONNECTOR_GOOGLE_CLIENT_ID and settings.CONNECTOR_GOOGLE_CLIENT_SECRET)
@@ -103,6 +106,21 @@ class GoogleDrive(Provider):
             what="Refreshing the Google Drive connection",
         )
         return TokenSet.from_oauth(body, previous=tokens)
+
+    async def revoke(self, tokens: TokenSet) -> bool:
+        """Google's revocation endpoint. Revoking the refresh token ends the
+        whole grant (its access tokens too). A 400 means the token is already
+        invalid -- revoked or expired -- which is the outcome we want."""
+        token = tokens.refresh_token or tokens.access_token
+        if not token:
+            return True
+        try:
+            await request("POST", REVOKE_URL, allowed=self.allowed_hosts, what="Revoking Google Drive access",
+                          data={"token": token})
+        except ConnectorError as exc:
+            if exc.status_code != 400:
+                raise
+        return True
 
     def _item(self, raw: dict) -> RemoteItem:
         mime = raw.get("mimeType") or ""

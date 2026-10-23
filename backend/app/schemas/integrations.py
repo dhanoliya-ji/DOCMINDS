@@ -11,7 +11,7 @@ only.
 
 import datetime
 import uuid
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,10 +65,41 @@ class ImportRequest(BaseModel):
     auto_sync: bool = True
 
 
-class ImportResult(BaseModel):
+class ImportItemOut(BaseModel):
+    """One picked item's progress in a background import."""
+
     item_id: str
-    status: Literal["imported", "duplicate", "already_imported", "skipped", "error"]
+    # Known once the provider has been asked about the item.
+    name: Optional[str] = None
+    status: Literal["pending", "downloading", "imported", "duplicate", "already_imported", "skipped", "failed"]
     document_id: Optional[str] = None
+    # Why it failed or was skipped; the filename once imported.
+    detail: Optional[str] = None
+
+
+class ImportJobOut(BaseModel):
+    """A background import: POST .../import answers with this (202), and
+    GET /integrations/imports/{id} reports it until `status` is "completed"."""
+
+    id: uuid.UUID
+    connection_id: Optional[uuid.UUID] = None
+    project_id: uuid.UUID
+    provider: str
+    status: Literal["queued", "running", "completed"]
+    auto_sync: bool
+    items: List[ImportItemOut]
+    # Items per status, for a summary line.
+    counts: Dict[str, int] = {}
+    created_at: Optional[datetime.datetime] = None
+    finished_at: Optional[datetime.datetime] = None
+
+
+class DisconnectOut(BaseModel):
+    """The local disconnect always happens; this says whether the provider
+    also revoked DocMinds' access, and where to remove it by hand if not."""
+
+    revoked: bool
+    manage_url: Optional[str] = None
     detail: Optional[str] = None
 
 

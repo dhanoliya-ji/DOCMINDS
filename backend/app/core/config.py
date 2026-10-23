@@ -1023,6 +1023,10 @@ class Settings(BaseSettings):
     # Most documents one sweep checks, so a huge library is spread over
     # several sweeps instead of hammering the provider's rate limit.
     CONNECTOR_SYNC_BATCH_SIZE: int = 100
+    # Imports run in the background (POST .../import answers 202). A job
+    # whose worker has not reported for this long is treated as orphaned --
+    # the process died -- and resumed by the API's startup recovery.
+    CONNECTOR_IMPORT_STALE_MINUTES: int = 15
 
     # ==================================================================
     # 23. BILLING WITH STRIPE (optional) -- services/billing.py, api/v1/billing.py

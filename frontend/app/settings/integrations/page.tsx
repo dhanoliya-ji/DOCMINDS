@@ -11,9 +11,17 @@
  *      (with a trail back up), a name search, "Load more" for long folders.
  *      Importable items have a checkbox.
  *   3. IMPORT the selection into a project, optionally keeping it in sync.
- *      Each item gets its own result line (imported, duplicate, failed...).
+ *      The import runs in the BACKGROUND on the server (the request answers
+ *      202 with a job); this page polls the job every POLL_MS and shows each
+ *      item's progress -- waiting, downloading, imported, failed (with the
+ *      reason) -- until it is complete, then refreshes the documents table.
+ *      Leaving and coming back resumes showing the newest unfinished job.
  *   4. The IMPORTED DOCUMENTS table: sync status, last sync, auto-sync on or
  *      off, and "Sync now".
+ *
+ * Disconnecting also revokes DocMinds' access at the provider where it has
+ * an API (Google, Notion); for Microsoft and Confluence the page links to the
+ * provider's own page for removing the app.
  *
  * While CONNECTORS_ENABLED is off the API answers 404 and this page says so.
  */
@@ -33,7 +41,7 @@ import { ApiError, Project, api, getErrorMessage, getToken } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import {
   Connection,
-  ImportResult,
+  ImportJob,
   LinkedDocument,
   Provider,
   RemoteItem,
@@ -50,6 +58,9 @@ export default function IntegrationsPage() {
 }
 
 type Crumb = { id: string | null; name: string };
+
+/** How often a running import is polled. */
+export const POLL_MS = 1500;
 
 function Integrations() {
   const router = useRouter();
@@ -74,8 +85,11 @@ function Integrations() {
   const [projectId, setProjectId] = useState("");
   const [autoSync, setAutoSync] = useState(true);
   const [importing, setImporting] = useState(false);
-  const [results, setResults] = useState<ImportResult[]>([]);
+  const [job, setJob] = useState<ImportJob | null>(null);
+  // Names the picker showed, for items the server has not described yet.
+  const [names, setNames] = useState<Record<string, string>>({});
   const [syncing, setSyncing] = useState<string | null>(null);
+  const [manageUrl, setManageUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getToken()) router.push("/login");
@@ -87,6 +101,28 @@ function Integrations() {
     setDocuments(d);
   }, []);
 
+  // Poll a running import until it completes; then refresh the table.
+  const jobDone = job?.status === "completed";
+  useEffect(() => {
+    if (!job || job.status === "completed") return;
+    const jobId = job.id;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const next = await platformApi.getImport(jobId);
+        if (cancelled) return;
+        setJob(next);
+        if (next.status === "completed") await refresh();
+      } catch (err) {
+        if (!cancelled) setError(getErrorMessage(err, "Could not check the import."));
+      }
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [job, refresh]);
+
   useEffect(() => {
     let cancelled = false;
     platformApi
@@ -95,6 +131,10 @@ function Integrations() {
         if (cancelled) return;
         setProviders(list);
         await refresh();
+        // An import still running from an earlier visit: keep showing it.
+        const recent = await platformApi.listImports().catch(() => [] as ImportJob[]);
+        const running = recent.find((j) => j.status !== "completed");
+        if (!cancelled && running) setJob(running);
         const p = await api.listProjects();
         if (!cancelled) {
           setProjects(p);
@@ -135,6 +175,7 @@ function Integrations() {
         q: q || undefined,
         cursor: next ?? undefined,
       });
+      setNames((current) => ({ ...current, ...Object.fromEntries(page.items.map((i) => [i.id, i.name])) }));
       setItems((current) => (next ? [...current, ...page.items] : page.items));
       setCursor(page.next_cursor ?? null);
     } catch (err) {
@@ -148,7 +189,6 @@ function Integrations() {
     setOpen(connection);
     setTrail([{ id: null, name: t("integrations.top") }]);
     setSelected([]);
-    setResults([]);
     setSearch("");
     load(connection, null);
   }
@@ -182,9 +222,8 @@ function Integrations() {
     setImporting(true);
     setError("");
     try {
-      setResults(await platformApi.importItems(open.id, projectId, selected, autoSync));
+      setJob(await platformApi.importItems(open.id, projectId, selected, autoSync));
       setSelected([]);
-      await refresh();
     } catch (err) {
       setError(getErrorMessage(err, "The import failed."));
     } finally {
@@ -232,9 +271,17 @@ function Integrations() {
   }
 
   async function disconnect(connection: Connection) {
+    setNotice("");
+    setManageUrl(null);
     try {
-      await platformApi.disconnect(connection.id);
+      const result = await platformApi.disconnect(connection.id);
       if (open?.id === connection.id) setOpen(null);
+      if (result?.revoked) {
+        setNotice(t("integrations.revoked", { name: providerName(connection.provider) }));
+      } else {
+        setNotice(t("integrations.revokeManual", { name: providerName(connection.provider) }));
+        setManageUrl(result?.manage_url ?? null);
+      }
       await refresh();
     } catch (err) {
       setError(getErrorMessage(err, "Could not disconnect."));
@@ -253,7 +300,19 @@ function Integrations() {
 
       {connected && <Notice tone="success">{t("integrations.connected", { name: providerName(connected) })}</Notice>}
       {callbackError && <Notice tone="error">{callbackError}</Notice>}
-      {notice && <Notice tone="info">{notice}</Notice>}
+      {notice && (
+        <Notice tone="info">
+          {notice}
+          {manageUrl && (
+            <>
+              {" "}
+              <a href={manageUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                {t("integrations.manageAccess")}
+              </a>
+            </>
+          )}
+        </Notice>
+      )}
       {error && <Notice tone="error">{error}</Notice>}
 
       {!providers ? (
@@ -432,22 +491,48 @@ function Integrations() {
                 <button
                   type="button"
                   className="btn-primary"
-                  disabled={importing || selected.length === 0 || !projectId}
+                  disabled={importing || selected.length === 0 || !projectId || (job !== null && !jobDone)}
                   onClick={runImport}
                 >
                   {importing ? t("integrations.importing") : t("integrations.import", { count: selected.length })}
                 </button>
               </div>
 
-              {results.length > 0 && (
-                <ul className="space-y-1 text-sm" aria-live="polite">
-                  {results.map((r) => (
-                    <li key={r.item_id}>
-                      <strong>{t(`integrations.result.${r.status}`)}</strong>
-                      {r.detail ? ` — ${r.detail}` : ""}
-                    </li>
-                  ))}
-                </ul>
+            </section>
+          )}
+
+          {/* ---- the background import's progress ---- */}
+          {job && (
+            <section aria-labelledby="import-heading" className="glass space-y-2 p-5">
+              <h2 id="import-heading" className="flex items-center gap-2 text-lg font-semibold">
+                {!jobDone && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+                {jobDone ? t("integrations.importDone") : t("integrations.importRunning")}
+              </h2>
+              <ul className="space-y-1 text-sm" aria-live="polite">
+                {job.items.map((r) => (
+                  <li key={r.item_id} className="break-words">
+                    <span className="font-medium">{r.name || names[r.item_id] || r.item_id}</span>
+                    {": "}
+                    <strong
+                      style={{
+                        color:
+                          r.status === "failed"
+                            ? "var(--danger)"
+                            : r.status === "imported"
+                              ? "var(--success)"
+                              : "var(--text-secondary)",
+                      }}
+                    >
+                      {t(`integrations.result.${r.status}`)}
+                    </strong>
+                    {r.status !== "imported" && r.detail ? ` — ${r.detail}` : ""}
+                  </li>
+                ))}
+              </ul>
+              {jobDone && (
+                <button type="button" className="btn-ghost text-xs" onClick={() => setJob(null)}>
+                  {t("integrations.dismiss")}
+                </button>
               )}
             </section>
           )}

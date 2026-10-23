@@ -104,6 +104,15 @@ async def _recover_on_startup() -> None:
         await recover_stuck_documents()
     except Exception as exc:
         logger.warning("Document recovery skipped at startup", extra={"error": repr(exc)})
+    # Cloud imports run in the background too: re-send the jobs a previous
+    # run left unfinished (finished items are skipped when they resume).
+    if settings.CONNECTORS_ENABLED:
+        from app.services.connectors.service import resume_imports
+
+        try:
+            await resume_imports()
+        except Exception as exc:
+            logger.warning("Import recovery skipped at startup", extra={"error": repr(exc)})
 
 
 # Strong reference to the startup job, so it is not garbage-collected while
@@ -147,8 +156,12 @@ async def lifespan(_app: FastAPI):
     if sweeper is not None:
         sweeper.cancel()
         await asyncio.gather(sweeper, return_exceptions=True)
+    from app.tasks.connectors import inline_import_queue
     from app.tasks.ingestion import inline_queue
 
+    # An import interrupted here hands its job back as "queued"; the next
+    # start resumes it.
+    await inline_import_queue.stop()
     await inline_queue.stop()
 
 

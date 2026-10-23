@@ -11,6 +11,9 @@ WHAT THIS MIGRATION ADDS
                             one source file being imported twice into a
                             project; ix_connector_items_checked serves the
                             sync sweep.
+    connector_imports       one background import job: the picked items and
+                            each one's progress (pending, downloading,
+                            imported, failed...), polled by the page.
     billing_events          the ids of Stripe webhook events already applied,
                             so a redelivered event changes nothing twice.
     organizations.plan ...  plan (free | pro | team, default free), the
@@ -33,6 +36,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "b3d5f7a9c1e2"
 down_revision: Union[str, None] = "c9e1a3b5d7f0"
@@ -96,6 +100,33 @@ def upgrade() -> None:
     op.create_index("ix_connector_items_checked", "connector_items", ["last_checked_at"])
 
     # ------------------------------------------------------------------
+    # 2b. connector_imports
+    # ------------------------------------------------------------------
+    op.create_table(
+        "connector_imports",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("org_id", sa.Uuid(), nullable=False),
+        sa.Column("connection_id", sa.Uuid(), nullable=True),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=True),
+        sa.Column("provider", sa.String(length=32), nullable=False),
+        sa.Column("auto_sync", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("status", sa.String(length=16), nullable=False, server_default="queued"),
+        sa.Column("items", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["connection_id"], ["connector_connections.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="SET NULL"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_connector_imports_org_id", "connector_imports", ["org_id"])
+    op.create_index("ix_connector_imports_connection_id", "connector_imports", ["connection_id"])
+    op.create_index("ix_connector_imports_status_heartbeat", "connector_imports", ["status", "heartbeat_at"])
+
+    # ------------------------------------------------------------------
     # 3. billing_events
     # ------------------------------------------------------------------
     op.create_table(
@@ -133,6 +164,10 @@ def downgrade() -> None:
     op.drop_column("organizations", "plan")
     op.drop_index("ix_billing_events_org_id", table_name="billing_events")
     op.drop_table("billing_events")
+    op.drop_index("ix_connector_imports_status_heartbeat", table_name="connector_imports")
+    op.drop_index("ix_connector_imports_connection_id", table_name="connector_imports")
+    op.drop_index("ix_connector_imports_org_id", table_name="connector_imports")
+    op.drop_table("connector_imports")
     op.drop_index("ix_connector_items_checked", table_name="connector_items")
     op.drop_index("ix_connector_items_org_id", table_name="connector_items")
     op.drop_index("ix_connector_items_connection_id", table_name="connector_items")
