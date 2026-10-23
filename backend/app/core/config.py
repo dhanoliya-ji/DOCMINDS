@@ -1096,13 +1096,17 @@ class Settings(BaseSettings):
         deployed frontend can be permitted without editing any code.
         """
         origins = list(self.BACKEND_CORS_ORIGINS)
-        if self.FRONTEND_ORIGIN:
-            # split(",") turns "a.com,b.com" into ["a.com", "b.com"], and
-            # .strip() removes any accidental spaces around each entry.
-            for origin in self.FRONTEND_ORIGIN.split(","):
-                cleaned = origin.strip()
-                if cleaned and cleaned not in origins:
-                    origins.append(cleaned)
+        # FRONTEND_URL is the deployed site too, so it is allowed as well:
+        # setting only one of the two variables is an easy mistake to make.
+        candidates = self.FRONTEND_ORIGIN.split(",") + [self.FRONTEND_URL]
+        for origin in candidates:
+            # .strip() removes accidental spaces. .rstrip("/") matters just as
+            # much: a browser sends "https://site.app" with no trailing slash,
+            # so "https://site.app/" pasted from the address bar never matches
+            # and every request from the deployed frontend is refused.
+            cleaned = origin.strip().rstrip("/")
+            if cleaned and cleaned not in origins:
+                origins.append(cleaned)
         return origins
 
 
