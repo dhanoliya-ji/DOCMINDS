@@ -151,7 +151,7 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `SMTP_HOST` | *(empty)* | SMTP server for invite, reset and verification emails; empty writes them to the log |
 | `STORAGE_BACKEND` | `local` | `local` (`backend/uploads`) or `s3` (any S3-compatible bucket; set `S3_BUCKET` and friends) |
 | `MALWARE_SCAN` | `off` | `off` or `clamav` (scan every upload with a clamd daemon before processing) |
-| `MAX_UPLOAD_SIZE_BYTES` | `52428800` | Per-file upload limit (50 MB), enforced while the file streams in |
+| `MAX_UPLOAD_SIZE_BYTES` | `104857600` | Per-file upload limit (100 MB), enforced while the file streams in |
 | `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload) |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API, so per-IP limits see the real client address (1 on Render) |
 | `QUOTA_MONTHLY_TOKENS` | `1000000` | AI tokens per organisation per month; `0` is unlimited (also `QUOTA_MAX_DOCUMENTS`, `QUOTA_MAX_STORAGE_BYTES`) |

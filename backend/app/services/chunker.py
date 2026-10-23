@@ -358,7 +358,14 @@ class ChunkerService:
     # ==================================================================
 
     @classmethod
-    def _markdown_chunking(cls, text: str) -> List[Dict[str, Any]]:
+    def _markdown_chunking(
+        cls,
+        text: str,
+        start_index: int = 0,
+        initial_header: str = "Intro",
+        page_number: int = 1,
+        state: "Dict[str, Any] | None" = None,
+    ) -> List[Dict[str, Any]]:
         """
         Split a markdown document at its headers, one chunk per section.
 
@@ -368,6 +375,11 @@ class ChunkerService:
 
         Each chunk is prefixed with its header text, so the embedding captures
         what the section is ABOUT even when the body never restates it.
+
+        The keyword arguments exist for StreamingChunker below, which feeds a
+        long document in pieces: it continues the numbering, carries the
+        header that was open at the end of the previous piece, and reads the
+        header that is open at the end of this one back out of `state`.
         """
         # Page markers are irrelevant here -- header structure spans pages -- so
         # strip them and treat the document as one continuous flow.
@@ -375,10 +387,10 @@ class ChunkerService:
         lines = clean_text.splitlines()
 
         chunks = []
-        chunk_index = 0
+        chunk_index = start_index
 
         # Text appearing before the first header still needs a home.
-        current_header = "Intro"
+        current_header = initial_header
         current_block: List[str] = []
 
         # `^(#{1,6})\s+(.*)$` matches one to six '#' characters, whitespace,
@@ -397,8 +409,9 @@ class ChunkerService:
                 {
                     "content": chunk_text,
                     "chunk_index": chunk_index,
-                    # Markdown has no meaningful pagination.
-                    "page_number": 1,
+                    # Markdown has no meaningful pagination (1), unless it was
+                    # fed a page at a time from a PDF.
+                    "page_number": page_number,
                     "meta_data": {
                         "token_count": cls.count_tokens(chunk_text),
                         "character_count": len(chunk_text),
@@ -423,4 +436,78 @@ class ChunkerService:
         # The final section, which has no following header to trigger a flush.
         flush()
 
+        if state is not None:
+            state["header"] = current_header
+        return chunks
+
+
+# ======================================================================
+# STREAMING: chunk a document while it is still being read
+# ======================================================================
+
+
+class StreamingChunker:
+    """
+    Chunks a document one Segment at a time (see extractor.iter_segments).
+
+    `ChunkerService.chunk_document` needs the WHOLE text in one string. This
+    takes a page, or a batch of spreadsheet rows, chunks just that, and
+    remembers only two small things between calls:
+
+        next_index   so chunk_index keeps counting across the whole document
+        header       the markdown section still open at the end of the last
+                     piece, so a section continuing onto the next page keeps
+                     its title
+
+    A segment with page_number=None is a whole document whose text may carry
+    its own page markers (a DOCX, a ZIP of PDFs); it goes through
+    chunk_document exactly as before, renumbered to continue the count.
+
+        chunker = StreamingChunker("fixed_size", 500, 50)
+        for segment in DocumentExtractor.iter_segments(path, "pdf", info):
+            for chunk in chunker.feed(segment.text, segment.page_number):
+                save(chunk)
+    """
+
+    def __init__(self, strategy: str, chunk_size: int, chunk_overlap: int):
+        self.strategy = strategy.lower()
+        if self.strategy not in ("fixed_size", "sentence", "markdown"):
+            raise ValueError(f"Unsupported chunking strategy: {strategy}")
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.next_index = 0
+        self._state: Dict[str, Any] = {"header": "Intro"}
+
+    def feed(self, text: str, page_number: "int | None", extra_meta: "Dict[str, Any] | None" = None) -> List[Dict[str, Any]]:
+        """The chunks of one segment, numbered after every chunk so far."""
+        if page_number is None:
+            chunks = ChunkerService.chunk_document(
+                text, strategy=self.strategy, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap
+            )
+            for chunk in chunks:
+                chunk["chunk_index"] += self.next_index
+        else:
+            text = text.strip()
+            if not text:
+                return []
+            if self.strategy == "markdown":
+                chunks = ChunkerService._markdown_chunking(
+                    text,
+                    start_index=self.next_index,
+                    initial_header=self._state["header"],
+                    page_number=page_number,
+                    state=self._state,
+                )
+            elif self.strategy == "sentence":
+                chunks = ChunkerService._sentence_chunking_single_page(
+                    text, self.chunk_size, self.chunk_overlap, page_number, self.next_index
+                )
+            else:
+                chunks = ChunkerService._fixed_size_chunking_single_page(
+                    text, self.chunk_size, self.chunk_overlap, page_number, self.next_index
+                )
+        if extra_meta:
+            for chunk in chunks:
+                chunk["meta_data"].update(extra_meta)
+        self.next_index += len(chunks)
         return chunks

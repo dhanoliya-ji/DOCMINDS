@@ -94,10 +94,22 @@ class Document(Base):
         Integer, default=0, server_default="0", nullable=False
     )
 
-    # When the current (or last) attempt claimed the document. A "processing"
-    # row whose claim is older than INGESTION_STALE_AFTER_MINUTES is assumed
-    # to be orphaned by a dead worker and is re-queued.
+    # When the current (or last) attempt claimed the document -- and, while
+    # it runs, its HEARTBEAT: the pipeline moves it forward after every batch
+    # of pages or chunks, so a large document that legitimately takes an hour
+    # is never mistaken for a dead one. A "processing" row whose heartbeat is
+    # older than INGESTION_STALE_AFTER_MINUTES is assumed to be orphaned by a
+    # dead worker and is re-queued.
     processing_started_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Set only while the document is PAUSED: the embedding provider's rate
+    # limit outlasted the retry budget, so the document waits ("pending",
+    # every chunk embedded so far kept) and the recovery sweep resumes it
+    # once this time has passed. NULL otherwise. meta_data["progress"] says
+    # the same thing in words for the UI.
+    resume_after: Mapped[Optional[datetime.datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
