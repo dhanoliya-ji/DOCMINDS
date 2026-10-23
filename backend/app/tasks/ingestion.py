@@ -91,14 +91,17 @@ across these short-lived event loops, or you get "Event loop is closed" errors.
 """
 
 import asyncio
+import concurrent.futures
+import contextlib
 import datetime
+import functools
 import logging
 import time
 import uuid
 from typing import Optional
 
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
 
 from app.core.celery_app import celery_app
 from app.core import observability
@@ -107,9 +110,9 @@ from app.db.session import SessionLocal
 from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
 from app.services import malware
-from app.services.chunker import ChunkerService
-from app.services.embedding import EmbeddingService
-from app.services.extractor import DocumentExtractor
+from app.services.chunker import StreamingChunker
+from app.services.embedding import EmbeddingRateLimited, EmbeddingService, wait_listener
+from app.services.extractor import DocumentExtractor, DocumentTooLarge
 from app.services.storage import (
     StorageObjectNotFound,
     StorageUnavailableError,
@@ -271,30 +274,153 @@ async def claim_document(db, document_id, *, force: bool = False) -> Optional[Do
     return await db.get(Document, document_id, populate_existing=True)
 
 
-def _fetch_scan_and_extract(
-    storage_name: str, key: str, file_type: str, progress: Optional[dict] = None
-):
-    """
-    Stages 1 and 2, in one blocking function run on a thread.
+# ======================================================================
+# STAGES 1-3 ON ONE THREAD: fetch, scan, extract and chunk, a batch at a time
+# ======================================================================
 
-    Grouped because they share the local copy: with S3 the object is
-    downloaded once, scanned, extracted, and the temporary file deleted --
-    all inside the `with` block.
 
-    `progress` is filled in with {"malware_scan": <scanner>} the moment the
-    scan passes. The caller reads it if a LATER stage fails, so a document
-    that failed for an unrelated reason (no text in it, say) is still on
-    record as scanned clean -- which is what the preview endpoint checks
-    before it will serve the file back.
+class _ExtractionJob:
     """
-    storage = get_storage(storage_name)
-    with storage.local_copy(key) as local_path:
+    The blocking half of stages 1-3, driven one batch at a time.
+
+    Every method runs on ONE dedicated thread (see `_run_on`): PyMuPDF is not
+    built to be used from several threads, and the page generator inside
+    must always be resumed from the thread that started it.
+
+        open()        local copy (an S3 download, for that backend), malware
+                      scan, and the segment generator -- nothing read yet
+        next_batch()  the next few pages (or row batches) read, OCR'd where
+                      needed, and CHUNKED; returns the chunks and lets the
+                      pages go
+        close()       closes the PDF and deletes the temporary copy
+
+    Between batches the pipeline writes the chunks to the database and
+    commits, so memory holds one batch of pages at a time -- never the whole
+    document's text.
+    """
+
+    def __init__(self, storage_name: str, key: str, file_type: str, chunker: StreamingChunker):
+        self.storage_name = storage_name
+        self.key = key
+        self.file_type = file_type
+        self.chunker = chunker
+        # Filled by the extractor: page_count, title, ocr_applied...
+        self.info: dict = {}
+        self.segments_read = 0
+        self.ocr_used = False
+        self.has_text = False
+        self.word_count = 0
+        self.char_count = 0
+        # The first few thousand characters, for language detection.
+        self._sample: list = []
+        self._sample_len = 0
+        self._stack = contextlib.ExitStack()
+        self._segments = None
+
+    def open(self, progress: dict):
+        storage = get_storage(self.storage_name)
+        local_path = self._stack.enter_context(storage.local_copy(self.key))
         verdict = malware.scan_file(local_path)
         if not verdict.clean:
             raise MalwareDetected(verdict.signature or "unknown")
-        if progress is not None:
-            progress["malware_scan"] = verdict.scanner
-        return verdict, DocumentExtractor.extract(local_path, file_type)
+        # Recorded the moment the scan passes: if a LATER stage fails, the
+        # document is still on record as scanned clean -- which is what the
+        # preview endpoint checks before it will serve the file back.
+        progress["malware_scan"] = verdict.scanner
+        self._segments = DocumentExtractor.iter_segments(local_path, self.file_type, self.info)
+        return verdict
+
+    def next_batch(self, max_segments: int) -> tuple:
+        """(chunks, segments read) for up to `max_segments` more; 0 read = the end."""
+        chunks: list = []
+        taken = 0
+        for segment in self._segments:
+            taken += 1
+            self.segments_read += 1
+            text = segment.text or ""
+            if text.strip():
+                self.has_text = True
+            self.ocr_used = self.ocr_used or segment.ocr
+            self.word_count += len(text.split())
+            self.char_count += len(text)
+            if self._sample_len < 5000:
+                piece = text[: 5000 - self._sample_len]
+                self._sample.append(piece)
+                self._sample_len += len(piece)
+            chunks.extend(self.chunker.feed(text, segment.page_number, segment.meta))
+            if self.chunker.next_index > settings.INGESTION_MAX_CHUNKS:
+                raise DocumentTooLarge(
+                    f"This document produces more than {settings.INGESTION_MAX_CHUNKS:,} chunks "
+                    "(INGESTION_MAX_CHUNKS). Split it into smaller files, choose a larger "
+                    "chunk size, or raise the limit."
+                )
+            if taken >= max_segments:
+                break
+        return chunks, taken
+
+    def language(self) -> str:
+        return DocumentExtractor.detect_language("".join(self._sample))
+
+    def close(self) -> None:
+        if self._segments is not None:
+            # Runs the generator's `finally`: the PDF is closed.
+            self._segments.close()
+        self._stack.close()
+
+
+# Pages (or row batches) read per round trip to the extraction thread. Ten
+# pages of text is well under a megabyte, and the commit after each round is
+# what makes the progress bar move.
+_SEGMENTS_PER_BATCH = 10
+
+
+async def _run_on(executor, function, *args):
+    """Run a blocking call on the given executor (the job's own thread)."""
+    return await asyncio.get_running_loop().run_in_executor(executor, functools.partial(function, *args))
+
+
+def _chunking_signature(strategy: str, size: int, overlap: int) -> dict:
+    """
+    What the stored chunks were made with. A resumed run reuses them only if
+    this matches exactly -- a re-index with a different chunk size must
+    re-chunk, not resume.
+    """
+    return {"strategy": strategy, "size": size, "overlap": overlap, "version": 2}
+
+
+def _embed_texts(texts: list, listener) -> list:
+    """
+    One embedding call, on a worker thread, with the wait listener installed.
+
+    `EmbeddingService.get_embeddings(texts)` is called with the texts ONLY,
+    so any provider (and any test double) works unchanged; the listener
+    reaches the Gemini retry loop through a ContextVar.
+    """
+    token = wait_listener.set(listener)
+    try:
+        return EmbeddingService.get_embeddings(texts)
+    finally:
+        wait_listener.reset(token)
+
+
+async def _record_progress(document_id, progress: dict) -> None:
+    """
+    Write meta_data["progress"] (and the heartbeat) from OUTSIDE the main
+    session -- used while an embedding call is waiting on a rate limit, when
+    the pipeline itself is blocked inside that call.
+    """
+    try:
+        async with SessionLocal() as db:
+            document = await db.get(Document, document_id)
+            if document is None or document.status != "processing":
+                return
+            metadata = dict(document.meta_data or {})
+            metadata["progress"] = progress
+            document.meta_data = metadata
+            document.processing_started_at = _utcnow()
+            await db.commit()
+    except Exception as exc:  # pragma: no cover - a status line is never worth a failure
+        logger.debug(f"Could not record progress: {exc}")
 
 
 # ======================================================================
@@ -315,8 +441,28 @@ async def async_process_document(
     to "pending" and raises TransientIngestionError so the caller retries it.
     When True there are no retries left, so every failure is final.
 
-    Returns what happened: "completed", "failed", "retrying" (only via the
-    exception) or "skipped" (someone else has it, or it is already done).
+    Returns what happened: "completed", "failed", "paused" (the embedding
+    rate limit outlasted the retry budget -- it resumes later), "retrying"
+    (only via the exception) or "skipped" (someone else has it, or it is
+    already done).
+
+    LARGE DOCUMENTS: TWO RESUMABLE PHASES
+    -------------------------------------
+        A. extract + chunk   pages are read, chunked and INSERTED a batch at
+                             a time, committed as they go. When the last page
+                             is in, meta_data["chunking_complete"] is set.
+        B. embed             chunks with no vector for the CURRENT model are
+                             fetched INGESTION_EMBED_BATCH_SIZE at a time,
+                             embedded, saved and committed -- batch by batch.
+
+    A rerun (a retry, a recovery after a restart, a resume after a rate-limit
+    pause, or Re-index on a failed document) finds phase A complete and goes
+    straight to phase B, which naturally skips every chunk already embedded.
+    So a 1,200-chunk document stopped at chunk 900 continues from 901: no
+    second download, no second OCR, no second bill from the embedding API.
+
+    Nothing is searchable until the very end: retrieval only reads
+    "completed" documents, and the status flips in the final commit.
     """
     # Measure total processing time, so we can store it as a metric and show
     # "processed in 4.2s" in the UI.
@@ -352,195 +498,67 @@ async def async_process_document(
         )
 
         # Filled in by stage 1 once the malware scan passes; read by the
-        # failure handler (see `_fetch_scan_and_extract`).
+        # failure handler (see `_ExtractionJob.open`).
         progress: dict = {}
+        # Where the run has got to, for the pause and failure handlers.
+        state = {"stage": "starting", "embedded": 0, "embedded_at_start": 0, "total": 0}
 
         try:
-            # ==========================================================
-            # STAGES 1-2: fetch from storage, scan, EXTRACT
-            # ==========================================================
-            # extractor.py inspects the file type and dispatches to the right
-            # library: PyMuPDF for PDF, python-docx for Word, and so on.
-            # For a scanned PDF it detects the lack of a text layer and falls
-            # back to OCR automatically.
-            logger.info(
-                f"1/5 Fetching, scanning and extracting text "
-                f"(type: {document.file_type}, storage: {document.storage_backend})..."
-            )
-            # The three heavy steps (extraction/OCR, chunking, embedding) are
-            # plain blocking code, so each runs on a thread. In the worker that
-            # changes nothing; with INGESTION_MODE=inline this job runs inside
-            # the API's event loop, and without the threads one large PDF would
-            # freeze every other request until it finished.
-            verdict, extraction = await asyncio.to_thread(
-                _fetch_scan_and_extract,
-                document.storage_backend,
-                document.file_path,
-                document.file_type,
-                progress,
-            )
-            if not extraction.text or not extraction.text.strip():
-                raise ValueError(
-                    "No text could be extracted. The file may be empty, "
-                    "corrupted, or an image with no readable text."
-                )
-
-            logger.info(
-                f"Extracted {len(extraction.text):,} characters "
-                f"(language: {extraction.language}, OCR used: {extraction.needs_ocr})"
-            )
-
-            # ==========================================================
-            # STAGE 3: CHUNK -- split the text into searchable pieces
-            # ==========================================================
             # The chunking settings were chosen by the user at upload time and
             # stashed in meta_data. If they are absent we fall back to the
             # global defaults from .env.
-            document_meta = document.meta_data or {}
-            chunk_strategy = (
-                document_meta.get("chunk_strategy") or settings.DEFAULT_CHUNK_STRATEGY
-            )
-            chunk_size = int(
-                document_meta.get("chunk_size") or settings.DEFAULT_CHUNK_SIZE
-            )
-            chunk_overlap = int(
-                document_meta.get("chunk_overlap") or settings.DEFAULT_CHUNK_OVERLAP
-            )
-
-            logger.info(
-                f"2/5 Chunking (strategy: {chunk_strategy}, "
-                f"size: {chunk_size} tokens, overlap: {chunk_overlap})..."
-            )
-            chunks_data = await asyncio.to_thread(
-                ChunkerService.chunk_document,
-                text=extraction.text,
-                strategy=chunk_strategy,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-            )
-
-            if not chunks_data:
-                raise ValueError("Chunking produced no chunks from the extracted text.")
-
-            logger.info(f"Produced {len(chunks_data)} chunks.")
-
-            # ==========================================================
-            # STAGE 4: Clear any previous chunks (idempotent re-processing)
-            # ==========================================================
-            # A document can legitimately be processed more than once -- for
-            # example after retrying a failure, or after switching embedding
-            # models. Deleting the old chunks first means re-running is SAFE
-            # and repeatable rather than silently doubling the data.
-            #
-            # Deleting the Chunk rows also removes their embeddings, because
-            # the relationship cascades (see models/chunk.py).
-            existing = await db.execute(
-                select(Chunk).where(Chunk.document_id == document.id)
-            )
-            old_chunks = existing.scalars().all()
-            if old_chunks:
-                logger.info(f"Removing {len(old_chunks)} previous chunks.")
-                for old_chunk in old_chunks:
-                    await db.delete(old_chunk)
-                # `flush` sends the DELETEs to the database now, so the inserts
-                # that follow cannot collide with rows we are about to remove.
-                await db.flush()
-
-            # ==========================================================
-            # STAGE 5: Save the chunk text
-            # ==========================================================
-            chunk_objects = []
-            for item in chunks_data:
-                chunk_objects.append(
-                    Chunk(
-                        # The id is generated HERE in Python rather than by the
-                        # database, so we can pair each chunk with its vector
-                        # below without a second round trip to fetch the ids.
-                        id=uuid.uuid4(),
-                        document_id=document.id,
-                        content=item["content"],
-                        chunk_index=item["chunk_index"],
-                        page_number=item["page_number"],
-                        meta_data=item["meta_data"],
-                    )
-                )
-
-            # `add_all` queues every row in one operation, far faster than
-            # adding them one at a time.
-            db.add_all(chunk_objects)
-            await db.flush()
-
-            # ==========================================================
-            # STAGE 6: EMBED -- convert each chunk into a vector
-            # ==========================================================
-            # THIS IS THE STEP THAT MAKES SEMANTIC SEARCH POSSIBLE.
-            # Each chunk becomes 384 numbers describing its meaning. Later, a
-            # user's question becomes 384 numbers too, and Postgres finds the
-            # chunks whose numbers point in the most similar direction.
-            logger.info(
-                f"3/5 Embedding {len(chunk_objects)} chunks "
-                f"via '{settings.EMBEDDING_PROVIDER}'..."
-            )
-
-            chunk_texts = [chunk.content for chunk in chunk_objects]
-            # One batched call rather than a loop: dramatically faster, because
-            # the model processes many texts in parallel.
-            vectors = await asyncio.to_thread(EmbeddingService.get_embeddings, chunk_texts)
-
-            # Record WHICH model produced these vectors. Vectors from different
+            metadata = dict(document.meta_data or {})
+            chunk_strategy = metadata.get("chunk_strategy") or settings.DEFAULT_CHUNK_STRATEGY
+            chunk_size = int(metadata.get("chunk_size") or settings.DEFAULT_CHUNK_SIZE)
+            chunk_overlap = int(metadata.get("chunk_overlap") or settings.DEFAULT_CHUNK_OVERLAP)
+            signature = _chunking_signature(chunk_strategy, chunk_size, chunk_overlap)
+            # Record WHICH model produced the vectors. Vectors from different
             # models are not comparable, so this column is what identifies
             # stale rows if the model is ever changed.
             model_name = EmbeddingService.current_model_name()
 
-            # Sanity check. If the counts disagree, pairing chunk[i] with
-            # vector[i] would attach the wrong meaning to the wrong text --
-            # a silent corruption that would be very hard to diagnose later.
-            if len(vectors) != len(chunk_objects):
-                raise ValueError(
-                    f"Embedding count mismatch: got {len(vectors)} vectors "
-                    f"for {len(chunk_objects)} chunks."
+            # Resume only an UNFINISHED document whose chunks were made with
+            # these exact settings. A completed one being re-indexed is
+            # rebuilt from the file: the point of re-indexing it is usually
+            # that something about extraction has changed (OCR installed).
+            resume = (
+                metadata.get("chunking") == signature
+                and metadata.get("chunking_complete") is True
+                and (metadata.get("progress") or {}).get("stage") != "completed"
+            )
+
+            if not resume:
+                metadata = await _extract_and_chunk(
+                    db, document, metadata, signature, progress, state,
+                    chunk_strategy, chunk_size, chunk_overlap,
                 )
+            else:
+                logger.info("1-2/5 Chunks from an earlier run are complete; resuming at embedding.")
 
-            logger.info(f"4/5 Saving vectors (model: {model_name})...")
-
-            # `zip` walks both lists together, pairing each chunk with the
-            # vector produced from its own text.
-            embedding_objects = [
-                ChunkEmbedding(
-                    id=uuid.uuid4(),
-                    chunk_id=chunk.id,
-                    embedding=vector,
-                    model_name=model_name,
-                )
-                for chunk, vector in zip(chunk_objects, vectors, strict=True)
-            ]
-
-            db.add_all(embedding_objects)
-            await db.flush()
+            # ==========================================================
+            # STAGE 5-6: EMBED, a batch at a time, skipping finished chunks
+            # ==========================================================
+            # THIS IS THE STEP THAT MAKES SEMANTIC SEARCH POSSIBLE. Each chunk
+            # becomes a vector describing its meaning. Later, a user's
+            # question becomes a vector too, and Postgres finds the chunks
+            # whose vectors point in the most similar direction.
+            state["stage"] = "embedding"
+            await _embed_pending_chunks(db, document, metadata, model_name, state)
 
             # ==========================================================
             # STAGE 7: Record what happened, for the UI and for debugging
             # ==========================================================
             elapsed = round(time.perf_counter() - started_at, 2)
-
-            # Start from the existing metadata and layer the new facts on top,
-            # so the user's original chunking choices are preserved.
-            metadata = dict(document.meta_data) if document.meta_data else {}
-            # A success after a retry: the earlier attempt's error no longer
-            # describes this document.
-            for stale_key in ("error", "failed_at_seconds"):
+            document = await db.get(Document, claimed_id, populate_existing=True)
+            metadata = dict(document.meta_data or {})
+            # A success after a retry or a pause: the earlier problem no
+            # longer describes this document.
+            for stale_key in ("error", "failed_at_seconds", "idle_pauses"):
                 metadata.pop(stale_key, None)
-            metadata.update(extraction.metadata)
-
             metadata.update(
                 {
-                    # --- content facts ---
-                    "language": extraction.language,
-                    "needs_ocr": extraction.needs_ocr,
-                    "word_count": len(extraction.text.split()),
-                    "char_count": len(extraction.text),
                     # --- how it was chunked ---
-                    "chunk_count": len(chunk_objects),
+                    "chunk_count": state["total"],
                     "chunk_strategy": chunk_strategy,
                     "chunk_size": chunk_size,
                     "chunk_overlap": chunk_overlap,
@@ -548,39 +566,67 @@ async def async_process_document(
                     "embedding_model": model_name,
                     "embedding_provider": settings.EMBEDDING_PROVIDER,
                     "embedding_dimension": settings.EMBEDDING_DIMENSION,
-                    # --- safety ---
-                    "malware_scan": verdict.scanner,
                     # --- performance ---
                     "processing_seconds": elapsed,
                     "attempts": document.attempts,
+                    "progress": {"stage": "completed", "embedded": state["total"], "total": state["total"]},
                 }
             )
-
             # Reassigning the whole dictionary (rather than mutating it in
             # place) is required for SQLAlchemy to notice that a JSONB column
             # changed. An in-place `metadata["x"] = 1` would not be saved.
             document.meta_data = metadata
             document.status = "completed"
             document.error_message = None
+            document.resume_after = None
 
             # WEBHOOK "document.processed" (off unless WEBHOOKS_ENABLED):
             # staged in this same transaction, sent only after the commit.
             await _emit_document_event(
                 db, document, "document.processed",
-                {"chunk_count": len(chunk_objects), "processing_seconds": elapsed},
+                {"chunk_count": state["total"], "processing_seconds": elapsed},
             )
 
-            # One commit writes the chunks, the vectors and the status change
-            # together as a single transaction. Either all of it lands or none
-            # of it does -- there is no state where chunks exist but the
-            # document still reads "processing".
+            # The status flips in this one commit. Until it lands, search
+            # cannot see a single chunk of this document.
             await db.commit()
 
             logger.info(
                 f"5/5 DONE: {document.filename} -> "
-                f"{len(chunk_objects)} chunks in {elapsed}s. Now searchable."
+                f"{state['total']} chunks in {elapsed}s. Now searchable."
             )
             return "completed"
+
+        except EmbeddingRateLimited as exc:
+            # Not a failure: the quota will come back. Keep everything and
+            # come back later.
+            return await _pause(db, claimed_id, str(exc), exc.retry_after, state)
+
+        except SoftTimeLimitExceeded as exc:
+            # Celery's time limit, mid-embedding, on a huge document: the
+            # chunks so far are safe, so pause and continue in a fresh task
+            # instead of failing work that was going fine.
+            if state["stage"] == "embedding":
+                return await _pause(
+                    db, claimed_id, "Paused at the worker's time limit.", 0, state,
+                    made_progress=True, immediate=True,
+                )
+            return await _handle_failure(
+                db, claimed_id, exc, started_at, final_attempt, scanned_by=progress.get("malware_scan")
+            )
+
+        except asyncio.CancelledError:
+            # The API is shutting down (a deploy, the free host going to
+            # sleep) with this job half done. Record it as paused and due
+            # NOW, so the next start resumes it at once instead of waiting
+            # INGESTION_STALE_AFTER_MINUTES to notice it was abandoned.
+            await asyncio.shield(
+                _pause(
+                    db, claimed_id, "Interrupted by a server restart.", 0, state,
+                    made_progress=True, immediate=True,
+                )
+            )
+            raise
 
         except Exception as exc:
             return await _handle_failure(
@@ -591,6 +637,320 @@ async def async_process_document(
                 final_attempt,
                 scanned_by=progress.get("malware_scan"),
             )
+
+
+async def _extract_and_chunk(
+    db, document, metadata, signature, progress, state, chunk_strategy, chunk_size, chunk_overlap
+) -> dict:
+    """
+    PHASE A -- stages 1 to 4: fetch, scan, extract, chunk, save the text.
+
+    Streams: a few pages are read and chunked on the job's thread, their
+    chunks inserted and committed here, and the next few pages read --
+    so neither the document's text nor its chunks are ever all in memory.
+    Returns the document's updated meta_data.
+    """
+    state["stage"] = "extracting"
+    # ==========================================================
+    # STAGE 4 (first): clear any previous chunks
+    # ==========================================================
+    # A document can legitimately be processed more than once -- after a
+    # failure in extraction, after changing the chunk settings, on re-index.
+    # Deleting first makes re-running SAFE rather than doubling the data.
+    # One bulk DELETE; the database cascades it to the embeddings, so
+    # nothing is loaded into memory to do it.
+    await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    for stale_key in ("chunking_complete", "chunk_count"):
+        metadata.pop(stale_key, None)
+    metadata["chunking"] = signature
+    metadata["progress"] = {"stage": "extracting", "pages_done": 0}
+    document.meta_data = dict(metadata)
+    await db.commit()
+
+    logger.info(
+        f"1/5 Fetching, scanning and extracting text "
+        f"(type: {document.file_type}, storage: {document.storage_backend})..."
+    )
+    # The heavy steps are blocking code, so they run on a thread. With
+    # INGESTION_MODE=inline this job runs inside the API's event loop, and
+    # without the thread one large PDF would freeze every other request.
+    chunker = StreamingChunker(chunk_strategy, chunk_size, chunk_overlap)
+    job = _ExtractionJob(document.storage_backend, document.file_path, document.file_type, chunker)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="docminds-extract")
+    total_chunks = 0
+    try:
+        verdict = await _run_on(executor, job.open, progress)
+        logger.info(
+            f"2/5 Chunking as it reads (strategy: {chunk_strategy}, "
+            f"size: {chunk_size} tokens, overlap: {chunk_overlap})..."
+        )
+        while True:
+            chunks, read = await _run_on(executor, job.next_batch, _SEGMENTS_PER_BATCH)
+            if read == 0:
+                break
+            if chunks:
+                # One INSERT for the whole batch. The ids are generated HERE
+                # in Python, as before, rather than by the database.
+                await db.execute(
+                    insert(Chunk),
+                    [
+                        {
+                            "id": uuid.uuid4(),
+                            "document_id": document.id,
+                            "content": item["content"],
+                            "chunk_index": item["chunk_index"],
+                            "page_number": item["page_number"],
+                            "meta_data": item["meta_data"],
+                        }
+                        for item in chunks
+                    ],
+                )
+                total_chunks += len(chunks)
+            # Progress for the UI, and the heartbeat that tells recovery this
+            # run is alive however long the document takes.
+            metadata["progress"] = {
+                "stage": "extracting",
+                "pages_done": job.segments_read,
+                "pages_total": job.info.get("page_count"),
+                "chunks": total_chunks,
+            }
+            document.meta_data = dict(metadata)
+            document.processing_started_at = _utcnow()
+            await db.commit()
+            del chunks
+    finally:
+        try:
+            await _run_on(executor, job.close)
+        finally:
+            executor.shutdown(wait=False)
+
+    if not job.has_text:
+        raise ValueError(
+            "No text could be extracted. The file may be empty, "
+            "corrupted, or an image with no readable text."
+        )
+    if total_chunks == 0:
+        raise ValueError("Chunking produced no chunks from the extracted text.")
+
+    language = await asyncio.to_thread(job.language)
+    logger.info(
+        f"Extracted {job.char_count:,} characters into {total_chunks} chunks "
+        f"(language: {language}, OCR used: {job.ocr_used})"
+    )
+
+    # Phase A is complete and durable: from here a rerun resumes at
+    # embedding. The extraction facts are saved now, because a resumed run
+    # never sees the file again.
+    metadata.update(job.info)
+    metadata.update(
+        {
+            # --- content facts ---
+            "language": language,
+            "needs_ocr": bool(job.ocr_used or job.info.get("needs_ocr")),
+            "word_count": job.word_count,
+            "char_count": job.char_count,
+            "chunk_count": total_chunks,
+            # --- safety ---
+            "malware_scan": verdict.scanner,
+            # --- resumability ---
+            "chunking": signature,
+            "chunking_complete": True,
+            "progress": {"stage": "embedding", "embedded": 0, "total": total_chunks},
+        }
+    )
+    document.meta_data = dict(metadata)
+    document.processing_started_at = _utcnow()
+    await db.commit()
+    return metadata
+
+
+async def _embed_pending_chunks(db, document, metadata, model_name, state) -> None:
+    """
+    PHASE B -- stages 5 and 6: embed every chunk that has no vector yet for
+    the current model, INGESTION_EMBED_BATCH_SIZE at a time, committing each
+    batch. Safe to run any number of times; it only ever does what is left.
+    """
+    document_id = document.id
+    chunk_ids = select(Chunk.id).where(Chunk.document_id == document_id)
+
+    # Vectors from ANOTHER model are useless to search (it only compares the
+    # current model's) -- drop them rather than keep them forever.
+    await db.execute(
+        delete(ChunkEmbedding).where(
+            ChunkEmbedding.chunk_id.in_(chunk_ids), ChunkEmbedding.model_name != model_name
+        )
+    )
+    has_vector = exists().where(
+        ChunkEmbedding.chunk_id == Chunk.id, ChunkEmbedding.model_name == model_name
+    )
+    total = (await db.execute(select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id))).scalar_one()
+    done = (
+        await db.execute(
+            select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id, has_vector)
+        )
+    ).scalar_one()
+    state.update(total=total, embedded=done, embedded_at_start=done)
+    # End the read transaction: nothing may sit "idle in transaction" while
+    # an embedding call waits minutes on a rate limit.
+    await db.commit()
+
+    logger.info(
+        f"3/5 Embedding {total - done} of {total} chunks via '{settings.EMBEDDING_PROVIDER}' "
+        f"(model: {model_name}; {done} already done)..."
+    )
+
+    loop = asyncio.get_running_loop()
+
+    def listener(seconds: float, reason: str) -> None:
+        """Called on the embedding thread when the provider makes us wait."""
+        update = {
+            "stage": "waiting",
+            "reason": reason,
+            "embedded": state["embedded"],
+            "total": state["total"],
+            "until": (_utcnow() + datetime.timedelta(seconds=seconds)).isoformat(),
+        }
+        future = asyncio.run_coroutine_threadsafe(_record_progress(document_id, update), loop)
+        try:
+            future.result(timeout=10)
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+    batch_size = max(1, settings.INGESTION_EMBED_BATCH_SIZE)
+    while True:
+        rows = (
+            await db.execute(
+                select(Chunk.id, Chunk.content)
+                .where(Chunk.document_id == document_id, ~has_vector)
+                .order_by(Chunk.chunk_index)
+                .limit(batch_size)
+            )
+        ).all()
+        await db.commit()
+        if not rows:
+            break
+
+        texts = [row.content for row in rows]
+        vectors = await asyncio.to_thread(_embed_texts, texts, listener)
+
+        # Sanity check. If the counts disagree, pairing chunk[i] with
+        # vector[i] would attach the wrong meaning to the wrong text --
+        # a silent corruption that would be very hard to diagnose later.
+        if len(vectors) != len(rows):
+            raise ValueError(
+                f"Embedding count mismatch: got {len(vectors)} vectors for {len(rows)} chunks."
+            )
+        await db.execute(
+            insert(ChunkEmbedding),
+            [
+                {"id": uuid.uuid4(), "chunk_id": row.id, "embedding": vector, "model_name": model_name}
+                for row, vector in zip(rows, vectors, strict=True)
+            ],
+        )
+        state["embedded"] += len(rows)
+
+        # The batch, the progress line and the heartbeat land together.
+        fresh = await db.get(Document, document_id, populate_existing=True)
+        progress_meta = dict(fresh.meta_data or {})
+        progress_meta["progress"] = {"stage": "embedding", "embedded": state["embedded"], "total": total}
+        fresh.meta_data = progress_meta
+        fresh.processing_started_at = _utcnow()
+        await db.commit()
+        logger.info(f"4/5 Embedded {state['embedded']}/{total} chunks.")
+        del rows, texts, vectors
+
+
+async def _pause(
+    db,
+    document_id,
+    reason: str,
+    retry_after: Optional[float],
+    state: dict,
+    *,
+    made_progress: Optional[bool] = None,
+    immediate: bool = False,
+) -> str:
+    """
+    PAUSE: the document waits for its quota instead of failing.
+
+    Everything committed so far stays -- every chunk, every vector. The
+    document goes back to "pending" with `resume_after` set, and the
+    recovery sweep (Celery beat, or the API's own sweep in inline mode)
+    dispatches it again once that time has passed.
+
+    How long: what the provider asked for, or INGESTION_PAUSE_SECONDS --
+    doubling each time a resume makes NO progress at all, up to
+    INGESTION_PAUSE_MAX_SECONDS. A resume that embeds even one chunk resets
+    the count, and resets `attempts` too: a document that keeps moving
+    forward is never given up on. Only INGESTION_MAX_IDLE_PAUSES resumes in a
+    row without a single chunk embedded fail it -- by then the quota has
+    been empty for about a day.
+    """
+    if made_progress is None:
+        made_progress = state.get("embedded", 0) > state.get("embedded_at_start", 0)
+    try:
+        await db.rollback()
+        document = await db.get(Document, document_id, populate_existing=True)
+        if document is None:
+            return "skipped"
+        metadata = dict(document.meta_data or {})
+        idle = 0 if made_progress else int(metadata.get("idle_pauses", 0)) + 1
+        embedded, total = state.get("embedded", 0), state.get("total", 0)
+
+        if idle > settings.INGESTION_MAX_IDLE_PAUSES:
+            message = (
+                f"The embedding provider kept refusing requests ({reason}) and no progress "
+                f"was made after {idle - 1} pauses. {embedded} of {total} chunks are embedded; "
+                "Re-index resumes from there once the quota is available again."
+            )
+            metadata["error"] = message
+            metadata["progress"] = {"stage": "failed", "embedded": embedded, "total": total}
+            document.meta_data = metadata
+            document.error_message = message
+            document.status = "failed"
+            document.resume_after = None
+            await _emit_document_event(db, document, "document.failed", {"error": message})
+            await db.commit()
+            return "failed"
+
+        if immediate:
+            delay = 0.0
+        else:
+            backoff = min(
+                settings.INGESTION_PAUSE_MAX_SECONDS,
+                settings.INGESTION_PAUSE_SECONDS * 2 ** max(0, idle - 1),
+            )
+            delay = max(float(retry_after or 0.0), float(backoff))
+        resume_at = _utcnow() + datetime.timedelta(seconds=delay)
+        message = (
+            f"Waiting for the embedding rate limit: {embedded} of {total} chunks done. "
+            f"Resumes automatically at {resume_at.strftime('%H:%M')} UTC."
+            if delay > 0
+            else f"{reason} {embedded} of {total} chunks done; resuming."
+        )
+        metadata["idle_pauses"] = idle
+        metadata["progress"] = {
+            "stage": "paused",
+            "embedded": embedded,
+            "total": total,
+            "resume_at": resume_at.isoformat(),
+            "reason": reason[:300],
+        }
+        document.meta_data = metadata
+        document.status = "pending"
+        document.processing_started_at = None
+        document.resume_after = resume_at
+        document.error_message = message
+        if made_progress:
+            document.attempts = 0
+        await db.commit()
+        logger.warning(f"Paused document {document_id}: {message}")
+        return "paused"
+    except Exception as exc:
+        # Could not record the pause (the database is what is down). The row
+        # stays "processing" and the stale-claim recovery picks it up.
+        logger.warning(f"Could not record the pause: {exc}")
+        return "paused"
 
 
 async def _emit_document_event(db, document: Document, event_type: str, extra: dict) -> None:
@@ -686,8 +1046,16 @@ async def _handle_failure(
             except Exception as delete_error:  # pragma: no cover - best effort
                 logger.warning(f"Could not delete quarantined file: {delete_error}")
 
+        # Keep the progress counts ("340 of 1,200 embedded") but say it stopped,
+        # so the UI can tell the user Re-index will continue from there.
+        if isinstance(error_metadata.get("progress"), dict):
+            error_metadata["progress"] = {
+                **error_metadata["progress"],
+                "stage": "retrying" if retrying else "failed",
+            }
         document.meta_data = error_metadata
         document.error_message = message
+        document.resume_after = None
         if retrying:
             # Back in the queue's hands. "pending" is what lets the retry
             # claim it again; the claim time is cleared so recovery does not
@@ -737,7 +1105,7 @@ async def run_inline_ingestion(document_id: str, *, force: bool = False) -> str:
     The pipeline with the same retry policy Celery applies, for
     INGESTION_MODE=inline (no worker, no Redis -- the free demo).
 
-    Runs as a background task inside the API process, so the waits between
+    Runs on the API's own event loop (see InlineQueue), so the waits between
     attempts are `asyncio.sleep`: they cost nothing while they wait.
     """
     max_retries = settings.INGESTION_MAX_RETRIES
@@ -751,10 +1119,99 @@ async def run_inline_ingestion(document_id: str, *, force: bool = False) -> str:
     return "failed"  # pragma: no cover - the final attempt never raises transient
 
 
-# Strong references to inline jobs started outside a request (the startup
-# recovery). asyncio only keeps WEAK references to tasks, so without this set
-# a running job could be garbage-collected half way through.
-_inline_jobs: set = set()
+class InlineQueue:
+    """
+    An in-process job queue for INGESTION_MODE=inline: the API's own worker.
+
+    WHY NOT FastAPI's BackgroundTasks
+    ---------------------------------
+    A background task runs as part of the request that created it. Every
+    upload got its OWN task, so five uploads meant five large PDFs being
+    extracted at once -- five times the memory on a 512 MB host -- and each
+    job's life was tied to the request machinery that spawned it.
+
+    Instead the upload endpoint drops the document id on this queue and
+    returns 202 at once. INGESTION_INLINE_CONCURRENCY worker tasks (1 by
+    default) take ids off it one at a time, on the application's event loop,
+    entirely independent of the request that queued them.
+
+        upload  -> submit(id) -> 202
+                        |
+                [ queue: id3, id2 ]  -> worker -> run_inline_ingestion(id1)
+
+    A document already queued or running is not queued twice (recovery and a
+    re-index can both ask for the same one). The workers are created lazily
+    on the running loop, so the same object works in the API and in tests,
+    where every test has its own loop. The lifespan in main.py stops them on
+    shutdown; a job interrupted there records itself as paused-and-due (see
+    `async_process_document`), and the startup recovery continues it.
+    """
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._queue: Optional[asyncio.Queue] = None
+        self._workers: list = []
+        self._active: set = set()
+
+    def _ensure_started(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._loop is loop and self._workers:
+            return
+        self._loop = loop
+        self._queue = asyncio.Queue()
+        self._active = set()
+        self._workers = [
+            loop.create_task(self._work(), name=f"docminds-inline-ingestion-{n}")
+            for n in range(max(1, settings.INGESTION_INLINE_CONCURRENCY))
+        ]
+
+    def submit(self, document_id: str, *, force: bool = False) -> bool:
+        """Queue a document; False if it is already queued or running."""
+        self._ensure_started()
+        document_id = str(document_id)
+        if document_id in self._active:
+            return False
+        self._active.add(document_id)
+        self._queue.put_nowait((document_id, force))
+        return True
+
+    async def _work(self) -> None:
+        while True:
+            document_id, force = await self._queue.get()
+            try:
+                await run_inline_ingestion(document_id, force=force)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - the pipeline records its own failures
+                logger.error(f"Inline ingestion crashed for {document_id}: {exc!r}")
+            finally:
+                self._active.discard(document_id)
+                self._queue.task_done()
+
+    async def join(self) -> None:
+        """Wait until every queued document has been processed (tests, shutdown)."""
+        if self._queue is not None and self._loop is asyncio.get_running_loop():
+            await self._queue.join()
+
+    def pending(self) -> int:
+        return len(self._active)
+
+    async def stop(self) -> None:
+        """Cancel the workers (the API is shutting down)."""
+        workers, self._workers = self._workers, []
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+
+
+# One queue per process.
+inline_queue = InlineQueue()
+
+
+async def wait_for_inline_jobs() -> None:
+    """Block until the inline queue is idle. Used by tests after an upload."""
+    await inline_queue.join()
 
 
 def dispatch(document_id: str) -> None:
@@ -762,14 +1219,31 @@ def dispatch(document_id: str) -> None:
     Queue a document for processing in whichever way INGESTION_MODE says.
 
     Must be called from inside a running event loop in inline mode (the API's
-    own), which is where recovery calls it from.
+    own), which is where the endpoints and recovery call it from.
     """
     if settings.INGESTION_MODE == "celery":
         process_document_task.delay(str(document_id))
     else:
-        job = asyncio.get_running_loop().create_task(run_inline_ingestion(str(document_id)))
-        _inline_jobs.add(job)
-        job.add_done_callback(_inline_jobs.discard)
+        inline_queue.submit(str(document_id))
+
+
+async def inline_sweeper() -> None:
+    """
+    The recovery sweep, on a timer, for INGESTION_MODE=inline.
+
+    With Celery, beat runs `recover_stuck_documents` every few minutes.
+    Inline mode has no beat, so the API runs this loop itself (started by the
+    lifespan in main.py). Every INGESTION_INLINE_SWEEP_SECONDS it resumes
+    paused documents whose time has come and re-queues orphaned ones.
+    """
+    while True:
+        await asyncio.sleep(max(5, settings.INGESTION_INLINE_SWEEP_SECONDS))
+        try:
+            await recover_stuck_documents()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Inline recovery sweep failed; trying again later: {exc!r}")
 
 
 # ======================================================================
@@ -795,11 +1269,19 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
     that is in fact still queued only produces a duplicate message, and the
     claim makes the duplicate skip.
 
-    Returns {"requeued": [ids], "failed": [ids]}.
+    It also RESUMES paused documents (status "pending" with `resume_after`
+    in the past): a rate-limit pause, or a job the API's shutdown
+    interrupted. Those are re-queued as soon as they are due, whatever their
+    age -- and a paused document NOT yet due is left alone.
+
+    Returns {"requeued": [ids], "failed": [ids], "resumed": [ids]}
+    ("resumed" is the subset of "requeued" that was paused).
     """
-    cutoff = _stale_cutoff(now)
+    current = now or _utcnow()
+    cutoff = _stale_cutoff(current)
     requeued: list[str] = []
     failed: list[str] = []
+    resumed: list[str] = []
 
     async with SessionLocal() as db:
         stuck = await db.execute(
@@ -815,7 +1297,13 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
                             ),
                         ),
                     ),
-                    and_(Document.status == "pending", Document.updated_at < cutoff),
+                    # A lost queue message -- but not a PAUSED document
+                    # still waiting for its time to come.
+                    and_(
+                        Document.status == "pending",
+                        Document.updated_at < cutoff,
+                        or_(Document.resume_after.is_(None), Document.resume_after <= current),
+                    ),
                 )
             )
         )
@@ -835,7 +1323,24 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
             else:
                 document.status = "pending"
                 document.processing_started_at = None
+                document.resume_after = None
                 requeued.append(str(document.id))
+
+        # PAUSED documents whose time has come (a rate-limit pause, or a job
+        # interrupted by a restart). Their attempts were reset when they
+        # paused, so they are never "out of attempts" here.
+        due = await db.execute(
+            select(Document).where(
+                Document.status == "pending",
+                Document.resume_after.is_not(None),
+                Document.resume_after <= current,
+            )
+        )
+        for document in due.scalars().all():
+            document.resume_after = None
+            if str(document.id) not in requeued:
+                requeued.append(str(document.id))
+                resumed.append(str(document.id))
         await db.commit()
 
     # Queued only AFTER the commit, so the job cannot start before the row
@@ -852,8 +1357,11 @@ async def recover_stuck_documents(*, now: Optional[datetime.datetime] = None, re
                 logger.warning(f"Could not queue {document_id}; a later sweep will retry: {exc}")
 
     if requeued or failed:
-        logger.warning(f"Re-queued {len(requeued)} and failed {len(failed)} stuck document(s).")
-    return {"requeued": requeued, "failed": failed}
+        logger.warning(
+            f"Re-queued {len(requeued)} ({len(resumed)} resumed after a pause) "
+            f"and failed {len(failed)} stuck document(s)."
+        )
+    return {"requeued": requeued, "failed": failed, "resumed": resumed}
 
 
 # ----------------------------------------------------------------------

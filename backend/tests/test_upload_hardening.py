@@ -233,6 +233,9 @@ class TestAccepted:
     async def test_inline_mode_processes_it_end_to_end(self, env, monkeypatch):
         monkeypatch.setattr(settings, "INGESTION_MODE", "inline")
         await env.upload(("policy.txt", TEXT))
+        # The upload returned at once; the in-process queue works on it
+        # after the request -- wait for it to be idle.
+        await ingestion.wait_for_inline_jobs()
 
         listed = await env.client.get(
             f"{API}/documents/", headers=env.headers, params={"project_id": env.project_id}

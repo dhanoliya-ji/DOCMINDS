@@ -106,16 +106,7 @@ class OCRService:
         try:
             # `enumerate(..., 1)` because page numbering starts at 1 for humans.
             for page_number, page in enumerate(document, 1):
-                # Draw the page into a bitmap at the configured resolution.
-                # `get_pixmap` is PyMuPDF's renderer -- the same one that draws
-                # a PDF on screen.
-                pixmap = page.get_pixmap(dpi=settings.OCR_DPI)
-
-                # Convert to PNG bytes in memory. Nothing touches the disk,
-                # which is both faster and avoids leaving temp files behind.
-                image_bytes = pixmap.tobytes("png")
-
-                page_text = cls.ocr_image(image_bytes)
+                page_text = cls.ocr_page(page)
                 pages_text.append(f"--- PAGE {page_number} (OCR) ---\n{page_text}")
 
             page_count = len(document)
@@ -126,6 +117,49 @@ class OCRService:
             document.close()
 
         return "\n\n".join(pages_text), page_count
+
+    @staticmethod
+    def page_dpi(page) -> int:
+        """
+        The resolution to rasterise this page at: OCR_DPI, lowered if needed.
+
+        A page is width x height POINTS (1/72 inch), so at D dots per inch it
+        becomes (width * D/72) x (height * D/72) pixels. For an ordinary A4
+        page at 150 DPI that is ~2 MP. For an A0 poster it is ~35 MP -- over
+        100 MB as raw RGB -- so the DPI is scaled down until the page fits in
+        OCR_MAX_PIXELS. Never below 72: lower than that, OCR reads nothing.
+        """
+        dpi = settings.OCR_DPI
+        width_in = page.rect.width / 72
+        height_in = page.rect.height / 72
+        pixels = width_in * height_in * dpi * dpi
+        if pixels > settings.OCR_MAX_PIXELS > 0:
+            dpi = int(dpi * (settings.OCR_MAX_PIXELS / pixels) ** 0.5)
+        return max(72, dpi)
+
+    @classmethod
+    def render_page(cls, page) -> bytes:
+        """
+        One page as PNG bytes, at the capped resolution above.
+
+        `get_pixmap` is PyMuPDF's renderer -- the same one that draws a PDF on
+        screen. The pixmap (raw pixels) is the big object; it is turned into
+        compressed PNG bytes in memory -- nothing touches the disk -- and
+        dropped at once.
+        """
+        pixmap = page.get_pixmap(dpi=cls.page_dpi(page))
+        try:
+            return pixmap.tobytes("png")
+        finally:
+            del pixmap
+
+    @classmethod
+    def ocr_page(cls, page) -> str:
+        """
+        OCR ONE PyMuPDF page. The page-by-page extractor calls this, so a
+        scanned 500-page PDF only ever has one page's pixels in memory.
+        """
+        return cls.ocr_image(cls.render_page(page))
 
     # ==================================================================
     # THE DISPATCHER
