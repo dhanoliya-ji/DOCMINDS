@@ -23,7 +23,9 @@ import httpx
 import pytest
 
 from app.core.config import settings
-from app.services.embedding import EmbeddingService
+from app.services import embedding as embedding_module
+from app.services.embedding import EmbeddingRateLimited, EmbeddingService, gemini_retry_hint
+from app.services.pacing import RatePacer
 
 DIMENSION = settings.EMBEDDING_DIMENSION
 
@@ -33,7 +35,14 @@ def gemini(monkeypatch):
     """Point the provider at a fake Gemini; returns the list of requests seen."""
     monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.embedding.time.sleep", lambda _s: None)
+    # Fake time: sleeping just moves the clock, so waits are instant and
+    # exact. A fresh pacer per test, on the same fake clock.
+    clock = FakeClock()
+    monkeypatch.setattr(embedding_module, "_now", clock.now)
+    monkeypatch.setattr(embedding_module, "_sleep", clock.sleep)
+    monkeypatch.setattr(embedding_module, "gemini_pacer", RatePacer(clock=clock.now, sleep=clock.sleep))
+    # Jitter pinned to its upper bound, so backoff is predictable.
+    monkeypatch.setattr(embedding_module.random, "uniform", lambda _a, b: b)
     seen = []
 
     def install(handler):
@@ -44,7 +53,21 @@ def gemini(monkeypatch):
         monkeypatch.setattr(EmbeddingService, "_gemini_transport", httpx.MockTransport(recording))
         return seen
 
+    install.clock = clock
     return install
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+        self.sleeps = []
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.t += seconds
 
 
 def _echo(request: httpx.Request) -> httpx.Response:
@@ -88,7 +111,8 @@ def test_vectors_come_back_in_order_and_unit_length(gemini):
     assert vectors[0][0] < vectors[1][0] < vectors[2][0]
 
 
-def test_large_inputs_are_sent_in_batches_of_100(gemini):
+def test_large_inputs_are_sent_in_batches_of_at_most_100(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_EMBED_REQUESTS_PER_MINUTE", 1000)
     seen = gemini(_echo)
     vectors = EmbeddingService.get_embeddings([f"chunk {i}" for i in range(250)])
 
@@ -126,6 +150,146 @@ def test_a_missing_key_is_a_clear_error(gemini, monkeypatch):
 
 def test_the_stored_model_name_includes_the_size(gemini):
     assert EmbeddingService.current_model_name() == f"{settings.GEMINI_EMBEDDING_MODEL}@{DIMENSION}"
+
+
+# ----------------------------------------------------------------------
+# PACING: stay under the per-minute quota instead of hitting it
+# ----------------------------------------------------------------------
+
+
+def test_a_batch_never_holds_more_than_a_minutes_requests(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_EMBED_REQUESTS_PER_MINUTE", 30)
+    seen = gemini(_echo)
+    EmbeddingService.get_embeddings([f"chunk {i}" for i in range(70)])
+
+    assert [len(json.loads(r.content)["requests"]) for r in seen] == [30, 30, 10]
+
+
+def test_batches_are_split_by_tokens_so_one_request_fits_the_quota(gemini, monkeypatch):
+    # The real failure: 100 chunks of ~500 tokens is ~50k tokens in ONE
+    # request -- more than a whole minute's free quota.
+    monkeypatch.setattr(settings, "GEMINI_EMBED_TOKENS_PER_MINUTE", 10_000)
+    seen = gemini(_echo)
+    EmbeddingService.get_embeddings(["word " * 500] * 40)
+
+    budget = settings.GEMINI_EMBED_TOKENS_PER_MINUTE // 2
+    sizes = [len(json.loads(r.content)["requests"]) for r in seen]
+    assert sum(sizes) == 40 and len(sizes) > 1
+    for request in seen:
+        texts = [r["content"]["parts"][0]["text"] for r in json.loads(request.content)["requests"]]
+        assert sum(EmbeddingService._estimate_tokens(t) for t in texts) <= budget
+
+
+def test_requests_are_paced_to_the_per_minute_limit(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_EMBED_REQUESTS_PER_MINUTE", 20)
+    seen = gemini(_echo)
+    EmbeddingService.get_embeddings([f"chunk {i}" for i in range(60)])
+
+    assert len(seen) == 3
+    # The 2nd and 3rd batches each waited for the window to roll over; no
+    # 429 was needed.
+    waits = gemini.clock.sleeps
+    assert len(waits) == 2 and all(55 <= w <= 61 for w in waits)
+
+
+def test_a_question_does_not_queue_behind_a_document(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_EMBED_REQUESTS_PER_MINUTE", 5)
+    gemini(_echo)
+    EmbeddingService.get_embeddings([f"chunk {i}" for i in range(5)])  # minute used up
+    EmbeddingService.get_embedding("urgent question?")
+
+    assert gemini.clock.sleeps == []
+
+
+# ----------------------------------------------------------------------
+# 429 HANDLING: what Google says, backoff, budgets
+# ----------------------------------------------------------------------
+
+
+def _quota(delay=None, header=None):
+    body = {"error": {"code": 429, "message": "Resource exhausted"}}
+    if delay is not None:
+        body["error"]["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}
+        ]
+    headers = {"retry-after": header} if header is not None else {}
+    return httpx.Response(429, json=body, headers=headers)
+
+
+def _then_ok(*failures):
+    replies = iter(failures)
+
+    def handler(request):
+        reply = next(replies, None)
+        return reply if reply is not None else _echo(request)
+
+    return handler
+
+
+def test_retry_hint_reads_the_header_and_the_retryinfo_body():
+    assert gemini_retry_hint(_quota(header="12")) == 12.0
+    assert gemini_retry_hint(_quota(delay="37s")) == 37.0
+    assert gemini_retry_hint(_quota(delay="1.5s")) == 1.5
+    assert gemini_retry_hint(_quota()) is None
+    assert gemini_retry_hint(httpx.Response(429, text="not json")) is None
+
+
+def test_the_wait_google_asks_for_is_honoured(gemini):
+    seen = gemini(_then_ok(_quota(delay="37s")))
+    assert len(EmbeddingService.get_embeddings(["x"])) == 1
+    assert len(seen) == 2
+    # The retry sleep, then the pacer's cool-down wait is already over.
+    assert 37 <= sum(gemini.clock.sleeps) < 40
+
+
+def test_without_a_hint_backoff_grows_exponentially(gemini):
+    gemini(_then_ok(_quota(), _quota(), _quota()))
+    EmbeddingService.get_embeddings(["x"])
+
+    # uniform() is pinned to its upper bound: 2, 4, 8 seconds.
+    assert gemini.clock.sleeps == [2.0, 4.0, 8.0]
+
+
+def test_running_out_of_budget_pauses_instead_of_failing(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_RETRY_BUDGET_SECONDS", 100)
+    gemini(lambda _r: _quota(delay="30s"))
+
+    with pytest.raises(EmbeddingRateLimited) as info:
+        EmbeddingService.get_embeddings(["x"])
+    assert info.value.retry_after == pytest.approx(30)
+    assert sum(gemini.clock.sleeps) <= 100
+
+
+def test_a_daily_quota_stops_at_once_with_the_delay_attached(gemini):
+    seen = gemini(lambda _r: _quota(delay="3600s"))
+
+    with pytest.raises(EmbeddingRateLimited) as info:
+        EmbeddingService.get_embeddings(["x"])
+    assert info.value.retry_after == 3600
+    assert len(seen) == 1
+
+
+def test_a_question_has_a_short_budget(gemini, monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_QUERY_RETRY_BUDGET_SECONDS", 20)
+    gemini(lambda _r: _quota(delay="15s"))
+
+    with pytest.raises(EmbeddingRateLimited):
+        EmbeddingService.get_embedding("q?")
+    assert sum(gemini.clock.sleeps) <= 20
+
+
+def test_network_errors_are_retried(gemini):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("reset")
+        return _echo(request)
+
+    gemini(handler)
+    assert len(EmbeddingService.get_embeddings(["x"])) == 1
+    assert calls["n"] == 2
 
 
 @pytest.mark.gemini_live

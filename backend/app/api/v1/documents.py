@@ -81,6 +81,7 @@ from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -196,6 +197,8 @@ def _not_yet_cleared_by_scan(document: Document) -> bool:
     dependencies=[Depends(deps.rate_limit_by_user("upload"))],
 )
 async def upload_documents(
+    # Injected by FastAPI; see `_queue_for_processing`.
+    background_tasks: BackgroundTasks,
     # The raw request, only so the audit entry can record the caller's IP.
     request: Request,
     # `Form(...)` and `File(...)` rather than a JSON body, because file uploads
@@ -440,13 +443,23 @@ async def upload_documents(
     #           202 goes back at once; the job carries on after the request
     #           has ended, and the frontend's polling shows its progress.
     for document in processed_docs:
-        _queue_for_processing(document.id)
+        _queue_for_processing(document.id, background_tasks)
 
     return processed_docs
 
 
-def _queue_for_processing(document_id) -> None:
-    """Hand a committed document to the ingestion pipeline, never raising."""
+def _queue_for_processing(document_id, background_tasks: BackgroundTasks) -> None:
+    """
+    Hand a committed document to the ingestion pipeline, never raising.
+
+    In inline mode the hand-over itself is deferred until the response has
+    been sent (a background task that only SUBMITS to the queue, which takes
+    microseconds): the job then never starts while this request's database
+    session is still open. The work runs on the queue, not in the request.
+    """
+    if settings.INGESTION_MODE != "celery":
+        background_tasks.add_task(ingestion.submit_inline, str(document_id))
+        return
     try:
         ingestion.dispatch(str(document_id))
     except Exception as exc:
@@ -730,6 +743,7 @@ async def delete_document(
 )
 async def reindex_document(
     document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     request: Request,
     payload: Optional[DocumentReindex] = None,
     db: AsyncSession = Depends(deps.get_db),
@@ -799,7 +813,7 @@ async def reindex_document(
     await db.refresh(document)
 
     # Queued AFTER the commit, exactly like an upload.
-    _queue_for_processing(document.id)
+    _queue_for_processing(document.id, background_tasks)
     return document
 
 

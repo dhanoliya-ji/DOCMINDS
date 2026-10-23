@@ -1227,6 +1227,12 @@ def dispatch(document_id: str) -> None:
         inline_queue.submit(str(document_id))
 
 
+async def submit_inline(document_id: str) -> None:
+    """`dispatch` for inline mode as a coroutine, so FastAPI runs it on the
+    event loop (a plain function background task would run on a thread)."""
+    inline_queue.submit(str(document_id))
+
+
 async def inline_sweeper() -> None:
     """
     The recovery sweep, on a timer, for INGESTION_MODE=inline.
