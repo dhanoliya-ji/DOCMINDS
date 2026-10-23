@@ -980,6 +980,109 @@ class Settings(BaseSettings):
     WEBHOOK_MAX_ENDPOINTS_PER_ORG: int = 10
 
     # ==================================================================
+    # 22. CLOUD IMPORTS (optional) -- services/connectors/, api/v1/integrations.py
+    # ==================================================================
+    # Editors connect their organization's Google Drive, OneDrive /
+    # SharePoint, Notion or Confluence through OAuth, pick files or pages,
+    # and import them into a project. Google Docs, Notion pages and
+    # Confluence pages are EXPORTED to a format the extractor reads (.docx,
+    # .md, .html) on the way in.
+    #
+    # Off by default. With the master switch on, a provider appears only
+    # once its client id AND secret are set -- each is an "app" you register
+    # with that provider, whose redirect URI must be
+    #   <this API>/api/v1/integrations/callback/<provider>
+    # (google_drive, onedrive, notion, confluence).
+    CONNECTORS_ENABLED: bool = False
+    # Empty = derive <this API> from the request (right unless a proxy
+    # rewrites the host); otherwise e.g. https://docminds-api.onrender.com
+    CONNECTOR_REDIRECT_BASE_URL: str = ""
+    # OAuth tokens are ENCRYPTED in the database (Fernet: AES-128-CBC +
+    # HMAC-SHA256). Empty = a key derived from SECRET_KEY with HKDF, so
+    # rotating SECRET_KEY then disconnects every connection. Set your own
+    # (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
+    # to decouple them. Comma-separated: the FIRST key encrypts, every key
+    # decrypts -- which is how a key is rotated without losing connections.
+    CONNECTOR_ENCRYPTION_KEY: str = ""
+    CONNECTOR_GOOGLE_CLIENT_ID: str = ""
+    CONNECTOR_GOOGLE_CLIENT_SECRET: str = ""
+    CONNECTOR_MICROSOFT_CLIENT_ID: str = ""
+    CONNECTOR_MICROSOFT_CLIENT_SECRET: str = ""
+    # "common" lets work AND personal Microsoft accounts connect; a tenant
+    # id (or "organizations") restricts it.
+    CONNECTOR_MICROSOFT_TENANT: str = "common"
+    CONNECTOR_NOTION_CLIENT_ID: str = ""
+    CONNECTOR_NOTION_CLIENT_SECRET: str = ""
+    CONNECTOR_CONFLUENCE_CLIENT_ID: str = ""
+    CONNECTOR_CONFLUENCE_CLIENT_SECRET: str = ""
+    # How long one call to a provider may take.
+    CONNECTOR_TIMEOUT_SECONDS: float = 30.0
+
+    # ---- Auto-sync ----
+    # Imported documents remember their source id and revision. With this
+    # on, a periodic sync asks each source whether the file changed and, if
+    # it did, re-imports and re-indexes it. Celery beat sends the sync when
+    # INGESTION_MODE=celery; with inline, a loop inside the API runs it.
+    # "Sync now" works whether or not this is on.
+    CONNECTOR_SYNC_ENABLED: bool = False
+    CONNECTOR_SYNC_INTERVAL_MINUTES: int = 60
+    # Most documents one sweep checks, so a huge library is spread over
+    # several sweeps instead of hammering the provider's rate limit.
+    CONNECTOR_SYNC_BATCH_SIZE: int = 100
+    # Imports run in the background (POST .../import answers 202). A job
+    # whose worker has not reported for this long is treated as orphaned --
+    # the process died -- and resumed by the API's startup recovery.
+    CONNECTOR_IMPORT_STALE_MINUTES: int = 15
+
+    # ==================================================================
+    # 23. BILLING WITH STRIPE (optional) -- services/billing.py, api/v1/billing.py
+    # ==================================================================
+    # Three plans, each mapped onto the quotas of section 16:
+    #   free  -> the QUOTA_* settings themselves (the override columns are
+    #            cleared back to NULL)
+    #   pro   -> BILLING_PLAN_LIMITS["pro"]
+    #   team  -> BILLING_PLAN_LIMITS["team"]
+    # A plan change arrives as a SIGNED Stripe webhook and writes the limits
+    # onto the organization's own quota columns. Off by default: with
+    # BILLING_ENABLED=false every /billing route answers 404, and quotas are
+    # managed by hand exactly as before (docs/DEPLOYMENT.md, "Quotas").
+    BILLING_ENABLED: bool = False
+    # From the Stripe dashboard: Developers -> API keys (sk_live_... or
+    # sk_test_...), and Developers -> Webhooks -> your endpoint's signing
+    # secret (whsec_...). Secrets: .env or the host's secret store only.
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    # The recurring PRICE ids (price_...) customers subscribe to.
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_TEAM: str = ""
+    # A signed webhook older than this is refused (replay protection).
+    STRIPE_WEBHOOK_TOLERANCE_SECONDS: int = 300
+    # What each paid plan allows. Keys are the quota names; 0 = unlimited.
+    # From the environment, set it as JSON like LLM_PRICING.
+    BILLING_PLAN_LIMITS: Dict[str, Dict[str, int]] = {
+        "pro": {
+            "monthly_tokens": 10_000_000,
+            "max_documents": 10_000,
+            "max_storage_bytes": 50 * 1024 * 1024 * 1024,
+        },
+        "team": {
+            "monthly_tokens": 50_000_000,
+            "max_documents": 0,
+            "max_storage_bytes": 250 * 1024 * 1024 * 1024,
+        },
+    }
+    # Shown on the upgrade page only; Stripe Checkout shows the real price.
+    BILLING_PRICE_LABELS: Dict[str, str] = {"free": "$0", "pro": "$29 / month", "team": "$99 / month"}
+
+    # ==================================================================
+    # 24. ADMIN DASHBOARD (optional) -- services/analytics.py, api/v1/analytics.py
+    # ==================================================================
+    # Settings -> Admin dashboard: usage and cost over time, top questions,
+    # documents processed and failed, active users and the feedback trend,
+    # for the organization's admins. Off: every /analytics route is 404.
+    ADMIN_DASHBOARD_ENABLED: bool = False
+
+    # ==================================================================
     # DERIVED VALUES
     # ------------------------------------------------------------------
     # `@property` means "compute this on demand from the settings above".
@@ -1162,6 +1265,8 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} cannot be negative (0 means unlimited).")
         if self.TRUSTED_PROXY_COUNT < 0:
             raise ValueError("TRUSTED_PROXY_COUNT cannot be negative.")
+        if self.CONNECTOR_SYNC_INTERVAL_MINUTES < 1:
+            raise ValueError("CONNECTOR_SYNC_INTERVAL_MINUTES must be at least 1.")
         return self
 
     @property

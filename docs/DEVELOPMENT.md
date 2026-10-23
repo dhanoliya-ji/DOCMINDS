@@ -373,6 +373,64 @@ def verify(secret: str, headers, raw_body: bytes) -> bool:
 
 **Local testing**: run a receiver (for example `python -m http.server 9000` will answer 501, which still shows the attempt in the delivery log), set `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` and `WEBHOOK_ALLOW_HTTP=true`, and register `http://localhost:9000/`. With `INGESTION_MODE=celery` deliveries are sent by the worker, and Celery beat runs a sweep every 5 minutes for deliveries whose queue message was lost; with `INGESTION_MODE=inline` they are sent from the API process.
 
+### Cloud imports (Google Drive, OneDrive / SharePoint, Notion, Confluence)
+
+Off by default; with `CONNECTORS_ENABLED=false` every `/api/v1/integrations` route answers `404`. Editors and admins connect a source with OAuth, browse it, and import files or pages into a project (`services/connectors/`, `api/v1/integrations.py`, Settings → **Cloud imports** at `/settings/integrations`, migration `b3d5f7a9c1e2`). A provider is offered once its client id **and** secret are set; register `<API>/api/v1/integrations/callback/<provider>` (`google_drive`, `onedrive`, `notion`, `confluence`) as its redirect URI (locally `http://localhost:8000/...`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONNECTORS_ENABLED` | `false` | Master switch |
+| `CONNECTOR_REDIRECT_BASE_URL` | *(empty)* | Base of the redirect URI; empty derives it from the request |
+| `CONNECTOR_ENCRYPTION_KEY` | *(empty)* | Fernet key(s) for the OAuth tokens at rest. Comma-separated: the first encrypts, all decrypt (rotation). A non-Fernet value is stretched with HKDF. Empty derives a key from `SECRET_KEY`, so changing `SECRET_KEY` then disconnects every source |
+| `CONNECTOR_GOOGLE_CLIENT_ID` / `_SECRET` | *(empty)* | A Google Cloud OAuth client (Drive API enabled, scope `drive.readonly`) |
+| `CONNECTOR_MICROSOFT_CLIENT_ID` / `_SECRET` | *(empty)* | A Microsoft Entra app registration (delegated `Files.Read.All`, `Sites.Read.All`, `offline_access`) |
+| `CONNECTOR_MICROSOFT_TENANT` | `common` | `common`, `organizations` or a tenant id |
+| `CONNECTOR_NOTION_CLIENT_ID` / `_SECRET` | *(empty)* | A Notion **public** integration |
+| `CONNECTOR_CONFLUENCE_CLIENT_ID` / `_SECRET` | *(empty)* | An Atlassian OAuth 2.0 (3LO) app with the Confluence read scopes |
+| `CONNECTOR_TIMEOUT_SECONDS` | `30` | Per call to a provider |
+| `CONNECTOR_SYNC_ENABLED` | `false` | Periodic auto-sync (below). **Sync now** works regardless |
+| `CONNECTOR_SYNC_INTERVAL_MINUTES` | `60` | How often each imported document is checked |
+| `CONNECTOR_SYNC_BATCH_SIZE` | `100` | Most documents one sweep (or one **Sync all**) checks |
+| `CONNECTOR_IMPORT_STALE_MINUTES` | `15` | A background import whose worker has not reported for this long is treated as orphaned and resumed (at API start-up, and by the Celery beat sync) |
+
+**Imports run in the background**: `POST /integrations/connections/{id}/import` validates the request, records a `connector_imports` job and answers `202`; the downloads run in the Celery task `run_import_task`, or with `INGESTION_MODE=inline` on an in-process queue with one worker. The page polls `GET /integrations/imports/{id}`; each item goes `pending` → `downloading` → `imported` (or `duplicate`, `already_imported`, `skipped`, `failed` with the reason). A job interrupted by a shutdown is handed back as `queued` and resumed at the next start, skipping the items already finished.
+
+**Disconnecting** deletes the tokens locally first, then revokes DocMinds' grant where the provider has an API (Google's token revocation endpoint, Notion's `/v1/oauth/revoke`). Microsoft and Atlassian have none, so the page links to `https://myapps.microsoft.com` (personal accounts: `https://account.live.com/consent/Manage`) or `https://id.atlassian.com/manage-profile/apps`. A failed revocation is logged and shown, never a failed disconnect.
+
+**Formats**: Drive and OneDrive / SharePoint files are downloaded as they are; Google Docs, Sheets and Slides are exported to `.docx`, `.xlsx` and `.pptx`; Notion pages are rendered to Markdown (`.md`) from their blocks; Confluence pages are saved from their `export_view` as `.html`. Every imported file then passes the upload rules -- extension allowlist and content sniffing, `MAX_UPLOAD_SIZE_BYTES`, de-duplication by SHA-256, versioning by name, the document and storage quotas, a server-chosen storage key, a `document.upload` audit entry (with `source`) -- and is queued through the same ingestion entry point as an upload (`tasks/ingestion.py` `dispatch`).
+
+**Auto-sync**: each import remembers the source id and revision (`connector_items`: Drive `version`, Graph `cTag`, Notion `last_edited_time`, Confluence version number). A check asks the provider for the current revision; only a different revision is downloaded, and only different bytes replace the stored file and re-index the document (`document.sync` audit entry). With `INGESTION_MODE=celery`, Celery beat sends `sync_connectors_task`; with `inline`, a loop inside the API runs the sweep (`services/connectors/scheduler.py`). Each link is claimed with a conditional `UPDATE`, so two processes never sync the same document. Statuses: `synced`, `syncing` (re-indexing), `error`, `source_deleted`, `disconnected` (the connection was removed; the document stays).
+
+**Security**: tokens are Fernet-encrypted in `connector_connections.encrypted_tokens` and never returned. The OAuth `state` is a 10-minute JWT of its own type naming user, organization and provider; the callback re-checks that the user is still an active editor. All provider traffic goes through `services/connectors/http.py`: `https` only, a per-provider host allowlist, every resolved address public, no automatic redirects (a download may follow up to three, only to the provider's file hosts, without our bearer token), and the upload size cap while streaming. Item ids are validated and percent-encoded into the path, never the host.
+
+**Endpoints** (editor+): `GET /integrations/providers`, `POST /integrations/{provider}/authorize`, `GET /integrations/callback/{provider}` (browser redirect), `GET /integrations/connections`, `DELETE /integrations/connections/{id}`, `GET /integrations/connections/{id}/items?parent=&q=&cursor=`, `POST /integrations/connections/{id}/import` (`202`), `GET /integrations/imports?connection_id=`, `GET /integrations/imports/{id}`, `POST /integrations/connections/{id}/sync`, `GET /integrations/documents?project_id=`, `PATCH /integrations/documents/{document_id}` (`auto_sync`), `POST /integrations/documents/{document_id}/sync`.
+
+### Billing (Stripe)
+
+Off by default; with `BILLING_ENABLED=false` every `/api/v1/billing` route answers `404` and quotas stay manual. Three plans map onto the existing quotas: **Free** clears the organization's override columns (so the `QUOTA_*` settings apply), **Pro** and **Team** write `BILLING_PLAN_LIMITS` into them (`services/billing.py`, `api/v1/billing.py`, the plan badge in Settings and the page `/settings/billing`). There is no Stripe SDK: three form POSTs to `api.stripe.com` through `httpx`, and an HMAC check.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BILLING_ENABLED` | `false` | Master switch |
+| `STRIPE_SECRET_KEY` | *(empty)* | `sk_test_...` / `sk_live_...` |
+| `STRIPE_WEBHOOK_SECRET` | *(empty)* | The webhook endpoint's signing secret (`whsec_...`); without it every webhook is refused |
+| `STRIPE_PRICE_PRO` / `STRIPE_PRICE_TEAM` | *(empty)* | Recurring price ids; a plan without one cannot be bought |
+| `STRIPE_WEBHOOK_TOLERANCE_SECONDS` | `300` | Older signed webhooks are refused (replay protection) |
+| `BILLING_PLAN_LIMITS` | Pro: 10 M tokens, 10,000 documents, 50 GB; Team: 50 M tokens, unlimited documents, 250 GB | JSON; `0` = unlimited |
+| `BILLING_PRICE_LABELS` | `{"free": "$0", "pro": "$29 / month", "team": "$99 / month"}` | Display only; Checkout shows the real price |
+
+**Endpoints**: `GET /billing` (any member: plan, status, enforced limits, the plans), `POST /billing/checkout` `{plan}` and `POST /billing/portal` (admin; each returns a Stripe URL; audited `billing.checkout` / `billing.portal`), `POST /billing/webhook` (Stripe only). A plan changes **only** through a webhook whose `Stripe-Signature` verifies; each event id is stored in `billing_events` in the same transaction, so a redelivered event changes nothing twice. Handled: `checkout.session.completed`, `customer.subscription.created` / `.updated` (price → plan; `active`, `trialing` and `past_due` keep it, anything else drops to Free), `customer.subscription.deleted`, `invoice.payment_failed`. Each change writes a `billing.plan_change` audit entry. Locally, `stripe listen --forward-to localhost:8000/api/v1/billing/webhook` prints the `whsec_` to use.
+
+### Admin dashboard
+
+Off by default (`ADMIN_DASHBOARD_ENABLED=false`: every `/api/v1/analytics` route is `404`). For admins, `/settings/admin` charts the last 7, 30 or 90 days, each chart with a data table (`services/analytics.py`, `api/v1/analytics.py`, `components/settings/TrendChart.tsx`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ADMIN_DASHBOARD_ENABLED` | `false` | Master switch |
+
+**Endpoints** (admin; `days` 1-365, UTC days, every day present): `GET /analytics/overview` (everything; used by the page), `/analytics/usage` (answers, tokens, estimated cost), `/analytics/documents` (completed / failed, by the day they last changed), `/analytics/active-users` (distinct members with a chat answer or an audited action), `/analytics/feedback` (up / down), `/analytics/top-questions?limit=` (grouped after trimming and lower-casing).
+
 ### Frontend
 
 | Variable | Default | Description |
@@ -431,6 +489,7 @@ python -m pytest -m "not gemini_live"     # skip the live Gemini test
 | Tier 1 + 2 (`test_usage.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Usage events per chat answer, the token quota (`429`), document and storage quotas (`402`, nothing stored), per-org overrides, `GET /org/usage` |
 | Tier 1 (`test_retrieval_quality.py`) | Nothing | Reciprocal rank fusion, the reranker (and its fail-safe), follow-up query rewriting (heuristic and a faked model), conversation titles, the SSE framing, Markdown export, and the evaluation harness (golden-set loading, hit rate, MRR, judge parsing, the CLI's errors) |
 | Tier 1 + 2 (`test_product_api.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Project get / rename / delete (cascades and stored files), document get / rename / delete / re-index / chunks, role and tenant checks and audit entries; chat rename, list by project, Markdown export, the document filter and the rewritten follow-up reaching retrieval; the streaming endpoint's events in rag and agent mode, the answer saved with mode, model and steps, nothing saved on a mid-stream failure; the admin feedback summary |
+| Tier 1 + 2 (`test_connectors.py`, `test_billing.py`) | Nothing for `[sqlite]`; Postgres for `[postgres]` | Token encryption and rotation, the OAuth state, the connector SSRF guard (allowlist, private addresses, redirects without our token, size cap), id validation, provider parsing against faked Drive / Graph / Notion / Confluence APIs; through the API with a fake provider: connect, browse, background import (202, per-item progress while running, claimed once, resumed when stale, failed when disconnected mid-way; queued, audited, de-duplicated, content-checked), revocation on disconnect (Google, Notion; Microsoft and Confluence link instead; a failure never fails the disconnect), Sync now, refresh after a 401, the periodic sweep, disconnect, roles, `404` while off. Stripe signatures, plan-to-quota mapping, the webhook lifecycle and idempotency, Checkout and the portal against a faked Stripe; the admin dashboard series and top questions |
 | Tier 2 (`test_retrieval_db.py`, `test_api.py`) | Postgres with pgvector, migrated | Retrieval SQL, hybrid search (an exact code found only by the keyword half, tenant and document filters on both halves), tenant isolation, cascades, the HTTP layer |
 | `gemini_live` marker | `GEMINI_API_KEY` | One call to the real Gemini embedding API |
 
@@ -461,7 +520,7 @@ npm run test:run                  # single run
 npx vitest run tests/api.test.ts  # one file
 ```
 
-Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts` (silent refresh, logout, `ApiError` and `Retry-After`), the streaming client and the batch-2 endpoints (`streaming.test.ts`: SSE parsing across read boundaries, handler order, `error` events, upload progress over a fake `XMLHttpRequest`), `ChatPanel` (streamed tokens and live steps, Stop, history sidebar, document filter, copy and export, the source viewer), `SourceViewer` (pdf.js mocked: the cited page and snippet, page navigation, the text fallback), Markdown export and passage matching (`export.test.ts`), `SearchPanel`, `UploadZone` (per-file progress and errors, at most three in flight, `413`/`415`/`429`/`402` wording), the project page's polling, auth guard and role gating, the signed-out pages (`AuthPages.test.tsx`: sign in, sign up, invites, forgot/reset password, verify email), the settings area and dashboard (`Settings.test.tsx`), and the password policy, role rules and security headers (`policy.test.ts`). `tests/setup.ts` stubs `next/navigation` (set `searchParamsMock.value` to drive `useSearchParams`), `window.location`, `scrollIntoView` and `framer-motion` (one cached component per tag, so inputs inside `motion.div` keep focus while typing), and clears `localStorage` between tests. Component tests mock `lib/api`; page tests mock only the `api` object and keep the real error helpers.
+Vitest with Testing Library and jsdom; no backend or network required. Suites cover `lib/api.ts` (silent refresh, logout, `ApiError` and `Retry-After`), the streaming client and the batch-2 endpoints (`streaming.test.ts`: SSE parsing across read boundaries, handler order, `error` events, upload progress over a fake `XMLHttpRequest`), `ChatPanel` (streamed tokens and live steps, Stop, history sidebar, document filter, copy and export, the source viewer), `SourceViewer` (pdf.js mocked: the cited page and snippet, page navigation, the text fallback), Markdown export and passage matching (`export.test.ts`), `SearchPanel`, `UploadZone` (per-file progress and errors, at most three in flight, `413`/`415`/`429`/`402` wording), the project page's polling, auth guard and role gating, the signed-out pages (`AuthPages.test.tsx`: sign in, sign up, invites, forgot/reset password, verify email), the settings area and dashboard (`Settings.test.tsx`), and the password policy, role rules and security headers (`policy.test.ts`), and the cloud-import, billing and admin-dashboard pages (`Platform.test.tsx`: connect, browse and import, Sync now, Checkout and portal redirects, charts with data tables, the settings links shown only when each feature is on). `tests/setup.ts` stubs `next/navigation` (set `searchParamsMock.value` to drive `useSearchParams`), `window.location`, `scrollIntoView` and `framer-motion` (one cached component per tag, so inputs inside `motion.div` keep focus while typing), and clears `localStorage` between tests. Component tests mock `lib/api`; page tests mock only the `api` object and keep the real error helpers.
 
 ### End-to-end tests (Playwright)
 
@@ -533,7 +592,7 @@ alembic revision --autogenerate -m "description"  # generate from model changes
 alembic downgrade -1                              # revert the last revision
 ```
 
-The chain is linear -- check there is exactly one head (`grep -n down_revision app/db/migrations/versions/*.py`) before adding a revision. The current head is `a7b9c1d3e5f8` (chat-message `mode` / `model` / `steps` and the full-text index for hybrid search). That index is created on an EXPRESSION in the migration only and is not declared on the model, so autogenerate may offer to drop `ix_chunks_content_fts`: delete that line from the generated revision.
+The chain is linear -- check there is exactly one head (`grep -n down_revision app/db/migrations/versions/*.py`) before adding a revision. The current head is `b3d5f7a9c1e2` (cloud-import connections and links, billing events and the organization's plan), chained after the large-file (`b8d0f2a4c6e8`) and collaboration (`c9e1a3b5d7f0`) revisions; `a7b9c1d3e5f8` added chat-message `mode` / `model` / `steps` and the full-text index for hybrid search. That index is created on an EXPRESSION in the migration only and is not declared on the model, so autogenerate may offer to drop `ix_chunks_content_fts`: delete that line from the generated revision.
 
 Alembic uses the synchronous psycopg2 URL. Always review a generated migration: autogenerate represents a renamed column as a drop plus an add, which deletes data; use `op.alter_column(..., new_column_name=...)` instead.
 

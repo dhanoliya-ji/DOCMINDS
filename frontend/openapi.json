@@ -239,6 +239,71 @@
         "title": "AgentStep",
         "type": "object"
       },
+      "AnalyticsOverview": {
+        "properties": {
+          "active_users": {
+            "items": {
+              "$ref": "#/components/schemas/DailyUsers"
+            },
+            "title": "Active Users",
+            "type": "array"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/DailyDocuments"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "feedback": {
+            "items": {
+              "$ref": "#/components/schemas/DailyFeedback"
+            },
+            "title": "Feedback",
+            "type": "array"
+          },
+          "since": {
+            "format": "date-time",
+            "title": "Since",
+            "type": "string"
+          },
+          "top_questions": {
+            "items": {
+              "$ref": "#/components/schemas/TopQuestion"
+            },
+            "title": "Top Questions",
+            "type": "array"
+          },
+          "totals": {
+            "additionalProperties": true,
+            "title": "Totals",
+            "type": "object"
+          },
+          "usage": {
+            "items": {
+              "$ref": "#/components/schemas/DailyUsage"
+            },
+            "title": "Usage",
+            "type": "array"
+          }
+        },
+        "required": [
+          "days",
+          "since",
+          "totals",
+          "usage",
+          "documents",
+          "active_users",
+          "feedback",
+          "top_questions"
+        ],
+        "title": "AnalyticsOverview",
+        "type": "object"
+      },
       "AuditLogOut": {
         "description": "One audit entry.",
         "properties": {
@@ -324,6 +389,72 @@
           "offset"
         ],
         "title": "AuditLogPage",
+        "type": "object"
+      },
+      "AuthorizeOut": {
+        "properties": {
+          "authorization_url": {
+            "title": "Authorization Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url"
+        ],
+        "title": "AuthorizeOut",
+        "type": "object"
+      },
+      "BillingStatus": {
+        "properties": {
+          "has_customer": {
+            "title": "Has Customer",
+            "type": "boolean"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PlanLimits"
+          },
+          "plan": {
+            "title": "Plan",
+            "type": "string"
+          },
+          "plans": {
+            "items": {
+              "$ref": "#/components/schemas/PlanOut"
+            },
+            "title": "Plans",
+            "type": "array"
+          },
+          "renews_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renews At"
+          },
+          "subscription_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Status"
+          }
+        },
+        "required": [
+          "plan",
+          "has_customer",
+          "limits",
+          "plans"
+        ],
+        "title": "BillingStatus",
         "type": "object"
       },
       "Body_login_api_v1_auth_login_post": {
@@ -763,6 +894,23 @@
         "title": "ChatSessionUpdate",
         "type": "object"
       },
+      "CheckoutRequest": {
+        "properties": {
+          "plan": {
+            "enum": [
+              "pro",
+              "team"
+            ],
+            "title": "Plan",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "title": "CheckoutRequest",
+        "type": "object"
+      },
       "ChunkContextOut": {
         "description": "One chunk of a document's text, for the citation viewer.\n\nGET /documents/{id}/chunks?around=<chunk_id> returns the cited chunk and\nits neighbours, so a citation from a file the browser cannot render\n(DOCX, an email, a spreadsheet) can still be shown in context with the\ncited passage highlighted.",
         "properties": {
@@ -1032,6 +1180,150 @@
         "title": "ComparisonRequest",
         "type": "object"
       },
+      "ConnectionOut": {
+        "properties": {
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "account_label",
+          "status"
+        ],
+        "title": "ConnectionOut",
+        "type": "object"
+      },
+      "DailyDocuments": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "processed": {
+            "title": "Processed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "processed",
+          "failed"
+        ],
+        "title": "DailyDocuments",
+        "type": "object"
+      },
+      "DailyFeedback": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "down": {
+            "title": "Down",
+            "type": "integer"
+          },
+          "up": {
+            "title": "Up",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "up",
+          "down"
+        ],
+        "title": "DailyFeedback",
+        "type": "object"
+      },
+      "DailyUsage": {
+        "properties": {
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "requests",
+          "tokens",
+          "cost_usd"
+        ],
+        "title": "DailyUsage",
+        "type": "object"
+      },
+      "DailyUsers": {
+        "properties": {
+          "active_users": {
+            "title": "Active Users",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "active_users"
+        ],
+        "title": "DailyUsers",
+        "type": "object"
+      },
       "Difference": {
         "properties": {
           "a": {
@@ -1074,6 +1366,42 @@
           "detail"
         ],
         "title": "Difference",
+        "type": "object"
+      },
+      "DisconnectOut": {
+        "description": "The local disconnect always happens; this says whether the provider\nalso revoked DocMinds' access, and where to remove it by hand if not.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "manage_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manage Url"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "title": "DisconnectOut",
         "type": "object"
       },
       "DocumentOut": {
@@ -1525,6 +1853,189 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImportItemOut": {
+        "description": "One picked item's progress in a background import.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "downloading",
+              "imported",
+              "duplicate",
+              "already_imported",
+              "skipped",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "status"
+        ],
+        "title": "ImportItemOut",
+        "type": "object"
+      },
+      "ImportJobOut": {
+        "description": "A background import: POST .../import answers with this (202), and\nGET /integrations/imports/{id} reports it until `status` is \"completed\".",
+        "properties": {
+          "auto_sync": {
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Counts",
+            "type": "object"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "provider",
+          "status",
+          "auto_sync",
+          "items"
+        ],
+        "title": "ImportJobOut",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "properties": {
+          "auto_sync": {
+            "default": true,
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Item Ids",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "item_ids"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
       "InviteCreate": {
         "description": "Body for POST /org/invites.",
         "properties": {
@@ -1749,6 +2260,149 @@
         "title": "InvitePreview",
         "type": "object"
       },
+      "LinkUpdate": {
+        "properties": {
+          "auto_sync": {
+            "title": "Auto Sync",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "auto_sync"
+        ],
+        "title": "LinkUpdate",
+        "type": "object"
+      },
+      "LinkedDocumentOut": {
+        "properties": {
+          "auto_sync": {
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Status"
+          },
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "external_name": {
+            "title": "External Name",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "sync_status": {
+            "title": "Sync Status",
+            "type": "string"
+          },
+          "web_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Web Url"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_id",
+          "provider",
+          "external_id",
+          "external_name",
+          "filename",
+          "auto_sync",
+          "sync_status"
+        ],
+        "title": "LinkedDocumentOut",
+        "type": "object"
+      },
       "LogoutRequest": {
         "description": "Body for POST /auth/logout.\n\nThe refresh token is optional only so that a client which never stored\none can still sign out its access token. Sending it is what actually ends\nthe SESSION -- without it, the refresh token could mint new access tokens\nfor another week.",
         "properties": {
@@ -1956,6 +2610,62 @@
           "email"
         ],
         "title": "PasswordResetRequest",
+        "type": "object"
+      },
+      "PlanLimits": {
+        "description": "0 = unlimited, as everywhere else.",
+        "properties": {
+          "max_documents": {
+            "title": "Max Documents",
+            "type": "integer"
+          },
+          "max_storage_bytes": {
+            "title": "Max Storage Bytes",
+            "type": "integer"
+          },
+          "monthly_tokens": {
+            "title": "Monthly Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "monthly_tokens",
+          "max_documents",
+          "max_storage_bytes"
+        ],
+        "title": "PlanLimits",
+        "type": "object"
+      },
+      "PlanOut": {
+        "properties": {
+          "id": {
+            "enum": [
+              "free",
+              "pro",
+              "team"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PlanLimits"
+          },
+          "price_label": {
+            "title": "Price Label",
+            "type": "string"
+          },
+          "purchasable": {
+            "title": "Purchasable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "price_label",
+          "limits",
+          "purchasable"
+        ],
+        "title": "PlanOut",
         "type": "object"
       },
       "ProjectCreate": {
@@ -2239,6 +2949,29 @@
         "title": "PromptTemplateUpdate",
         "type": "object"
       },
+      "ProviderOut": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "configured"
+        ],
+        "title": "ProviderOut",
+        "type": "object"
+      },
       "PublicCitation": {
         "properties": {
           "filename": {
@@ -2504,6 +3237,134 @@
           "unlimited"
         ],
         "title": "QuotaUsage",
+        "type": "object"
+      },
+      "RedirectOut": {
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "RedirectOut",
+        "type": "object"
+      },
+      "RemoteItemOut": {
+        "properties": {
+          "has_children": {
+            "default": false,
+            "title": "Has Children",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "importable": {
+            "title": "Importable",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "modified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "web_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Web Url"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "importable"
+        ],
+        "title": "RemoteItemOut",
+        "type": "object"
+      },
+      "RemoteItemPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RemoteItemPage",
         "type": "object"
       },
       "SSOConfig": {
@@ -2990,6 +3851,41 @@
         "title": "ShareLinkOut",
         "type": "object"
       },
+      "SyncResult": {
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "sync_status": {
+            "title": "Sync Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "outcome",
+          "sync_status"
+        ],
+        "title": "SyncResult",
+        "type": "object"
+      },
       "Token": {
         "description": "What /auth/login and /auth/refresh return.\n\nThe frontend stores `access_token` and attaches it to every subsequent\nrequest as `Authorization: Bearer <token>`.",
         "properties": {
@@ -3026,6 +3922,24 @@
           "refresh_token"
         ],
         "title": "TokenRefreshRequest",
+        "type": "object"
+      },
+      "TopQuestion": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "count"
+        ],
+        "title": "TopQuestion",
         "type": "object"
       },
       "UsageSummary": {
@@ -3628,6 +4542,368 @@
         ]
       }
     },
+    "/api/v1/analytics/active-users": {
+      "get": {
+        "operationId": "get_active_users_api_v1_analytics_active_users_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyUsers"
+                  },
+                  "title": "Response Get Active Users Api V1 Analytics Active Users Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Active Users",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
+    "/api/v1/analytics/documents": {
+      "get": {
+        "operationId": "get_documents_api_v1_analytics_documents_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyDocuments"
+                  },
+                  "title": "Response Get Documents Api V1 Analytics Documents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Documents",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
+    "/api/v1/analytics/feedback": {
+      "get": {
+        "operationId": "get_feedback_api_v1_analytics_feedback_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyFeedback"
+                  },
+                  "title": "Response Get Feedback Api V1 Analytics Feedback Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Feedback",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
+    "/api/v1/analytics/overview": {
+      "get": {
+        "operationId": "get_overview_api_v1_analytics_overview_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Overview",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
+    "/api/v1/analytics/top-questions": {
+      "get": {
+        "operationId": "get_top_questions_api_v1_analytics_top_questions_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TopQuestion"
+                  },
+                  "title": "Response Get Top Questions Api V1 Analytics Top Questions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Top Questions",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
+    "/api/v1/analytics/usage": {
+      "get": {
+        "operationId": "get_usage_api_v1_analytics_usage_get",
+        "parameters": [
+          {
+            "description": "Look back this many days, today included.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Look back this many days, today included.",
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyUsage"
+                  },
+                  "title": "Response Get Usage Api V1 Analytics Usage Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Usage",
+        "tags": [
+          "Admin dashboard"
+        ]
+      }
+    },
     "/api/v1/auth/invites/{token}": {
       "get": {
         "description": "Describe an invite, so the signup page can say \"Join Acme as Manager\" and\nprefill (and lock) the email field.\n\nPublic on purpose -- the visitor has no account yet. It reveals only what\nthe invite email already told its recipient.",
@@ -4189,6 +5465,114 @@
         "summary": "Resend Verification",
         "tags": [
           "Authentication"
+        ]
+      }
+    },
+    "/api/v1/billing": {
+      "get": {
+        "description": "The plan badge and the upgrade page read this. Every member may see the plan.",
+        "operationId": "get_billing_api_v1_billing_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Billing",
+        "tags": [
+          "Billing"
+        ]
+      }
+    },
+    "/api/v1/billing/checkout": {
+      "post": {
+        "operationId": "checkout_api_v1_billing_checkout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Checkout",
+        "tags": [
+          "Billing"
+        ]
+      }
+    },
+    "/api/v1/billing/portal": {
+      "post": {
+        "operationId": "portal_api_v1_billing_portal_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Portal",
+        "tags": [
+          "Billing"
         ]
       }
     },
@@ -5257,6 +6641,702 @@
         "summary": "Readiness Check",
         "tags": [
           "Health"
+        ]
+      }
+    },
+    "/api/v1/integrations/connections": {
+      "get": {
+        "operationId": "list_connections_api_v1_integrations_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectionOut"
+                  },
+                  "title": "Response List Connections Api V1 Integrations Connections Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Connections",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/connections/{connection_id}": {
+      "delete": {
+        "description": "Remove the connection and its tokens. Documents it imported stay, but\nstop syncing (\"disconnected\"). Then, best effort, revoke DocMinds'\naccess at the provider: Google and Notion have an API for it; for\nMicrosoft and Confluence (no such API) `manage_url` links to the page\nwhere the person removes the app. A failed revocation never fails the\ndisconnect -- it is logged, and reported here.",
+        "operationId": "disconnect_api_v1_integrations_connections__connection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisconnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Disconnect",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/connections/{connection_id}/import": {
+      "post": {
+        "description": "Import the picked items into a project, in the background. Answers 202\nwith the job at once; poll GET /integrations/imports/{id} for each\nitem's progress. Imported items are queued for ingestion like an upload\n(document status \"pending\") and remember their source for sync.",
+        "operationId": "import_items_api_v1_integrations_connections__connection_id__import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJobOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Import Items",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/connections/{connection_id}/items": {
+      "get": {
+        "operationId": "browse_api_v1_integrations_connections__connection_id__items_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A folder, space or page id; empty = the top level.",
+            "in": "query",
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A folder, space or page id; empty = the top level.",
+              "title": "Parent"
+            }
+          },
+          {
+            "description": "Search by name instead of browsing.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search by name instead of browsing.",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteItemPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Browse",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/connections/{connection_id}/sync": {
+      "post": {
+        "description": "\"Sync now\" for every document this connection imported (at most CONNECTOR_SYNC_BATCH_SIZE).",
+        "operationId": "sync_connection_api_v1_integrations_connections__connection_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SyncResult"
+                  },
+                  "title": "Response Sync Connection Api V1 Integrations Connections  Connection Id  Sync Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Sync Connection",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/documents": {
+      "get": {
+        "operationId": "list_linked_documents_api_v1_integrations_documents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LinkedDocumentOut"
+                  },
+                  "title": "Response List Linked Documents Api V1 Integrations Documents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Linked Documents",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/documents/{document_id}": {
+      "patch": {
+        "operationId": "update_link_api_v1_integrations_documents__document_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkedDocumentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Update Link",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/documents/{document_id}/sync": {
+      "post": {
+        "description": "Check this document's source now, and re-import it if it changed.",
+        "operationId": "sync_document_api_v1_integrations_documents__document_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Sync Document",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/imports": {
+      "get": {
+        "description": "The organization's most recent import jobs, newest first.",
+        "operationId": "list_imports_api_v1_integrations_imports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImportJobOut"
+                  },
+                  "title": "Response List Imports Api V1 Integrations Imports Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Imports",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/imports/{import_id}": {
+      "get": {
+        "description": "One import job: its status and every item's progress.",
+        "operationId": "get_import_api_v1_integrations_imports__import_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJobOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Import",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/providers": {
+      "get": {
+        "description": "Every provider DocMinds supports, and whether this deployment has its keys.",
+        "operationId": "list_providers_api_v1_integrations_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderOut"
+                  },
+                  "title": "Response List Providers Api V1 Integrations Providers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Providers",
+        "tags": [
+          "Cloud imports"
+        ]
+      }
+    },
+    "/api/v1/integrations/{provider_id}/authorize": {
+      "post": {
+        "description": "The URL to send the browser to, where the person grants read access.",
+        "operationId": "authorize_api_v1_integrations__provider_id__authorize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Authorize",
+        "tags": [
+          "Cloud imports"
         ]
       }
     },

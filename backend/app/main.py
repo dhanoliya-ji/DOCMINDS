@@ -54,10 +54,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.analytics import router as analytics_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.billing import router as billing_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.compare import router as compare_router
 from app.api.v1.documents import router as documents_router
+from app.api.v1.integrations import router as integrations_router
 from app.api.v1.org import router as org_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.prompts import router as prompts_router
@@ -105,6 +108,15 @@ async def _recover_on_startup() -> None:
         await recover_stuck_documents()
     except Exception as exc:
         logger.warning("Document recovery skipped at startup", extra={"error": repr(exc)})
+    # Cloud imports run in the background too: re-send the jobs a previous
+    # run left unfinished (finished items are skipped when they resume).
+    if settings.CONNECTORS_ENABLED:
+        from app.services.connectors.service import resume_imports
+
+        try:
+            await resume_imports()
+        except Exception as exc:
+            logger.warning("Import recovery skipped at startup", extra={"error": repr(exc)})
 
 
 # Strong reference to the startup job, so it is not garbage-collected while
@@ -133,17 +145,27 @@ async def lifespan(_app: FastAPI):
         job = asyncio.create_task(_recover_on_startup())
         _startup_jobs.add(job)
         job.add_done_callback(_startup_jobs.discard)
+    # Cloud-import auto-sync, in-process, for INGESTION_MODE=inline only
+    # (Celery beat sends it otherwise). A no-op unless CONNECTOR_SYNC_ENABLED.
+    from app.services.connectors import scheduler as connector_scheduler
+
+    connector_scheduler.start()
     sweeper = None
     if settings.INGESTION_MODE == "inline":
         from app.tasks.ingestion import inline_sweeper
 
         sweeper = asyncio.create_task(inline_sweeper())
     yield
+    await connector_scheduler.stop()
     if sweeper is not None:
         sweeper.cancel()
         await asyncio.gather(sweeper, return_exceptions=True)
+    from app.tasks.connectors import inline_import_queue
     from app.tasks.ingestion import inline_queue
 
+    # An import interrupted here hands its job back as "queued"; the next
+    # start resumes it.
+    await inline_import_queue.stop()
     await inline_queue.stop()
 
 
@@ -265,6 +287,18 @@ app.include_router(
 # Outgoing webhooks (admin-only; every route 404s unless WEBHOOKS_ENABLED).
 app.include_router(
     webhooks_router, prefix=f"{settings.API_V1_STR}/webhooks", tags=["Webhooks"]
+)
+
+# Cloud imports, billing and the admin dashboard. Each 404s unless switched
+# on (CONNECTORS_ENABLED, BILLING_ENABLED, ADMIN_DASHBOARD_ENABLED).
+app.include_router(
+    integrations_router, prefix=f"{settings.API_V1_STR}/integrations", tags=["Cloud imports"]
+)
+app.include_router(
+    billing_router, prefix=f"{settings.API_V1_STR}/billing", tags=["Billing"]
+)
+app.include_router(
+    analytics_router, prefix=f"{settings.API_V1_STR}/analytics", tags=["Admin dashboard"]
 )
 
 # --- Document ingestion ---

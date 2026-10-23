@@ -27,6 +27,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/active-users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Active Users */
+        get: operations["get_active_users_api_v1_analytics_active_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Documents */
+        get: operations["get_documents_api_v1_analytics_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Feedback */
+        get: operations["get_feedback_api_v1_analytics_feedback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Overview */
+        get: operations["get_overview_api_v1_analytics_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/top-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Top Questions */
+        get: operations["get_top_questions_api_v1_analytics_top_questions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Usage */
+        get: operations["get_usage_api_v1_analytics_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/invites/{token}": {
         parameters: {
             query?: never;
@@ -315,6 +417,60 @@ export interface paths {
          *     link stops working, so only the newest email counts.
          */
         post: operations["resend_verification_api_v1_auth_verify_email_resend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Billing
+         * @description The plan badge and the upgrade page read this. Every member may see the plan.
+         */
+        get: operations["get_billing_api_v1_billing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Checkout */
+        post: operations["checkout_api_v1_billing_checkout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Portal */
+        post: operations["portal_api_v1_billing_portal_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -748,6 +904,242 @@ export interface paths {
         get: operations["readiness_check_api_v1_health_ready_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Connections */
+        get: operations["list_connections_api_v1_integrations_connections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect
+         * @description Remove the connection and its tokens. Documents it imported stay, but
+         *     stop syncing ("disconnected"). Then, best effort, revoke DocMinds'
+         *     access at the provider: Google and Notion have an API for it; for
+         *     Microsoft and Confluence (no such API) `manage_url` links to the page
+         *     where the person removes the app. A failed revocation never fails the
+         *     disconnect -- it is logged, and reported here.
+         */
+        delete: operations["disconnect_api_v1_integrations_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/connections/{connection_id}/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Items
+         * @description Import the picked items into a project, in the background. Answers 202
+         *     with the job at once; poll GET /integrations/imports/{id} for each
+         *     item's progress. Imported items are queued for ingestion like an upload
+         *     (document status "pending") and remember their source for sync.
+         */
+        post: operations["import_items_api_v1_integrations_connections__connection_id__import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/connections/{connection_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse */
+        get: operations["browse_api_v1_integrations_connections__connection_id__items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/connections/{connection_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Connection
+         * @description "Sync now" for every document this connection imported (at most CONNECTOR_SYNC_BATCH_SIZE).
+         */
+        post: operations["sync_connection_api_v1_integrations_connections__connection_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Linked Documents */
+        get: operations["list_linked_documents_api_v1_integrations_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Link */
+        patch: operations["update_link_api_v1_integrations_documents__document_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/integrations/documents/{document_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Document
+         * @description Check this document's source now, and re-import it if it changed.
+         */
+        post: operations["sync_document_api_v1_integrations_documents__document_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Imports
+         * @description The organization's most recent import jobs, newest first.
+         */
+        get: operations["list_imports_api_v1_integrations_imports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/imports/{import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Import
+         * @description One import job: its status and every item's progress.
+         */
+        get: operations["get_import_api_v1_integrations_imports__import_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Providers
+         * @description Every provider DocMinds supports, and whether this deployment has its keys.
+         */
+        get: operations["list_providers_api_v1_integrations_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integrations/{provider_id}/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authorize
+         * @description The URL to send the browser to, where the person grants read access.
+         */
+        post: operations["authorize_api_v1_integrations__provider_id__authorize_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1588,6 +1980,30 @@ export interface components {
             /** Tool */
             tool: string;
         };
+        /** AnalyticsOverview */
+        AnalyticsOverview: {
+            /** Active Users */
+            active_users: components["schemas"]["DailyUsers"][];
+            /** Days */
+            days: number;
+            /** Documents */
+            documents: components["schemas"]["DailyDocuments"][];
+            /** Feedback */
+            feedback: components["schemas"]["DailyFeedback"][];
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /** Top Questions */
+            top_questions: components["schemas"]["TopQuestion"][];
+            /** Totals */
+            totals: {
+                [key: string]: unknown;
+            };
+            /** Usage */
+            usage: components["schemas"]["DailyUsage"][];
+        };
         /**
          * AuditLogOut
          * @description One audit entry.
@@ -1630,6 +2046,25 @@ export interface components {
             offset: number;
             /** Total */
             total: number;
+        };
+        /** AuthorizeOut */
+        AuthorizeOut: {
+            /** Authorization Url */
+            authorization_url: string;
+        };
+        /** BillingStatus */
+        BillingStatus: {
+            /** Has Customer */
+            has_customer: boolean;
+            limits: components["schemas"]["PlanLimits"];
+            /** Plan */
+            plan: string;
+            /** Plans */
+            plans: components["schemas"]["PlanOut"][];
+            /** Renews At */
+            renews_at?: string | null;
+            /** Subscription Status */
+            subscription_status?: string | null;
         };
         /** Body_login_api_v1_auth_login_post */
         Body_login_api_v1_auth_login_post: {
@@ -1860,6 +2295,14 @@ export interface components {
              */
             title: string;
         };
+        /** CheckoutRequest */
+        CheckoutRequest: {
+            /**
+             * Plan
+             * @enum {string}
+             */
+            plan: "pro" | "team";
+        };
         /**
          * ChunkContextOut
          * @description One chunk of a document's text, for the citation viewer.
@@ -2008,6 +2451,60 @@ export interface components {
              */
             focus?: string | null;
         };
+        /** ConnectionOut */
+        ConnectionOut: {
+            /** Account Label */
+            account_label: string;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Error */
+            last_error?: string | null;
+            /** Provider */
+            provider: string;
+            /** Status */
+            status: string;
+        };
+        /** DailyDocuments */
+        DailyDocuments: {
+            /** Date */
+            date: string;
+            /** Failed */
+            failed: number;
+            /** Processed */
+            processed: number;
+        };
+        /** DailyFeedback */
+        DailyFeedback: {
+            /** Date */
+            date: string;
+            /** Down */
+            down: number;
+            /** Up */
+            up: number;
+        };
+        /** DailyUsage */
+        DailyUsage: {
+            /** Cost Usd */
+            cost_usd: number;
+            /** Date */
+            date: string;
+            /** Requests */
+            requests: number;
+            /** Tokens */
+            tokens: number;
+        };
+        /** DailyUsers */
+        DailyUsers: {
+            /** Active Users */
+            active_users: number;
+            /** Date */
+            date: string;
+        };
         /** Difference */
         Difference: {
             /**
@@ -2029,6 +2526,19 @@ export interface components {
             kind: "added" | "removed" | "changed";
             /** Topic */
             topic: string;
+        };
+        /**
+         * DisconnectOut
+         * @description The local disconnect always happens; this says whether the provider
+         *     also revoked DocMinds' access, and where to remove it by hand if not.
+         */
+        DisconnectOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Manage Url */
+            manage_url?: string | null;
+            /** Revoked */
+            revoked: boolean;
         };
         /**
          * DocumentOut
@@ -2262,6 +2772,81 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * ImportItemOut
+         * @description One picked item's progress in a background import.
+         */
+        ImportItemOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Item Id */
+            item_id: string;
+            /** Name */
+            name?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "downloading" | "imported" | "duplicate" | "already_imported" | "skipped" | "failed";
+        };
+        /**
+         * ImportJobOut
+         * @description A background import: POST .../import answers with this (202), and
+         *     GET /integrations/imports/{id} reports it until `status` is "completed".
+         */
+        ImportJobOut: {
+            /** Auto Sync */
+            auto_sync: boolean;
+            /** Connection Id */
+            connection_id?: string | null;
+            /**
+             * Counts
+             * @default {}
+             */
+            counts: {
+                [key: string]: number;
+            };
+            /** Created At */
+            created_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Items */
+            items: components["schemas"]["ImportItemOut"][];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed";
+        };
+        /** ImportRequest */
+        ImportRequest: {
+            /**
+             * Auto Sync
+             * @default true
+             */
+            auto_sync: boolean;
+            /** Item Ids */
+            item_ids: string[];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+        };
+        /**
          * InviteCreate
          * @description Body for POST /org/invites.
          */
@@ -2375,6 +2960,50 @@ export interface components {
             /** Role */
             role: string;
         };
+        /** LinkUpdate */
+        LinkUpdate: {
+            /** Auto Sync */
+            auto_sync: boolean;
+        };
+        /** LinkedDocumentOut */
+        LinkedDocumentOut: {
+            /** Auto Sync */
+            auto_sync: boolean;
+            /** Connection Id */
+            connection_id?: string | null;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Status */
+            document_status?: string | null;
+            /** External Id */
+            external_id: string;
+            /** External Name */
+            external_name: string;
+            /** Filename */
+            filename: string;
+            /** Last Checked At */
+            last_checked_at?: string | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Synced At */
+            last_synced_at?: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Provider */
+            provider: string;
+            /** Revision */
+            revision?: string | null;
+            /** Sync Status */
+            sync_status: string;
+            /** Web Url */
+            web_url?: string | null;
+        };
         /**
          * LogoutRequest
          * @description Body for POST /auth/logout.
@@ -2480,6 +3109,31 @@ export interface components {
              * Format: email
              */
             email: string;
+        };
+        /**
+         * PlanLimits
+         * @description 0 = unlimited, as everywhere else.
+         */
+        PlanLimits: {
+            /** Max Documents */
+            max_documents: number;
+            /** Max Storage Bytes */
+            max_storage_bytes: number;
+            /** Monthly Tokens */
+            monthly_tokens: number;
+        };
+        /** PlanOut */
+        PlanOut: {
+            /**
+             * Id
+             * @enum {string}
+             */
+            id: "free" | "pro" | "team";
+            limits: components["schemas"]["PlanLimits"];
+            /** Price Label */
+            price_label: string;
+            /** Purchasable */
+            purchasable: boolean;
         };
         /**
          * ProjectCreate
@@ -2618,6 +3272,15 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** ProviderOut */
+        ProviderOut: {
+            /** Configured */
+            configured: boolean;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** PublicCitation */
         PublicCitation: {
             /** Filename */
@@ -2699,6 +3362,44 @@ export interface components {
             unlimited: boolean;
             /** Used */
             used: number;
+        };
+        /** RedirectOut */
+        RedirectOut: {
+            /** Url */
+            url: string;
+        };
+        /** RemoteItemOut */
+        RemoteItemOut: {
+            /**
+             * Has Children
+             * @default false
+             */
+            has_children: boolean;
+            /** Id */
+            id: string;
+            /** Importable */
+            importable: boolean;
+            /** Kind */
+            kind: string;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Modified At */
+            modified_at?: string | null;
+            /** Name */
+            name: string;
+            /** Revision */
+            revision?: string | null;
+            /** Size */
+            size?: number | null;
+            /** Web Url */
+            web_url?: string | null;
+        };
+        /** RemoteItemPage */
+        RemoteItemPage: {
+            /** Items */
+            items: components["schemas"]["RemoteItemOut"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** SSOConfig */
         SSOConfig: {
@@ -2912,6 +3613,20 @@ export interface components {
              */
             view_count: number;
         };
+        /** SyncResult */
+        SyncResult: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Last Error */
+            last_error?: string | null;
+            /** Outcome */
+            outcome: string;
+            /** Sync Status */
+            sync_status: string;
+        };
         /**
          * Token
          * @description What /auth/login and /auth/refresh return.
@@ -2937,6 +3652,13 @@ export interface components {
         TokenRefreshRequest: {
             /** Refresh Token */
             refresh_token: string;
+        };
+        /** TopQuestion */
+        TopQuestion: {
+            /** Count */
+            count: number;
+            /** Question */
+            question: string;
         };
         /** UsageSummary */
         UsageSummary: {
@@ -3183,6 +3905,199 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_active_users_api_v1_analytics_active_users_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyUsers"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_documents_api_v1_analytics_documents_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyDocuments"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_feedback_api_v1_analytics_feedback_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyFeedback"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_overview_api_v1_analytics_overview_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_top_questions_api_v1_analytics_top_questions_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopQuestion"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_usage_api_v1_analytics_usage_get: {
+        parameters: {
+            query?: {
+                /** @description Look back this many days, today included. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyUsage"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3580,6 +4495,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Message"];
+                };
+            };
+        };
+    };
+    get_billing_api_v1_billing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStatus"];
+                };
+            };
+        };
+    };
+    checkout_api_v1_billing_checkout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckoutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedirectOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    portal_api_v1_billing_portal_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedirectOut"];
                 };
             };
         };
@@ -4211,6 +5199,371 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_connections_api_v1_integrations_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionOut"][];
+                };
+            };
+        };
+    };
+    disconnect_api_v1_integrations_connections__connection_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DisconnectOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_items_api_v1_integrations_connections__connection_id__import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browse_api_v1_integrations_connections__connection_id__items_get: {
+        parameters: {
+            query?: {
+                /** @description A folder, space or page id; empty = the top level. */
+                parent?: string | null;
+                /** @description Search by name instead of browsing. */
+                q?: string | null;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteItemPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_connection_api_v1_integrations_connections__connection_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncResult"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_linked_documents_api_v1_integrations_documents_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkedDocumentOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_link_api_v1_integrations_documents__document_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkedDocumentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_document_api_v1_integrations_documents__document_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_imports_api_v1_integrations_imports_get: {
+        parameters: {
+            query?: {
+                connection_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_import_api_v1_integrations_imports__import_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJobOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_providers_api_v1_integrations_providers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderOut"][];
+                };
+            };
+        };
+    };
+    authorize_api_v1_integrations__provider_id__authorize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

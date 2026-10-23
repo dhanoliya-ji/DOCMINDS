@@ -99,6 +99,21 @@ class Organization(Base):
     max_documents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     max_storage_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
+    # ---- Billing (services/billing.py) -----------------------------------
+    # The plan this organization is on: free, pro or team. Written only by
+    # the SIGNED Stripe webhook (or by an operator), never by an endpoint an
+    # admin can call -- the same reason the quota columns above are not.
+    # A paid plan also writes its limits into the three quota columns.
+    plan: Mapped[str] = mapped_column(String(16), nullable=False, default="free", server_default="free")
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Stripe's subscription status: active, trialing, past_due, canceled...
+    subscription_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # When the current paid period ends (renews, or lapses if cancelled).
+    plan_renews_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ---- Relationships -------------------------------------------------
     # Not columns. They let you navigate between objects in Python:
     # `organization.users` returns the list, `user.organization` goes back.

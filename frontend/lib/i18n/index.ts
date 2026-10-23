@@ -3,7 +3,8 @@
  * =============
  * A deliberately small translation layer: English (the default) and Hindi
  * for every screen -- the app shell, auth, dashboard, project workspace,
- * search, settings, chat, upload, the landing page and /developers.
+ * search, settings, chat, upload, the landing page, /developers, the
+ * platform pages (integrations, billing, admin) and the ingestion progress line.
  *
  * WHY NOT next-intl
  * -----------------
@@ -54,6 +55,8 @@ import collab from "./collab";
 import dashboard from "./dashboard";
 import developers from "./developers";
 import landing from "./landing";
+import platform from "./platform";
+import progress from "./progress";
 import project from "./project";
 import search from "./search";
 import settings from "./settings";
@@ -73,7 +76,7 @@ export type AreaMessages = { en: Dictionary; hi: Partial<Dictionary> };
 
 /** Every area's strings, merged per language. */
 const MESSAGES: Record<Locale, Dictionary> = { en: {}, hi: {} };
-for (const area of [auth, chat, collab, dashboard, developers, landing, project, search, settings, shell, upload] as AreaMessages[]) {
+for (const area of [auth, chat, collab, dashboard, developers, landing, platform, progress, project, search, settings, shell, upload] as AreaMessages[]) {
   Object.assign(MESSAGES.en, area.en);
   Object.assign(MESSAGES.hi, area.hi);
 }

@@ -231,7 +231,7 @@ export function formatWait(seconds: number): string {
  * expects back, and TypeScript then checks the rest of their code against it.
  * For example `apiFetch<Project[]>("/projects/")` yields a typed array.
  */
-async function apiFetch<T>(
+export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
   // True on the one retry after a silent refresh, so a second 401 ends the

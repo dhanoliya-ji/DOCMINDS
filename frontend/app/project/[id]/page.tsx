@@ -112,7 +112,8 @@ export default function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const router = useRouter();
-  const { t } = useT();
+  // `locale` is the reader's language, for the live ingestion progress line.
+  const { t, locale } = useT();
   const tour: TourStep[] = TOUR_STEPS.map((n) => ({
     title: t(`project.tour.${n}.title`),
     body: t(`project.tour.${n}.body`),
@@ -572,13 +573,13 @@ export default function ProjectPage({
                               every batch: pages read, chunks embedded, or a
                               rate-limit pause and when it resumes. */}
                           {(doc.status === "pending" || doc.status === "processing") &&
-                            describeProgress(documentProgress(doc)) && (
+                            describeProgress(documentProgress(doc), undefined, locale) && (
                               <div
                                 className="mt-1 text-xs"
                                 style={{ color: "var(--text-muted)" }}
                                 data-testid="document-progress"
                               >
-                                {describeProgress(documentProgress(doc))}
+                                {describeProgress(documentProgress(doc), undefined, locale)}
                               </div>
                             )}
                           {doc.status === "pending" &&

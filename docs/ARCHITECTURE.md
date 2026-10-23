@@ -13,12 +13,13 @@ Technical reference for DocMinds: how the components fit together, how a documen
 7. [Data model](#data-model)
 8. [Authentication and tenant isolation](#authentication-and-tenant-isolation)
 9. [Limits, quotas and observability](#limits-quotas-and-observability)
-10. [API surface](#api-surface)
-11. [Frontend](#frontend)
-12. [Answer quality](#answer-quality)
-13. [CI pipeline](#ci-pipeline)
-14. [Deployment topology](#deployment-topology)
-15. [Design decisions](#design-decisions)
+10. [Cloud imports, billing and the admin dashboard](#cloud-imports-billing-and-the-admin-dashboard)
+11. [API surface](#api-surface)
+12. [Frontend](#frontend)
+13. [Answer quality](#answer-quality)
+14. [CI pipeline](#ci-pipeline)
+15. [Deployment topology](#deployment-topology)
+16. [Design decisions](#design-decisions)
 
 ---
 
@@ -932,6 +933,139 @@ Sentry is optional: with `SENTRY_DSN` set, the API (Starlette/FastAPI integratio
 
 ---
 
+## Cloud imports, billing and the admin dashboard
+
+Three optional features, each off by default and answering `404` on every route until it is switched on: `CONNECTORS_ENABLED` (cloud imports), `BILLING_ENABLED` (Stripe plans) and `ADMIN_DASHBOARD_ENABLED`. The frontend probes each one and hides what is off, so it needs no setting of its own. Their tables come from migration `b3d5f7a9c1e2`.
+
+### Cloud imports
+
+`services/connectors/` connects an organisation to Google Drive, OneDrive and SharePoint, Notion and Confluence over OAuth. Each provider is a `Provider` subclass (`base.py`) with the same small surface: `authorize_url`, `exchange_code`, `refresh`, `list_items`, `get_item`, `fetch` and `revoke`. The importer, the sync and the API never branch on the provider.
+
+- **Tokens** are stored Fernet-encrypted in `connector_connections.encrypted_tokens` (`crypto.py`), with the key from `CONNECTOR_ENCRYPTION_KEY` or derived from `SECRET_KEY` with HKDF. No endpoint returns them.
+- **The OAuth `state`** is a 10-minute JWT with its own token type, naming the user, organisation and provider. The callback is the one route without a bearer token, so it checks the state, then that the user is still an active editor of that organisation.
+- **Every provider call** goes through `http.py`: https only, a per-provider host allowlist, public addresses only, redirects checked hop by hop (a download may follow a pre-signed URL only to the provider's file hosts, and never with our token), and a size cap. Item ids from the browser must match a strict pattern and are only ever placed, percent-encoded, in a URL path.
+- **Imported files follow the upload rules**: the extension allowlist and content sniffing, `MAX_UPLOAD_SIZE_BYTES`, SHA-256 de-duplication within the project, versioning by name, the document and storage quotas, a server-chosen storage key, a `document.upload` audit entry, and the same `tasks/ingestion.py` `dispatch`. Google Docs, Sheets and Slides are exported to DOCX, XLSX and PPTX, Notion pages to Markdown and Confluence pages to HTML.
+
+#### Imports run in the background
+
+`POST /integrations/connections/{id}/import` only validates the request (the connection, the project, the item count and each id's format), writes a `connector_imports` row with every item `pending`, commits, and answers `202` with the job. Downloading, validating, storing and queueing each item happens afterwards in `service.run_import`, which runs as the Celery task `run_import_task` or, with `INGESTION_MODE=inline`, on an in-process `InlineQueue` (the ingestion queue's class with its own runner and one worker). The page polls `GET /integrations/imports/{id}`.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant API as FastAPI
+    participant DB as Postgres
+    participant W as Import worker
+    participant P as Provider API
+    participant Q as Ingestion dispatch
+    B->>API: POST import with project_id and item_ids
+    API->>DB: insert connector_imports, items pending
+    API-->>B: 202 with the job
+    API->>W: run_import_task.delay or inline_import_queue.submit
+    W->>DB: claim the job, status running
+    loop each pending item
+        W->>P: get_item, then fetch
+        W->>DB: item downloading
+        W->>DB: Document, connector_items link, item imported
+        W->>Q: dispatch document id
+    end
+    W->>DB: job completed
+    B->>API: GET imports by id, every 1.5 s
+    API-->>B: per-item status and detail
+```
+
+Each item ends as `imported`, `duplicate`, `already_imported`, `skipped` or `failed` with its reason; a full quota fails the remaining items. A worker claims a job with one conditional `UPDATE` (queued, or running with a `heartbeat_at` older than `CONNECTOR_IMPORT_STALE_MINUTES`), so two workers never run the same job. A shutdown hands an interrupted job back as `queued`, and the startup recovery and the Celery beat sync re-send unfinished jobs; finished items are skipped when a job resumes.
+
+#### Auto-sync
+
+Each imported document has a `connector_items` link holding the provider's id and the revision it was imported at (Drive's `version`, Graph's eTag, Notion's `last_edited_time`, Confluence's version number).
+
+```mermaid
+flowchart TD
+    TIMER["Celery beat sync_connectors_task, or the in-process loop in inline mode"] --> DUE["links with auto_sync on, not checked for CONNECTOR_SYNC_INTERVAL_MINUTES"]
+    NOW["Sync now: one document or a whole connection"] --> CLAIM
+    DUE --> CLAIM["claim the link: conditional UPDATE of last_checked_at"]
+    CLAIM --> META["get_item: the current revision"]
+    META -->|"same revision"| UNCHANGED["unchanged"]
+    META -->|"404 or access lost"| GONE["source_deleted, the document is kept"]
+    META -->|"new revision"| FETCH["download and validate"]
+    FETCH -->|"same SHA-256"| UNCHANGED
+    FETCH -->|"new bytes"| REPLACE["store the new file, delete the old one, status pending"]
+    REPLACE --> REINDEX["dispatch: re-index, link shows syncing"]
+    REINDEX --> DONE["document completed: synced, or failed: error"]
+```
+
+Only a changed revision costs a download, and only changed bytes cost an embedding run: re-sharing a Google Doc bumps its version but not its text. The status shown is derived from the document once ingestion finishes, so the pipeline has no sync-specific code. A connection whose refresh fails is marked `error` and skipped until it is reconnected.
+
+#### Disconnecting
+
+`DELETE /integrations/connections/{id}` deletes the connection and its tokens and commits first; imported documents stay searchable with their link marked `disconnected`. Then it tries to revoke DocMinds' grant at the provider, and the reply says how that went (`revoked`, `manage_url`, `detail`). A failed revocation is logged and reported, never turned into a failed disconnect.
+
+| Provider | Revocation |
+|---|---|
+| Google Drive | `POST https://oauth2.googleapis.com/revoke` with the refresh token, which ends the whole grant. A `400` (already invalid) counts as revoked |
+| Notion | `POST /v1/oauth/revoke` with the client credentials |
+| OneDrive and SharePoint | No API revokes one app's delegated grant with the app's own token (deleting the permission grant needs an admin directory permission; `revokeSignInSessions` signs the user out of every app). The reply links to `https://myapps.microsoft.com` |
+| Confluence | Atlassian documents no revocation endpoint for OAuth 2.0 (3LO). The reply links to `https://id.atlassian.com/manage-profile/apps` |
+
+### Billing
+
+`services/billing.py` maps the plans `free`, `pro` and `team` onto the three quotas `services/usage.py` already enforces: `free` clears the organisation's override columns, so it behaves exactly as without billing; `pro` and `team` write `BILLING_PLAN_LIMITS`. There is no Stripe SDK: Checkout, the Customer Portal and the webhook check are a few httpx calls and one HMAC.
+
+The plan changes only through a verified webhook, never from what the browser says, including the Checkout success redirect.
+
+```mermaid
+sequenceDiagram
+    participant A as Admin browser
+    participant API as FastAPI
+    participant S as Stripe
+    participant DB as Postgres
+    A->>API: POST /billing/checkout with plan
+    API->>S: create a Checkout session
+    API-->>A: Checkout URL
+    A->>S: pays on Stripe
+    S-->>A: redirect to /settings/billing?checkout=success
+    S->>API: POST /billing/webhook, signed
+    API->>API: verify Stripe-Signature HMAC and timestamp tolerance
+    API->>DB: insert billing_events id, skip if seen
+    API->>DB: set plan, Stripe ids, status and limits, audit
+    API-->>S: 200 received
+```
+
+| Event | Effect |
+|---|---|
+| `checkout.session.completed` | Records the customer and subscription; a paid plan from the session metadata is applied once payment is complete |
+| `customer.subscription.created`, `customer.subscription.updated` | Applies the plan while the status is `active`, `trialing` or `past_due`; otherwise drops to `free` |
+| `customer.subscription.deleted` | Drops to `free`, unless it is for an older, already replaced subscription |
+| `invoice.payment_failed` | Marks the subscription `past_due`; the plan stays while Stripe retries the card |
+| Anything else | Acknowledged and ignored |
+
+A bad signature or a timestamp outside `STRIPE_WEBHOOK_TOLERANCE_SECONDS` gets `400`, so Stripe retries. A redelivered event finds its id in `billing_events` and changes nothing.
+
+### Admin dashboard
+
+`api/v1/analytics.py` (admin only) serves day-by-day series for the caller's organisation over the last `days` (1-365, including today, UTC). Every day is present, so an empty day is a zero rather than a gap in a chart.
+
+```mermaid
+flowchart LR
+    UE[("usage_events")] --> USAGE["usage_daily: answers, tokens, estimated cost"]
+    DOCS[("documents via projects")] --> DOCSD["documents_daily: completed and failed"]
+    UE --> USERS["users_daily: distinct active members"]
+    AUD[("audit_logs")] --> USERS
+    CHAT[("chat_messages via chat_sessions")] --> TOP["top_questions: trimmed, lower-cased, counted"]
+    FB[("feedback via chat_sessions")] --> FEED["feedback_daily: thumbs up and down"]
+    USAGE --> OVERVIEW["GET /analytics/overview"]
+    DOCSD --> OVERVIEW
+    USERS --> OVERVIEW
+    FEED --> OVERVIEW
+    TOP --> OVERVIEW
+    OVERVIEW --> PAGE["/settings/admin: theme-aware charts, each with a data table"]
+```
+
+Every query filters on the organisation directly (`usage_events`, `audit_logs`) or through project to organisation. Days are grouped with `date(created_at)`, which Postgres and SQLite (the tests) both understand. The endpoints are read-only and not audited.
+
+---
+
 ## API surface
 
 Interactive OpenAPI docs are served at `/docs`. Everything except signup, login, refresh, logout, invite preview, password reset, email verification and the health checks requires `Authorization: Bearer <token>` or `X-API-Key: <key>`.
@@ -981,6 +1115,18 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `POST` | `/api/v1/tasks/trigger-add`, `/api/v1/tasks/trigger-document` | Queue diagnostics (admin; `503` in inline mode; `404` with `ENV=production`) |
 | `GET` | `/api/v1/tasks/status/{task_id}` | Celery task state (admin; `404` with `ENV=production`) |
 | `GET` | `/`, `/api/v1/health` | Liveness and configuration report (LLM provider, model, whether a key is configured, embedding settings) |
+| `GET` | `/api/v1/integrations/providers` | Supported providers and whether each is configured (editor or admin; every integrations route is `404` while `CONNECTORS_ENABLED` is off) |
+| `POST` | `/api/v1/integrations/{provider}/authorize` | The provider's consent URL, with a signed `state` |
+| `GET` / `DELETE` | `/api/v1/integrations/connections`, `/connections/{id}` | List connections / disconnect: tokens deleted, imported documents kept, then best-effort revocation at the provider (`revoked`, `manage_url`, `detail`; audited) |
+| `GET` | `/api/v1/integrations/connections/{id}/items` | The picker: `parent`, `q`, `cursor` |
+| `POST` | `/api/v1/integrations/connections/{id}/import` | `202` with a background import job (`project_id`, `item_ids`, `auto_sync`); upload rate limit; audited |
+| `GET` | `/api/v1/integrations/imports`, `/imports/{id}` | Recent import jobs / one job with per-item `status` and `detail` |
+| `POST` | `/api/v1/integrations/connections/{id}/sync`, `/documents/{id}/sync` | Sync now |
+| `GET` / `PATCH` | `/api/v1/integrations/documents`, `/documents/{id}` | Imported documents with sync status / auto-sync on or off |
+| `GET` | `/api/v1/billing` | Plan, limits and subscription status (`404` while `BILLING_ENABLED` is off) |
+| `POST` | `/api/v1/billing/checkout`, `/billing/portal` | Stripe Checkout or Customer Portal URL (admin) |
+| `POST` | `/api/v1/billing/webhook` | Stripe events; signature-checked and idempotent, not in the schema |
+| `GET` | `/api/v1/analytics/overview` | Admin dashboard series (`days`); also `/usage`, `/documents`, `/active-users`, `/feedback`, `/top-questions` (admin; `404` while `ADMIN_DASHBOARD_ENABLED` is off) |
 | `GET` | `/api/v1/health/ready` | Readiness: per-component status of the database, Redis and (Celery mode) a worker; `503` when a hard dependency is down |
 
 Every response carries `X-Request-ID` and the security headers. Rate-limited endpoints also return `X-RateLimit-Limit` and `X-RateLimit-Remaining`, and `Retry-After` with a `429`.

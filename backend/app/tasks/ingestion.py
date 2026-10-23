@@ -1152,7 +1152,14 @@ class InlineQueue:
     `async_process_document`), and the startup recovery continues it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, runner=None, *, name: str = "ingestion", concurrency: Optional[int] = None) -> None:
+        # `runner(job_id, force=...)` does one job; None = the ingestion
+        # pipeline (looked up at call time, so tests can replace it). The
+        # cloud-import jobs (tasks/connectors.py) reuse this class with
+        # their own runner.
+        self._runner = runner
+        self._name = name
+        self._concurrency = concurrency
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._queue: Optional[asyncio.Queue] = None
         self._workers: list = []
@@ -1165,9 +1172,10 @@ class InlineQueue:
         self._loop = loop
         self._queue = asyncio.Queue()
         self._active = set()
+        concurrency = self._concurrency or settings.INGESTION_INLINE_CONCURRENCY
         self._workers = [
-            loop.create_task(self._work(), name=f"docminds-inline-ingestion-{n}")
-            for n in range(max(1, settings.INGESTION_INLINE_CONCURRENCY))
+            loop.create_task(self._work(), name=f"docminds-inline-{self._name}-{n}")
+            for n in range(max(1, concurrency))
         ]
 
     def submit(self, document_id: str, *, force: bool = False) -> bool:
@@ -1184,11 +1192,11 @@ class InlineQueue:
         while True:
             document_id, force = await self._queue.get()
             try:
-                await run_inline_ingestion(document_id, force=force)
+                await (self._runner or run_inline_ingestion)(document_id, force=force)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - the pipeline records its own failures
-                logger.error(f"Inline ingestion crashed for {document_id}: {exc!r}")
+                logger.error(f"Inline {self._name} job crashed for {document_id}: {exc!r}")
             finally:
                 self._active.discard(document_id)
                 self._queue.task_done()

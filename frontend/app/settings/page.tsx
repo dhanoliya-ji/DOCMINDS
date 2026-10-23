@@ -23,6 +23,11 @@
  * on: GET /webhooks is probed once for an admin, and a 404 (the feature is
  * off) leaves the tab out entirely rather than showing a dead screen.
  *
+ * Cloud imports, Plan and billing, and the Admin dashboard are pages of
+ * their own (settings/integrations, settings/billing, settings/admin);
+ * <PlatformLinks> links to each only when the server has it switched on,
+ * and <PlanBadge> shows the plan next to the account line.
+ *
  * Wrapped in <AppShell>, which provides navigation and sign-out; destructive
  * actions in the panels use <HoldToConfirm> rather than window.confirm().
  */
@@ -39,6 +44,7 @@ import ApiKeysPanel from "@/components/settings/ApiKeysPanel";
 import AuditLogPanel from "@/components/settings/AuditLogPanel";
 import FeedbackPanel from "@/components/settings/FeedbackPanel";
 import MembersPanel from "@/components/settings/MembersPanel";
+import PlatformLinks, { PlanBadge } from "@/components/settings/PlatformLinks";
 import UsagePanel from "@/components/settings/UsagePanel";
 import WebhooksPanel, { webhooksAvailable } from "@/components/settings/WebhooksPanel";
 import VerifyBanner from "@/components/VerifyBanner";
@@ -114,6 +120,7 @@ export default function SettingsPage() {
                 email: <strong>{user.email}</strong>,
                 role: roleLabel(user.role),
               })}
+              <PlanBadge />
             </div>
             {!isAdmin(user.role) && (
               <p className="mt-2" style={{ color: "var(--text-secondary)" }}>
@@ -121,6 +128,9 @@ export default function SettingsPage() {
               </p>
             )}
           </section>
+
+          {/* Cloud imports, billing, admin dashboard: each only when on. */}
+          <PlatformLinks role={user.role} />
 
           {isAdmin(user.role) && (
             <>
