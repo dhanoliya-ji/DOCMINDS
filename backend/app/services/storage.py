@@ -286,7 +286,15 @@ class S3Storage(Storage):
     # from "unreachable".
     @staticmethod
     def _translate(exc: Exception, key: str) -> StorageError:
-        response = getattr(exc, "response", None) or {}
+        # `upload_file` wraps the real ClientError in boto3's own
+        # S3UploadFailedError, which carries no `response`. Without unwrapping
+        # it, a plain "access denied" was reported as an outage.
+        inner = exc
+        while not getattr(inner, "response", None) and (inner.__cause__ or inner.__context__):
+            inner = inner.__cause__ or inner.__context__
+        response = getattr(inner, "response", None) or {}
+        if not response and type(exc).__name__ in {"NoCredentialsError", "PartialCredentialsError"}:
+            return StorageError(f"S3 credentials are missing or incomplete for {key!r}")
         code = str(response.get("Error", {}).get("Code", ""))
         status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
         if code in {"404", "NoSuchKey", "NotFound"} or status == 404:
