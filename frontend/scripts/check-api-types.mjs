@@ -8,10 +8,13 @@
  * CI-safe: it needs neither the backend nor the network, only the two
  * committed files. Line endings are normalised so a Windows checkout with
  * autocrlf does not report a false difference.
+ *
+ * It also checks the TypeScript SDK's copy (../sdk/typescript/src/schema.ts),
+ * so the published client cannot drift from the API either.
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,7 +31,12 @@ try {
     console.error("lib/api-types.ts is out of date: run `npm run gen:api` and commit the result.");
     process.exit(1);
   }
-  console.log("lib/api-types.ts matches openapi.json.");
+  const sdk = "../sdk/typescript/src/schema.ts";
+  if (existsSync(sdk) && normalise(fresh) !== normalise(sdk)) {
+    console.error(`${sdk} is out of date: run \`npm run gen:api\` and commit the result.`);
+    process.exit(1);
+  }
+  console.log("lib/api-types.ts and the SDK schema match openapi.json.");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

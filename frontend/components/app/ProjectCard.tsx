@@ -14,13 +14,18 @@
  * accessible name (the project name) rather than a nest of controls.
  */
 
+"use client";
+
 import { ArrowRight, FolderOpen } from "lucide-react";
 import Link from "next/link";
 
 import type { Project } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export default function ProjectCard({ project, index = 0 }: { project: Project; index?: number }) {
-  const created = new Date(project.created_at).toLocaleDateString(undefined, {
+  const { t, locale } = useT();
+  // The date in the chosen language's format, not the browser's.
+  const created = new Date(project.created_at).toLocaleDateString(locale === "hi" ? "hi-IN" : undefined, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -45,7 +50,7 @@ export default function ProjectCard({ project, index = 0 }: { project: Project; 
       </div>
       <h2 className="truncate font-semibold">{project.name}</h2>
       <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-        Created {created}
+        {t("projectCard.created", { date: created })}
       </p>
 
       {/* The hover preview. */}
@@ -55,7 +60,7 @@ export default function ProjectCard({ project, index = 0 }: { project: Project; 
             className="mt-3 flex items-center gap-1.5 border-t pt-3 text-xs font-medium"
             style={{ borderColor: "var(--border-subtle)", color: "var(--accent-hover)" }}
           >
-            Open workspace: documents, search and Ask AI
+            {t("projectCard.open")}
             <ArrowRight size={13} aria-hidden="true" />
           </p>
         </div>

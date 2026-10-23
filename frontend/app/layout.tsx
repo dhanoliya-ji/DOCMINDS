@@ -16,6 +16,7 @@ import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 import AnalyticsConsent from "@/components/AnalyticsConsent";
+import PwaSupport from "@/components/PwaSupport";
 
 /**
  * `metadata` is picked up by Next.js and turned into <head> tags at build
@@ -69,6 +70,8 @@ export default function RootLayout({
             NEXT_PUBLIC_POSTHOG_KEY is set, and sends nothing until the
             visitor accepts (lib/analytics.ts). */}
         <AnalyticsConsent />
+        {/* Service worker (production only) and the "Install app" offer. */}
+        <PwaSupport />
       </body>
     </html>
   );

@@ -11,7 +11,10 @@
  * fill, so only the usage is shown.
  */
 
+"use client";
+
 import type { QuotaUsage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export default function QuotaBar({
   label,
@@ -22,6 +25,7 @@ export default function QuotaBar({
   usage: QuotaUsage;
   format?: (n: number) => string;
 }) {
+  const { t } = useT();
   const percent = usage.unlimited || usage.quota <= 0 ? 0 : Math.min(100, (usage.used / usage.quota) * 100);
   // Amber from 80%, red at the limit: warn before the 429/402, not after.
   const colour = percent >= 100 ? "var(--danger)" : percent >= 80 ? "var(--warning)" : "var(--accent)";
@@ -31,7 +35,9 @@ export default function QuotaBar({
       <div className="flex justify-between text-sm">
         <span>{label}</span>
         <span style={{ color: "var(--text-secondary)" }}>
-          {usage.unlimited ? `${format(usage.used)} (no limit)` : `${format(usage.used)} of ${format(usage.quota)}`}
+          {usage.unlimited
+            ? t("quota.noLimit", { used: format(usage.used) })
+            : t("quota.of", { used: format(usage.used), quota: format(usage.quota) })}
         </span>
       </div>
       {!usage.unlimited && (
@@ -41,7 +47,7 @@ export default function QuotaBar({
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(percent)}
-          aria-valuetext={`${Math.round(percent)}% used`}
+          aria-valuetext={t("quota.percent", { percent: Math.round(percent) })}
           className="h-2 overflow-hidden rounded-full"
           style={{ background: "var(--surface-2)" }}
         >
