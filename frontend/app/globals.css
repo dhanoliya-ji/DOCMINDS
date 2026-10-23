@@ -51,15 +51,21 @@
     --border-subtle: rgba(255, 255, 255, 0.07);
     --border-strong: rgba(255, 255, 255, 0.14);
 
+    /* Every text token keeps at least 4.5:1 on the page, a panel, a card and
+       a hovered input -- checked by scripts/contrast.mjs and its unit test.
+       (--text-muted was #64738f: 3.1:1 on a hovered input.) */
     --text-primary: #eef2ff;
     --text-secondary: #9aa8c7;
-    --text-muted: #64738f;
+    --text-muted: #8190b0;
 
-    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows. */
-    --accent: #6366f1;
+    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows.
+       --accent and --violet are the two ends of the primary button, so both
+       keep 4.5:1 under its white label (they were #6366f1 at 4.47:1 and
+       #a855f7 at 3.96:1); --accent still clears 3:1 as a focus ring. */
+    --accent: #5b5ff0;
     --accent-hover: #818cf8;
     --accent-glow: rgba(99, 102, 241, 0.4);
-    --violet: #a855f7;
+    --violet: #9645e8;
     --cyan: #22d3ee;
 
     --success: #34d399;
@@ -84,8 +90,8 @@
      --------------------------------------------------------------------
      Set by lib/theme.ts (and its inline no-flash script in layout.tsx) as
      `data-theme="light"` on <html>. Only the tokens change; every component
-     reads tokens, so nothing else needs a light variant. Text colours are
-     chosen for at least 4.5:1 contrast on the light card surface.
+     reads tokens, so nothing else needs a light variant. Text colours keep
+     at least 4.5:1 on every light surface (scripts/contrast.mjs).
      ==================================================================== */
   :root[data-theme="light"] {
     --bg-base: #f5f7fc;
@@ -106,7 +112,8 @@
     --cyan: #0e7490;
 
     --success: #047857;
-    --warning: #a16207;
+    /* #a16207 fell to 4.2:1 on a hovered input; one step darker clears it. */
+    --warning: #92580a;
     --danger: #b91c1c;
 
     --surface-1: rgba(15, 23, 42, 0.035);

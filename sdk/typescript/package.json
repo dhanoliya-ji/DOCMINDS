@@ -1,0 +1,13 @@
+{
+  "name": "docminds-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript client for the DocMinds API, typed from its OpenAPI schema.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "gen": "npx openapi-typescript ../../frontend/openapi.json -o src/schema.ts",
+    "typecheck": "npx tsc --noEmit --strict --target ES2020 --module ESNext --moduleResolution bundler --lib ES2020,DOM src/index.ts"
+  }
+}

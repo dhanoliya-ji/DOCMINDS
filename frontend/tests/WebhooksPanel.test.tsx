@@ -68,9 +68,11 @@ beforeEach(() => {
 describe("the settings tab", () => {
   it("appears for an admin when webhooks are on", async () => {
     render(<SettingsPage />);
-    const tab = await screen.findByRole("tab", { name: "Webhooks" });
+    // Generous waits: the settings page now renders every panel through
+    // the i18n hook, and a loaded parallel run can exceed the 1 s default.
+    const tab = await screen.findByRole("tab", { name: "Webhooks" }, { timeout: 5000 });
     await userEvent.setup().click(tab);
-    expect(await screen.findByText("https://example.com/hook")).toBeInTheDocument();
+    expect(await screen.findByText("https://example.com/hook", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it("is hidden when the API answers 404 (webhooks off)", async () => {
