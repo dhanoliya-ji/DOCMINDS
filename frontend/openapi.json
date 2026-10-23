@@ -413,7 +413,7 @@
           },
           "files": {
             "items": {
-              "format": "binary",
+              "contentMediaType": "application/octet-stream",
               "type": "string"
             },
             "title": "Files",
@@ -3223,6 +3223,13 @@
       },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -5146,7 +5153,7 @@
     },
     "/api/v1/documents/{document_id}/reindex": {
       "post": {
-        "description": "Process a document again from its stored file (editor+, audited).\n\nWHEN YOU WANT THIS\n  * it failed, and the cause has since been fixed (OCR installed, a\n    provider key added);\n  * EMBEDDING_PROVIDER or the model changed -- retrieval only compares\n    vectors from the CURRENT model, so older documents stop matching\n    until they are re-embedded;\n  * you want different chunking (pass chunk_strategy / chunk_size /\n    chunk_overlap in the body).\n\nThe document goes back to \"pending\" and leaves search until it is\n\"completed\" again; the pipeline (tasks/ingestion.py, stage 4) deletes\nthe old chunks before writing the new ones, so nothing is duplicated.\nReturns 202 for the same reason the upload does.",
+        "description": "Process a document again from its stored file (editor+, audited).\n\nWHEN YOU WANT THIS\n  * it failed, and the cause has since been fixed (OCR installed, a\n    provider key added);\n  * EMBEDDING_PROVIDER or the model changed -- retrieval only compares\n    vectors from the CURRENT model, so older documents stop matching\n    until they are re-embedded;\n  * you want different chunking (pass chunk_strategy / chunk_size /\n    chunk_overlap in the body).\n\nThe document goes back to \"pending\" and leaves search until it is\n\"completed\" again; the pipeline (tasks/ingestion.py, stage 4) deletes\nthe old chunks before writing the new ones, so nothing is duplicated.\nReturns 202 for the same reason the upload does.\n\nRE-INDEX RESUMES. On a FAILED or PAUSED document whose chunks were all\nsaved with the same chunk settings, the pipeline does not start again:\nit skips straight to embedding the chunks that have no vector yet. So\n\"failed at 900 of 1,200\" continues from 901. A completed document, or\nnew chunk settings, rebuild from the file. A paused document (waiting\nfor the embedding rate limit) may be re-indexed to resume it NOW.",
         "operationId": "reindex_document_api_v1_documents__document_id__reindex_post",
         "parameters": [
           {

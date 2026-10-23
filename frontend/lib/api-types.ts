@@ -685,6 +685,13 @@ export interface paths {
          *     "completed" again; the pipeline (tasks/ingestion.py, stage 4) deletes
          *     the old chunks before writing the new ones, so nothing is duplicated.
          *     Returns 202 for the same reason the upload does.
+         *
+         *     RE-INDEX RESUMES. On a FAILED or PAUSED document whose chunks were all
+         *     saved with the same chunk settings, the pipeline does not start again:
+         *     it skips straight to embedding the chunks that have no vector yet. So
+         *     "failed at 900 of 1,200" continues from 901. A completed document, or
+         *     new chunk settings, rebuild from the file. A paused document (waiting
+         *     for the embedding rate limit) may be re-indexed to resume it NOW.
          */
         post: operations["reindex_document_api_v1_documents__document_id__reindex_post"];
         delete?: never;
@@ -3044,6 +3051,10 @@ export interface components {
         };
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */
