@@ -14,6 +14,9 @@ This guide covers the hosted demo configuration (Neon + Render + Vercel) and the
 - [Quotas](#quotas)
 - [Single sign-on](#single-sign-on)
 - [Webhooks](#webhooks)
+- [Cloud imports](#cloud-imports)
+- [Billing](#billing)
+- [Admin dashboard](#admin-dashboard)
 - [Multilingual search and the query cache](#multilingual-search-and-the-query-cache)
 - [Product analytics](#product-analytics)
 - [Backups](#backups)
@@ -158,6 +161,32 @@ The state cookie is `Secure` with `ENV=production`, so production must be served
 
 Set `WEBHOOKS_ENABLED=true` and run `alembic upgrade head` (migration `f6a8b0c2d4e7` adds `webhook_endpoints` and `webhook_deliveries`). With `INGESTION_MODE=celery`, deliveries are sent by the worker and Celery beat must run (it re-queues deliveries whose message was lost every 5 minutes). With `INGESTION_MODE=inline` (the free demo) they are sent from the API process; deliveries interrupted by a restart stay `pending`, and an Admin can resend them from the delivery log. Never set `WEBHOOK_ALLOW_PRIVATE_TARGETS` or `WEBHOOK_ALLOW_HTTP` in production: they switch off the SSRF protection. Signing secrets are stored in the database in plain form (they are needed to sign), so treat database backups as secret. See [DEVELOPMENT.md](DEVELOPMENT.md#webhooks) for events, headers and signature verification.
 
+## Cloud imports
+
+Off by default. To offer Google Drive, OneDrive / SharePoint, Notion or Confluence imports:
+
+1. Register an OAuth app with each provider you want and set its redirect URI to `https://<your API>/api/v1/integrations/callback/<provider>` (`google_drive`, `onedrive`, `notion`, `confluence`). Google: an OAuth client with the Drive API enabled (scope `drive.readonly`; publishing the consent screen beyond test users needs Google's verification). Microsoft: an Entra app registration with delegated `Files.Read.All`, `Sites.Read.All` and `offline_access`. Notion: a **public** integration. Confluence: an Atlassian OAuth 2.0 (3LO) app with the Confluence read scopes.
+2. Set `CONNECTORS_ENABLED=true` and that provider's `CONNECTOR_*_CLIENT_ID` / `_SECRET` (secrets, `sync: false` in `render.yaml`). Behind a proxy that rewrites the host, set `CONNECTOR_REDIRECT_BASE_URL`.
+3. Set `CONNECTOR_ENCRYPTION_KEY` to a Fernet key so connections survive a `SECRET_KEY` rotation. To rotate it, set `new,old`, wait for connections to refresh (or reconnect them), then drop `old`.
+4. For auto-sync set `CONNECTOR_SYNC_ENABLED=true`. In Celery mode run beat; on the free demo (`INGESTION_MODE=inline`) the API runs the sweep itself, while it is awake -- a sleeping free service syncs when it wakes.
+
+Imported documents count against the same document and storage quotas as uploads. Disconnecting keeps the documents (they stop syncing); to revoke DocMinds' access completely, also remove the app in the provider's account settings.
+
+## Billing
+
+Off by default. With Stripe:
+
+1. Create two recurring prices (Pro, Team) and set `STRIPE_PRICE_PRO` / `STRIPE_PRICE_TEAM`, and `STRIPE_SECRET_KEY`.
+2. Add a webhook endpoint `https://<your API>/api/v1/billing/webhook` for `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`, and set its signing secret as `STRIPE_WEBHOOK_SECRET`.
+3. Enable the Customer Portal in the Stripe dashboard (Settings → Billing → Customer portal), including plan switching if you want customers to move between Pro and Team themselves.
+4. Set `BILLING_ENABLED=true` and, if the defaults do not fit, `BILLING_PLAN_LIMITS` and `BILLING_PRICE_LABELS`.
+
+Plans write the quota columns described under [Quotas](#quotas): a paid plan overwrites any manual override for that organization, and Free (including a cancellation) clears the columns back to NULL. For a custom contract, leave the organization off Stripe and set its columns by hand. Stripe retries a webhook that does not answer 2xx, and each event id is applied only once, so retries are safe.
+
+## Admin dashboard
+
+Set `ADMIN_DASHBOARD_ENABLED=true` to give organization admins Settings → **Admin dashboard**: usage and estimated cost per day, documents processed and failed, active users, the feedback trend and the most-asked questions. It reads existing tables only (usage events, documents, audit log, chat and feedback); no migration or background job is involved.
+
 ## Multilingual search and the query cache
 
 `EMBEDDING_MULTILINGUAL=true` switches the local model to a multilingual one with the same 384 dimensions. Every existing document must be reprocessed afterwards; see [DEVELOPMENT.md](DEVELOPMENT.md#multilingual-embeddings). The larger model needs about 500 MB more memory, more than the free 512 MB host has, which is why the demo uses Gemini embeddings (already multilingual). `EMBEDDING_CACHE_ENABLED=true` caches question vectors in Redis (or in memory without Redis); it saves embedding API calls with `EMBEDDING_PROVIDER=gemini` or `openai`.
@@ -241,3 +270,9 @@ Admins of an organisation see their month at `GET /api/v1/org/usage`: requests, 
 | Upload answers `402` | Document or storage quota reached | Raise `organizations.max_documents` / `max_storage_bytes`, or the `QUOTA_*` defaults |
 | `/api/v1/health/ready` answers `503` | A hard dependency is down; the body names it | Check the component marked `"status": "down"`; in Celery mode start a worker |
 | Document stuck on `processing` | The worker died mid-job | It is re-queued after `INGESTION_STALE_AFTER_MINUTES` by the beat sweep or the next API start |
+| Connecting a source ends on the settings page with "The connection request expired or is invalid" | More than 10 minutes on the consent screen, or `SECRET_KEY` changed in between | Connect again |
+| A provider shows "(not configured)" | Its `CONNECTOR_*_CLIENT_ID` or `_SECRET` is missing | Set both and redeploy |
+| The provider says "redirect_uri mismatch" | The registered redirect URI differs from the one DocMinds sends | Register `<API>/api/v1/integrations/callback/<provider>` exactly, or set `CONNECTOR_REDIRECT_BASE_URL` |
+| Every connection shows "Needs reconnecting" after a deploy | `CONNECTOR_ENCRYPTION_KEY` (or, without it, `SECRET_KEY`) changed | Restore the old key as the second entry of `CONNECTOR_ENCRYPTION_KEY`, or reconnect |
+| Stripe shows webhook deliveries failing with `400` | `STRIPE_WEBHOOK_SECRET` is not that endpoint's signing secret, or the server clock is off by more than `STRIPE_WEBHOOK_TOLERANCE_SECONDS` | Copy the secret from the endpoint's page; check the clock |
+| Paid in Checkout, but the plan still says Free | The webhook has not arrived or was refused | Check the endpoint's deliveries in the Stripe dashboard |

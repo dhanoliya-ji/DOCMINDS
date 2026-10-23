@@ -54,9 +54,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.analytics import router as analytics_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.billing import router as billing_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.documents import router as documents_router
+from app.api.v1.integrations import router as integrations_router
 from app.api.v1.org import router as org_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.search import router as search_router
@@ -122,7 +125,13 @@ async def lifespan(_app: FastAPI):
         job = asyncio.create_task(_recover_on_startup())
         _startup_jobs.add(job)
         job.add_done_callback(_startup_jobs.discard)
+    # Cloud-import auto-sync, in-process, for INGESTION_MODE=inline only
+    # (Celery beat sends it otherwise). A no-op unless CONNECTOR_SYNC_ENABLED.
+    from app.services.connectors import scheduler as connector_scheduler
+
+    connector_scheduler.start()
     yield
+    await connector_scheduler.stop()
 
 
 # ----------------------------------------------------------------------
@@ -243,6 +252,18 @@ app.include_router(
 # Outgoing webhooks (admin-only; every route 404s unless WEBHOOKS_ENABLED).
 app.include_router(
     webhooks_router, prefix=f"{settings.API_V1_STR}/webhooks", tags=["Webhooks"]
+)
+
+# Cloud imports, billing and the admin dashboard. Each 404s unless switched
+# on (CONNECTORS_ENABLED, BILLING_ENABLED, ADMIN_DASHBOARD_ENABLED).
+app.include_router(
+    integrations_router, prefix=f"{settings.API_V1_STR}/integrations", tags=["Cloud imports"]
+)
+app.include_router(
+    billing_router, prefix=f"{settings.API_V1_STR}/billing", tags=["Billing"]
+)
+app.include_router(
+    analytics_router, prefix=f"{settings.API_V1_STR}/analytics", tags=["Admin dashboard"]
 )
 
 # --- Document ingestion ---

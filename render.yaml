@@ -184,3 +184,44 @@ services:
       #   value: "true"
       # - key: EMBEDDING_CACHE_ENABLED
       #   value: "true"
+
+      # ---- OPTIONAL: cloud imports, billing, admin dashboard ----
+      # All off by default; see docs/DEPLOYMENT.md, "Cloud imports",
+      # "Billing" and "Admin dashboard". Register
+      # <this API>/api/v1/integrations/callback/<provider> with each provider,
+      # and <this API>/api/v1/billing/webhook as the Stripe webhook endpoint.
+      # INGESTION_MODE=inline runs auto-sync inside the API (no beat needed).
+      # - key: CONNECTORS_ENABLED
+      #   value: "true"
+      # - key: CONNECTOR_ENCRYPTION_KEY
+      #   sync: false
+      # - key: CONNECTOR_GOOGLE_CLIENT_ID
+      #   sync: false
+      # - key: CONNECTOR_GOOGLE_CLIENT_SECRET
+      #   sync: false
+      # - key: CONNECTOR_MICROSOFT_CLIENT_ID
+      #   sync: false
+      # - key: CONNECTOR_MICROSOFT_CLIENT_SECRET
+      #   sync: false
+      # - key: CONNECTOR_NOTION_CLIENT_ID
+      #   sync: false
+      # - key: CONNECTOR_NOTION_CLIENT_SECRET
+      #   sync: false
+      # - key: CONNECTOR_CONFLUENCE_CLIENT_ID
+      #   sync: false
+      # - key: CONNECTOR_CONFLUENCE_CLIENT_SECRET
+      #   sync: false
+      # - key: CONNECTOR_SYNC_ENABLED
+      #   value: "true"
+      # - key: BILLING_ENABLED
+      #   value: "true"
+      # - key: STRIPE_SECRET_KEY
+      #   sync: false
+      # - key: STRIPE_WEBHOOK_SECRET
+      #   sync: false
+      # - key: STRIPE_PRICE_PRO
+      #   sync: false
+      # - key: STRIPE_PRICE_TEAM
+      #   sync: false
+      # - key: ADMIN_DASHBOARD_ENABLED
+      #   value: "true"

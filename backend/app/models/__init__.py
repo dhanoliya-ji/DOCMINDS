@@ -38,8 +38,10 @@ schema readable at a glance.
 from app.db.base_class import Base
 from app.models.api_key import APIKey
 from app.models.audit import AuditLog
+from app.models.billing import BillingEvent
 from app.models.chat import ChatMessage, ChatSession, Feedback
 from app.models.chunk import Chunk, ChunkEmbedding
+from app.models.connector import ConnectorConnection, ConnectorItem
 from app.models.document import Document
 from app.models.invite import Invite
 from app.models.organization import Organization
@@ -82,4 +84,7 @@ __all__ = [
     # ---- Integrations ----
     "WebhookEndpoint",
     "WebhookDelivery",
+    "ConnectorConnection",
+    "ConnectorItem",
+    "BillingEvent",
 ]

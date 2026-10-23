@@ -125,6 +125,12 @@ celery_app.conf.update(
             "task": "app.tasks.webhooks.sweep_webhooks_task",
             "schedule": 5 * 60.0,
         },
+        # Re-imports cloud documents whose source changed (tasks/connectors.py).
+        # Does nothing unless CONNECTORS_ENABLED and CONNECTOR_SYNC_ENABLED.
+        "sync-connectors": {
+            "task": "app.tasks.connectors.sync_connectors_task",
+            "schedule": settings.CONNECTOR_SYNC_INTERVAL_MINUTES * 60.0,
+        },
     },
 
     # Explicitly import the tasks package on worker start-up. A task the worker

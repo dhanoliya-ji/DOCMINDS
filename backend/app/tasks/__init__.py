@@ -23,6 +23,7 @@ This file is imported by the worker because `core/celery_app.py` sets
 `imports=("app.tasks",)`.
 """
 
+from app.tasks.connectors import sync_connectors_task
 from app.tasks.ingestion import process_document_task, recover_stuck_documents_task
 from app.tasks.test import add_numbers_task, dummy_process_document_task
 from app.tasks.webhooks import deliver_webhook_task, sweep_webhooks_task
@@ -42,4 +43,7 @@ __all__ = [
     # and the beat sweep that re-queues deliveries whose message was lost.
     "deliver_webhook_task",
     "sweep_webhooks_task",
+    # Cloud imports: the beat sweep that re-imports documents whose source
+    # changed (a no-op unless CONNECTOR_SYNC_ENABLED).
+    "sync_connectors_task",
 ]
