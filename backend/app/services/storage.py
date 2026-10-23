@@ -255,7 +255,14 @@ class S3Storage(Storage):
         if settings.S3_REGION:
             kwargs["region_name"] = settings.S3_REGION
         if settings.S3_ENDPOINT_URL:
-            kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL
+            endpoint = settings.S3_ENDPOINT_URL.strip().rstrip("/")
+            # Providers show the endpoint as a bare host name
+            # ("s3.us-west-004.backblazeb2.com"). Without a scheme boto3
+            # cannot connect at all, and every upload fails as "storage
+            # unavailable", so the https:// is added here.
+            if "://" not in endpoint:
+                endpoint = f"https://{endpoint}"
+            kwargs["endpoint_url"] = endpoint
             # NOT AWS, then. Since boto3 1.36 every upload carries a new
             # CRC checksum header by default. AWS understands it; several
             # S3-compatible stores do not, and refuse every upload. Asking
