@@ -6,7 +6,8 @@
  *
  *   * cloud imports   /integrations  (Google Drive, OneDrive / SharePoint,
  *                                     Notion, Confluence; editors and admins)
- *   * billing         /billing       (Stripe plans; admins buy, everyone sees)
+ *   * billing         /billing       (Stripe or Razorpay plans; admins buy,
+ *                                     everyone sees)
  *   * admin dashboard /analytics     (aggregates; admins)
  *
  * Each feature answers 404 while it is switched off on the server, so the
@@ -106,6 +107,10 @@ export const platformApi = {
   openPortal() {
     return apiFetch<{ url: string }>("/billing/portal", { method: "POST" });
   },
+  /** Razorpay (and Stripe): stop renewing at the end of the paid period. */
+  cancelSubscription() {
+    return apiFetch<BillingStatus>("/billing/cancel", { method: "POST" });
+  },
 
   // ---- admin dashboard ----
   getAnalytics(days = 30) {
@@ -126,7 +131,7 @@ async function probe(call: () => Promise<unknown>): Promise<boolean> {
 export const integrationsAvailable = () => probe(() => platformApi.listProviders());
 export const analyticsAvailable = () => probe(() => platformApi.getAnalytics(1));
 
-/** The browser leaves for a provider's or Stripe's page. Split out so tests can stub it. */
+/** The browser leaves for a provider's, Stripe's or Razorpay's page. Split out so tests can stub it. */
 export const navigate = {
   to(url: string) {
     window.location.assign(url);

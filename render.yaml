@@ -189,7 +189,8 @@ services:
       # All off by default; see docs/DEPLOYMENT.md, "Cloud imports",
       # "Billing" and "Admin dashboard". Register
       # <this API>/api/v1/integrations/callback/<provider> with each provider,
-      # and <this API>/api/v1/billing/webhook as the Stripe webhook endpoint.
+      # and <this API>/api/v1/billing/webhook as the Stripe (or Razorpay)
+      # webhook endpoint. BILLING_PROVIDER=razorpay for India.
       # INGESTION_MODE=inline runs auto-sync inside the API (no beat needed).
       # - key: CONNECTORS_ENABLED
       #   value: "true"
@@ -223,5 +224,19 @@ services:
       #   sync: false
       # - key: STRIPE_PRICE_TEAM
       #   sync: false
+      # - key: BILLING_PROVIDER
+      #   value: razorpay
+      # - key: RAZORPAY_KEY_ID
+      #   sync: false
+      # - key: RAZORPAY_KEY_SECRET
+      #   sync: false
+      # - key: RAZORPAY_WEBHOOK_SECRET
+      #   sync: false
+      # - key: RAZORPAY_PLAN_PRO
+      #   sync: false
+      # - key: RAZORPAY_PLAN_TEAM
+      #   sync: false
+      # - key: BILLING_PRICE_LABELS
+      #   value: '{"free": "₹0", "pro": "₹2,499 / month", "team": "₹7,999 / month"}'
       # - key: ADMIN_DASHBOARD_ENABLED
       #   value: "true"

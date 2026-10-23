@@ -3,7 +3,8 @@
  * =================
  * The pages for the optional platform features (lib/platform.ts):
  *
- *   * Plan and billing: the current plan, Upgrade -> Stripe Checkout,
+ *   * Plan and billing: the current plan, Upgrade -> Stripe Checkout or the
+ *     Razorpay subscription page, Cancel subscription (Razorpay),
  *     Manage billing -> the portal, the return notices, non-admins get no
  *     buttons, "not enabled" on a 404
  *   * Cloud imports: providers, connect -> the consent URL, browse a
@@ -53,6 +54,7 @@ const platformMocks = vi.hoisted(() => ({
   getBilling: vi.fn(),
   checkout: vi.fn(),
   openPortal: vi.fn(),
+  cancelSubscription: vi.fn(),
   getAnalytics: vi.fn(),
 }));
 const navigateTo = vi.hoisted(() => vi.fn());
@@ -81,9 +83,12 @@ const USER = (role: string) => ({
 const LIMITS = { monthly_tokens: 1000000, max_documents: 1000, max_storage_bytes: 5368709120 };
 const BILLING = {
   plan: "free",
+  provider: "stripe",
   subscription_status: null,
   renews_at: null,
   has_customer: false,
+  can_manage: false,
+  can_cancel: false,
   limits: LIMITS,
   plans: [
     { id: "free", price_label: "$0", limits: LIMITS, purchasable: false },
@@ -156,7 +161,7 @@ describe("Plan and billing", () => {
   });
 
   it("offers the portal to a paying customer", async () => {
-    platformMocks.getBilling.mockResolvedValue({ ...BILLING, plan: "pro", has_customer: true, subscription_status: "active" });
+    platformMocks.getBilling.mockResolvedValue({ ...BILLING, plan: "pro", has_customer: true, can_manage: true, subscription_status: "active" });
     platformMocks.openPortal.mockResolvedValue({ url: "https://billing.stripe.com/p/1" });
     render(<BillingPage />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "Manage billing" }));
@@ -175,6 +180,55 @@ describe("Plan and billing", () => {
     render(<BillingPage />);
     expect(await screen.findByText("Only admins can change the plan.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Upgrade/ })).not.toBeInTheDocument();
+  });
+
+  it("sends an admin to the Razorpay subscription page, in INR", async () => {
+    platformMocks.getBilling.mockResolvedValue({
+      ...BILLING,
+      provider: "razorpay",
+      plans: BILLING.plans.map((p) => ({ ...p, price_label: { free: "₹0", pro: "₹2,499 / month", team: "₹7,999 / month" }[p.id] })),
+    });
+    platformMocks.checkout.mockResolvedValue({ url: "https://rzp.io/i/abc" });
+    render(<BillingPage />);
+    expect(await screen.findByText("₹2,499 / month")).toBeInTheDocument();
+    expect(screen.getByText(/You pay on Razorpay's secure page/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Manage billing" })).not.toBeInTheDocument();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Upgrade to Team" }));
+    expect(platformMocks.checkout).toHaveBeenCalledWith("team");
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith("https://rzp.io/i/abc"));
+  });
+
+  it("cancels a Razorpay subscription after confirming, instead of the portal", async () => {
+    const paying = { ...BILLING, provider: "razorpay", plan: "pro", has_customer: true, can_cancel: true, subscription_status: "active" };
+    platformMocks.getBilling.mockResolvedValue(paying);
+    platformMocks.cancelSubscription.mockResolvedValue({ ...paying, can_cancel: false, subscription_status: "cancelling" });
+    render(<BillingPage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel subscription" }));
+    expect(platformMocks.cancelSubscription).not.toHaveBeenCalled();
+    // While subscribed, switching plan means cancelling first.
+    expect(screen.getByText(/cancel the current subscription first/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch to Team" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Manage billing" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Yes, cancel at the end of this period" }));
+    expect(platformMocks.cancelSubscription).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/The subscription will not renew/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel subscription" })).not.toBeInTheDocument();
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed cancellation and keeps the subscription", async () => {
+    platformMocks.getBilling.mockResolvedValue({
+      ...BILLING, provider: "razorpay", plan: "team", has_customer: true, can_cancel: true, subscription_status: "active",
+    });
+    platformMocks.cancelSubscription.mockRejectedValue(new ApiError("Razorpay refused the request.", 502));
+    render(<BillingPage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel subscription" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel at the end of this period" }));
+    expect(await screen.findByText("Razorpay refused the request.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep subscription" }));
+    expect(screen.getByRole("button", { name: "Cancel subscription" })).toBeInTheDocument();
   });
 
   it("says so when billing is off", async () => {

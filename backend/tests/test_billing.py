@@ -4,7 +4,7 @@ test_billing.py
 ===============
 WHAT THIS FILE TESTS
 --------------------
-Stripe billing (services/billing.py, api/v1/billing.py) and the admin
+Stripe and Razorpay billing (services/billing.py, api/v1/billing.py) and the admin
 dashboard aggregates (services/analytics.py, api/v1/analytics.py):
 
     * Stripe-Signature verification: good, wrong secret, stale, malformed
@@ -13,6 +13,12 @@ dashboard aggregates (services/analytics.py, api/v1/analytics.py):
       services/usage.py; a redelivered event changes nothing twice;
       subscription deleted -> free; unsigned -> 400
     * Checkout and the Customer Portal against a faked Stripe, admins only
+    * Razorpay: X-Razorpay-Signature good / wrong / missing, the event ->
+      plan mapping, activated -> pro, a replayed delivery is a duplicate,
+      cancel at cycle end, cancelled / halted -> free, a stale event for an
+      ended or older subscription changes nothing
+    * switching BILLING_PROVIDER: an existing Stripe customer keeps its
+      portal and its webhooks
     * everything 404s while switched off
     * the dashboard: daily series with zeros filled, top questions grouped,
       tenant isolation, admins only
@@ -136,6 +142,8 @@ def fake_stripe(monkeypatch):
             return httpx.Response(200, json={"id": "cs_1", "url": "https://checkout.stripe.com/c/cs_1"})
         if path == "/v1/billing_portal/sessions":
             return httpx.Response(200, json={"url": "https://billing.stripe.com/p/1"})
+        if path.startswith("/v1/subscriptions/"):
+            return httpx.Response(200, json={"id": path.rsplit("/", 1)[-1], "cancel_at_period_end": True})
         return httpx.Response(400, json={"error": {"message": "nope"}})
 
     monkeypatch.setattr(billing, "_transport", httpx.MockTransport(handler))
@@ -236,6 +244,214 @@ class TestBillingApi:
         assert (await env.client.post(f"{API}/billing/webhook", content=json.dumps(event))).status_code == 400
         assert (await _post_event(env, event, secret="whsec_wrong")).status_code == 400
         assert (await _org(env)).plan == "free"
+
+
+# ======================================================================
+# Razorpay
+# ======================================================================
+
+RZP_SECRET = "rzp_webhook_secret"
+
+
+class TestRazorpaySignature:
+    def test_valid(self):
+        body = b'{"event": "subscription.activated"}'
+        billing.verify_razorpay_signature(body, billing.razorpay_sign(body, RZP_SECRET), RZP_SECRET)
+
+    def test_invalid(self):
+        body = b'{"event": "subscription.activated"}'
+        for signature in ("", "deadbeef", billing.razorpay_sign(body, "other"), "é" * 64):
+            with pytest.raises(billing.SignatureError):
+                billing.verify_razorpay_signature(body, signature, RZP_SECRET)
+        with pytest.raises(billing.SignatureError):
+            billing.verify_razorpay_signature(body + b" ", billing.razorpay_sign(body, RZP_SECRET), RZP_SECRET)
+        with pytest.raises(billing.SignatureError, match="not set"):
+            billing.verify_razorpay_signature(body, billing.razorpay_sign(body, ""), "")
+
+    def test_mapping(self, monkeypatch):
+        monkeypatch.setattr(settings, "RAZORPAY_PLAN_TEAM", "plan_team")
+        event = {"event": "subscription.cancelled", "payload": {"subscription": {"entity": {
+            "id": "sub_1", "plan_id": "plan_team", "status": "cancelled", "notes": []}}}}
+        update = billing.razorpay_update(event, b"x", "evt_9")
+        assert (update.action, update.plan, update.status, update.event_id) == (
+            "end", "team", "cancelled", "razorpay:evt_9")
+        # No event-id header: the body's hash is the id, the same on a retry.
+        assert billing.razorpay_update(event, b"x").event_id == billing.razorpay_update(event, b"x").event_id
+        assert billing.razorpay_update({"event": "payment.captured"}, b"y").action == "ignore"
+
+
+@pytest.fixture
+def razorpay_on(monkeypatch):
+    monkeypatch.setattr(settings, "BILLING_ENABLED", True)
+    monkeypatch.setattr(settings, "BILLING_PROVIDER", "razorpay")
+    monkeypatch.setattr(settings, "RAZORPAY_KEY_ID", "rzp_test_key")
+    monkeypatch.setattr(settings, "RAZORPAY_KEY_SECRET", "rzp_test_secret")
+    monkeypatch.setattr(settings, "RAZORPAY_WEBHOOK_SECRET", RZP_SECRET)
+    monkeypatch.setattr(settings, "RAZORPAY_PLAN_PRO", "plan_pro")
+    monkeypatch.setattr(settings, "RAZORPAY_PLAN_TEAM", "plan_team")
+    monkeypatch.setattr(settings, "STRIPE_SECRET_KEY", "")
+
+
+@pytest.fixture
+def fake_razorpay(monkeypatch):
+    calls: list = []
+
+    def handler(request: httpx.Request):
+        calls.append(request)
+        path = request.url.path
+        if path == "/v1/subscriptions":
+            return httpx.Response(200, json={"id": "sub_R1", "status": "created", "short_url": "https://rzp.io/i/abc"})
+        if path.startswith("/v1/subscriptions/") and path.endswith("/cancel"):
+            return httpx.Response(200, json={"id": path.split("/")[3], "status": "active"})
+        return httpx.Response(400, json={"error": {"description": "nope"}})
+
+    monkeypatch.setattr(billing, "_transport", httpx.MockTransport(handler))
+    return calls
+
+
+def _rzp_event(event_type: str, org_id: str, status: str, plan_id: str = "plan_pro", sub: str = "sub_R1") -> dict:
+    return {
+        "entity": "event", "event": event_type, "contains": ["subscription"],
+        "payload": {"subscription": {"entity": {
+            "id": sub, "plan_id": plan_id, "status": status, "current_end": 1893456000,
+            "notes": {"org_id": org_id},
+        }}},
+        "created_at": int(time.time()),
+    }
+
+
+async def _post_rzp(env, event: dict, event_id: str, secret: str = RZP_SECRET):
+    body = json.dumps(event).encode()
+    return await env.client.post(
+        f"{API}/billing/webhook", content=body,
+        headers={"X-Razorpay-Signature": billing.razorpay_sign(body, secret), "X-Razorpay-Event-Id": event_id,
+                 "Content-Type": "application/json"},
+    )
+
+
+class TestRazorpayApi:
+    async def test_status_reports_the_provider(self, env, razorpay_on):
+        body = (await env.client.get(f"{API}/billing", headers=env.headers)).json()
+        assert body["provider"] == "razorpay" and body["can_cancel"] is False and body["can_manage"] is False
+        assert [p["purchasable"] for p in body["plans"]] == [False, True, True]
+
+    async def test_checkout_returns_the_subscription_link(self, env, razorpay_on, fake_razorpay):
+        response = await env.client.post(f"{API}/billing/checkout", headers=env.headers, json={"plan": "team"})
+        assert response.status_code == 200, response.text
+        assert response.json()["url"] == "https://rzp.io/i/abc"
+        sent = json.loads(fake_razorpay[-1].content)
+        org = await _org(env)
+        assert sent["plan_id"] == "plan_team" and sent["notes"] == {"org_id": str(org.id), "plan": "team"}
+        assert sent["total_count"] == settings.RAZORPAY_TOTAL_COUNT
+        assert fake_razorpay[-1].headers["authorization"].startswith("Basic ")
+        assert org.plan == "free"  # only the webhook changes the plan
+
+    async def test_lifecycle_cancel_and_idempotency(self, env, razorpay_on, fake_razorpay):
+        org_id = str((await _org(env)).id)
+        activated = _rzp_event("subscription.activated", org_id, "active")
+        first = await _post_rzp(env, activated, "evt_A")
+        assert first.status_code == 200 and first.json()["outcome"] == "applied"
+        org = await _org(env)
+        assert (org.plan, org.billing_provider, org.stripe_subscription_id) == ("pro", "razorpay", "sub_R1")
+        assert org.max_documents == settings.BILLING_PLAN_LIMITS["pro"]["max_documents"]
+        assert org.plan_renews_at is not None
+
+        # Replay: the same delivery again changes nothing.
+        assert (await _post_rzp(env, activated, "evt_A")).json()["outcome"] == "duplicate"
+        charged = await _post_rzp(env, _rzp_event("subscription.charged", org_id, "active"), "evt_B")
+        assert charged.json()["outcome"] == "applied"
+
+        status_body = (await env.client.get(f"{API}/billing", headers=env.headers)).json()
+        assert status_body["can_cancel"] is True and status_body["has_customer"] is True
+
+        # A second subscription while one is active would charge twice.
+        again = await env.client.post(f"{API}/billing/checkout", headers=env.headers, json={"plan": "team"})
+        assert again.status_code == 409
+
+        cancelled = await env.client.post(f"{API}/billing/cancel", headers=env.headers)
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["subscription_status"] == "cancelling" and cancelled.json()["plan"] == "pro"
+        assert fake_razorpay[-1].url.path == "/v1/subscriptions/sub_R1/cancel"
+        assert json.loads(fake_razorpay[-1].content) == {"cancel_at_cycle_end": 1}
+        assert (await env.client.post(f"{API}/billing/cancel", headers=env.headers)).status_code == 409
+
+        await _post_rzp(env, _rzp_event("subscription.cancelled", org_id, "cancelled"), "evt_C")
+        org = await _org(env)
+        assert (org.plan, org.max_documents, org.subscription_status) == ("free", None, "cancelled")
+
+        # A late, re-sent "charged" for the ended subscription must not revive it.
+        await _post_rzp(env, _rzp_event("subscription.charged", org_id, "active"), "evt_D")
+        assert (await _org(env)).plan == "free"
+
+        async with env.factory() as db:
+            changes = (await db.execute(select(AuditLog).where(AuditLog.action == "billing.plan_change"))).scalars().all()
+        assert [(c.details["from"], c.details["to"], c.details["provider"]) for c in changes] == [
+            ("free", "pro", "razorpay"), ("pro", "free", "razorpay")]
+
+    async def test_halted_drops_to_free_and_stale_subscription_is_ignored(self, env, razorpay_on):
+        org_id = str((await _org(env)).id)
+        await _post_rzp(env, _rzp_event("subscription.activated", org_id, "active", plan_id="plan_team"), "evt_1")
+        assert (await _org(env)).plan == "team"
+        # The end of some OTHER (older) subscription changes nothing.
+        await _post_rzp(env, _rzp_event("subscription.cancelled", org_id, "cancelled", sub="sub_OLD"), "evt_2")
+        assert (await _org(env)).plan == "team"
+        await _post_rzp(env, _rzp_event("subscription.halted", org_id, "halted", plan_id="plan_team"), "evt_3")
+        org = await _org(env)
+        assert (org.plan, org.subscription_status) == ("free", "halted")
+
+    async def test_bad_signature_is_refused(self, env, razorpay_on):
+        org_id = str((await _org(env)).id)
+        event = _rzp_event("subscription.activated", org_id, "active")
+        assert (await _post_rzp(env, event, "evt_X", secret="wrong")).status_code == 400
+        unsigned = await env.client.post(f"{API}/billing/webhook", content=json.dumps(event))
+        assert unsigned.status_code == 400
+        assert (await _org(env)).plan == "free"
+
+    async def test_portal_is_not_offered(self, env, razorpay_on, fake_razorpay):
+        assert (await env.client.post(f"{API}/billing/portal", headers=env.headers)).status_code == 409
+
+
+class TestProviderSwitch:
+    async def test_stripe_customer_stays_on_stripe_after_switch(self, env, billing_on, fake_stripe, monkeypatch):
+        org_id = str((await _org(env)).id)
+        completed = {
+            "id": "evt_s1", "type": "checkout.session.completed",
+            "data": {"object": {"client_reference_id": org_id, "customer": "cus_9", "subscription": "sub_9",
+                                "payment_status": "paid", "metadata": {"org_id": org_id, "plan": "pro"}}},
+        }
+        await _post_event(env, completed)
+        assert (await _org(env)).billing_provider == "stripe"
+
+        monkeypatch.setattr(settings, "BILLING_PROVIDER", "razorpay")
+        monkeypatch.setattr(settings, "RAZORPAY_KEY_ID", "")
+        body = (await env.client.get(f"{API}/billing", headers=env.headers)).json()
+        assert body["provider"] == "razorpay" and body["can_manage"] is True and body["can_cancel"] is False
+        # Razorpay keys are not set, so nothing is purchasable through it...
+        assert not any(p["purchasable"] for p in body["plans"])
+        # ...but the existing Stripe customer still reaches Stripe's portal,
+        # and Stripe's signed webhooks are still applied.
+        portal = await env.client.post(f"{API}/billing/portal", headers=env.headers)
+        assert portal.json()["url"] == "https://billing.stripe.com/p/1"
+        deleted = {"id": "evt_s2", "type": "customer.subscription.deleted",
+                   "data": {"object": {"id": "sub_9", "customer": "cus_9", "status": "canceled"}}}
+        assert (await _post_event(env, deleted)).json()["outcome"] == "applied"
+        assert (await _org(env)).plan == "free"
+
+    async def test_stripe_cancel_at_period_end(self, env, billing_on, fake_stripe):
+        org_id = str((await _org(env)).id)
+        await _post_event(env, {
+            "id": "evt_c1", "type": "customer.subscription.created",
+            "data": {"object": {"id": "sub_7", "customer": "cus_7", "status": "active",
+                                "metadata": {"org_id": org_id},
+                                "items": {"data": [{"price": {"id": "price_pro"}}]}}},
+        })
+        assert (await _org(env)).plan == "pro"
+        # Stripe customers use the portal; the cancel endpoint works too.
+        response = await env.client.post(f"{API}/billing/cancel", headers=env.headers)
+        assert response.status_code == 200, response.text
+        assert fake_stripe[-1].url.path == "/v1/subscriptions/sub_7"
+        assert dict(httpx.QueryParams(fake_stripe[-1].content.decode())) == {"cancel_at_period_end": "true"}
+        assert response.json()["plan"] == "pro"
 
 
 # ======================================================================

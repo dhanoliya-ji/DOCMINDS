@@ -406,6 +406,16 @@
       },
       "BillingStatus": {
         "properties": {
+          "can_cancel": {
+            "default": false,
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_manage": {
+            "default": false,
+            "title": "Can Manage",
+            "type": "boolean"
+          },
           "has_customer": {
             "title": "Has Customer",
             "type": "boolean"
@@ -423,6 +433,15 @@
             },
             "title": "Plans",
             "type": "array"
+          },
+          "provider": {
+            "default": "stripe",
+            "enum": [
+              "stripe",
+              "razorpay"
+            ],
+            "title": "Provider",
+            "type": "string"
           },
           "renews_at": {
             "anyOf": [
@@ -5493,6 +5512,36 @@
           }
         ],
         "summary": "Get Billing",
+        "tags": [
+          "Billing"
+        ]
+      }
+    },
+    "/api/v1/billing/cancel": {
+      "post": {
+        "description": "Stop renewing. The plan stays until the end of the paid period, when\nthe provider's signed webhook moves the organization back to free.",
+        "operationId": "cancel_api_v1_billing_cancel_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Cancel",
         "tags": [
           "Billing"
         ]
