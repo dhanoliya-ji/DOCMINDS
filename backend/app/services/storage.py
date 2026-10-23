@@ -248,6 +248,11 @@ class S3Storage(Storage):
             # boto3's own retries, with backoff, for throttling and 5xx. Our
             # ingestion retries sit on top of these for longer outages.
             "retries": {"max_attempts": 5, "mode": "standard"},
+            # boto3 waits 60 s for a connection by default; five attempts at
+            # that left an upload hanging for minutes before it failed. A
+            # healthy endpoint connects in well under a second.
+            "connect_timeout": 5,
+            "read_timeout": 60,
         }
         kwargs: dict = {}
         # Every one of these is optional; an empty setting means "let boto3
@@ -286,7 +291,15 @@ class S3Storage(Storage):
     # from "unreachable".
     @staticmethod
     def _translate(exc: Exception, key: str) -> StorageError:
-        response = getattr(exc, "response", None) or {}
+        # `upload_file` wraps the real ClientError in boto3's own
+        # S3UploadFailedError, which carries no `response`. Without unwrapping
+        # it, a plain "access denied" was reported as an outage.
+        inner = exc
+        while not getattr(inner, "response", None) and (inner.__cause__ or inner.__context__):
+            inner = inner.__cause__ or inner.__context__
+        response = getattr(inner, "response", None) or {}
+        if not response and type(exc).__name__ in {"NoCredentialsError", "PartialCredentialsError"}:
+            return StorageError(f"S3 credentials are missing or incomplete for {key!r}")
         code = str(response.get("Error", {}).get("Code", ""))
         status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
         if code in {"404", "NoSuchKey", "NotFound"} or status == 404:
