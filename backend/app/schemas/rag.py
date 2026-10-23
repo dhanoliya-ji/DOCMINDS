@@ -282,7 +282,7 @@ class ChatMessageOut(BaseModel):
     steps: List[Dict[str, Any]] = []
 
     # The high / medium / low verdict and its reasons (services/confidence.py).
-    # None on user messages and on answers saved before migration b8d0f2a4c6e8.
+    # None on user messages and on answers saved before migration c9e1a3b5d7f0.
     confidence: Optional[Dict[str, Any]] = None
 
     created_at: datetime.datetime

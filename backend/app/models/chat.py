@@ -162,7 +162,7 @@ class ChatMessage(Base):
     # Stored rather than recomputed so a reopened or shared answer shows the
     # verdict it was given at the time, even if the formula is tuned later.
     # NULL on user messages and on answers saved before migration
-    # b8d0f2a4c6e8.
+    # c9e1a3b5d7f0.
     confidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime.datetime] = mapped_column(

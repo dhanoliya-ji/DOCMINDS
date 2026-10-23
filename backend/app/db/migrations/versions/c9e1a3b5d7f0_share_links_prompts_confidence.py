@@ -21,8 +21,8 @@ recomputing a verdict for an old answer would need the retrieval scores of a
 search that is long gone, and the citations alone would be a different
 formula wearing the same badge.
 
-Revision ID: b8d0f2a4c6e8
-Revises: a7b9c1d3e5f8
+Revision ID: c9e1a3b5d7f0
+Revises: b8d0f2a4c6e8
 Create Date: 2026-10-23
 """
 
@@ -32,8 +32,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "b8d0f2a4c6e8"
-down_revision: Union[str, None] = "a7b9c1d3e5f8"
+revision: str = "c9e1a3b5d7f0"
+down_revision: Union[str, None] = "b8d0f2a4c6e8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
