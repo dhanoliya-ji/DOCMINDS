@@ -72,6 +72,7 @@ import SearchPanel from "@/components/SearchPanel";
 import UploadZone from "@/components/UploadZone";
 import { api, DocumentItem, getErrorMessage, getToken } from "@/lib/api";
 import { useT } from "@/lib/i18n";
+import { describeProgress, documentProgress } from "@/lib/progress";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
@@ -546,7 +547,22 @@ export default function ProjectPage({
                               limit) sends the document back to the queue to
                               be retried. Saying so explains why a "Queued"
                               document is taking its time. */}
-                          {doc.status === "pending" && doc.error_message && (
+                          {/* A large document reports its progress after
+                              every batch: pages read, chunks embedded, or a
+                              rate-limit pause and when it resumes. */}
+                          {(doc.status === "pending" || doc.status === "processing") &&
+                            describeProgress(documentProgress(doc)) && (
+                              <div
+                                className="mt-1 text-xs"
+                                style={{ color: "var(--text-muted)" }}
+                                data-testid="document-progress"
+                              >
+                                {describeProgress(documentProgress(doc))}
+                              </div>
+                            )}
+                          {doc.status === "pending" &&
+                            doc.error_message &&
+                            documentProgress(doc)?.stage !== "paused" && (
                             <div
                               className="mt-1 text-xs"
                               style={{ color: "var(--warning)" }}

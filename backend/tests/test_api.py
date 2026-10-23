@@ -511,8 +511,11 @@ class TestInlineIngestion:
         assert response.status_code == 202, response.text
         assert response.json()[0]["status"] == "pending"
 
-        # ...and the in-process transport waits for background tasks, so by
-        # now the document has been processed end to end.
+        # ...and the API's in-process queue works on it after the request has
+        # ended. Once the queue is idle it has been processed end to end.
+        from app.tasks.ingestion import wait_for_inline_jobs
+
+        await wait_for_inline_jobs()
         listed = await client.get(
             f"{API}/documents/", headers=account["headers"], params={"project_id": project_id}
         )

@@ -62,7 +62,7 @@ import uuid
 import zipfile
 from email import message_from_bytes
 from email.policy import default as default_email_policy
-from typing import Any, Dict
+from typing import Any, Dict, Iterator, Optional
 
 import fitz  # PyMuPDF. The package installs as `pymupdf` but imports as `fitz`.
 import openpyxl
@@ -132,6 +132,40 @@ class _ZipBudget:
                 "Archive rejected: it expands to more than "
                 f"{settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES // (1024 * 1024)} MB."
             )
+
+
+class DocumentTooLarge(ValueError):
+    """
+    The document is over a per-document cap (INGESTION_MAX_PAGES or
+    INGESTION_MAX_CHUNKS). A ValueError, so it is PERMANENT: the message says
+    which limit, and how to get under it.
+    """
+
+
+class Segment:
+    """
+    One piece of a document, produced while the file is still being read.
+
+    The streaming counterpart of ExtractionResult (see `iter_segments`): a
+    page of a PDF, a few hundred rows of a spreadsheet, a slice of a long
+    text file. The pipeline chunks and stores each one, then lets it go --
+    so the whole document's text is never in memory at once.
+
+    page_number -- the real page for PDFs; 1 for formats without pages (as
+                   before). None means "this is a whole document's text, which
+                   may contain its own page markers" (DOCX, PPTX, ZIP...): the
+                   chunker then splits on those markers itself.
+    meta        -- facts about where in the file it came from, copied onto its
+                   chunks: {"sheet": "Q3", "rows": "201-400"}.
+    """
+
+    __slots__ = ("page_number", "text", "ocr", "meta")
+
+    def __init__(self, page_number: Optional[int], text: str, ocr: bool = False, meta: Optional[dict] = None):
+        self.page_number = page_number
+        self.text = text
+        self.ocr = ocr
+        self.meta = meta or {}
 
 
 class ExtractionResult:
@@ -233,6 +267,270 @@ class DocumentExtractor:
             # Raised rather than returned, so the ingestion task marks the
             # document "failed" with a message the user can actually act on.
             raise ValueError(f"Unsupported file type: {file_type}")
+
+    # ==================================================================
+    # STREAMING -- a piece at a time, for documents of any size
+    # ==================================================================
+    # `extract()` above returns the WHOLE text in one string. For a 900-page
+    # PDF that string, plus the list of pages it was joined from, plus OCR
+    # images, plus every chunk and vector made from it, all lived in memory at
+    # the same moment -- more than a 512 MB host has. The ingestion pipeline
+    # therefore reads through `iter_segments()` instead: a GENERATOR that
+    # yields one Segment at a time and keeps nothing once it has moved on.
+    #
+    # Formats whose libraries can read incrementally are streamed for real:
+    #     PDF           one page at a time (OCR'd one page at a time)
+    #     CSV / XLSX    INGESTION_ROWS_PER_SEGMENT rows at a time
+    #     TXT / MD      ~256 KB at a time, split at line breaks
+    #     images        one segment (one image)
+    # The rest (DOCX, PPTX, HTML, EML, ZIP) are parsed whole by `extract()`,
+    # as before, and yielded as one segment: their parsers build the whole
+    # document in memory anyway, and the upload size cap bounds them.
+
+    # Bytes of a text file per segment.
+    _TEXT_SEGMENT_BYTES = 256 * 1024
+
+    @classmethod
+    def iter_segments(cls, file_path: str, file_type: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """
+        Yield the document a Segment at a time.
+
+        `info` is filled in as reading goes: page_count, title, author,
+        ocr_applied, ocr_pages, vision_captions... The pipeline merges it into
+        the document's meta_data at the end, just as it does
+        ExtractionResult.metadata.
+        """
+        file_type = file_type.lower()
+        if file_type in OFFICE_ZIP_EXTENSIONS:
+            cls._check_office_container(file_path)
+
+        if file_type == "pdf":
+            yield from cls._iter_pdf(file_path, info)
+        elif file_type in IMAGE_EXTENSIONS:
+            yield from cls._iter_image(file_path, file_type, info)
+        elif file_type == "csv":
+            yield from cls._iter_csv(file_path, info)
+        elif file_type == "xlsx":
+            yield from cls._iter_xlsx(file_path, info)
+        elif file_type in ("txt", "md", "markdown"):
+            yield from cls._iter_text(file_path, info)
+        else:
+            # DOCX, PPTX, XLS, HTML, EML, ZIP: whole, through the dispatcher.
+            result = cls.extract(file_path, file_type)
+            info.update(result.metadata)
+            if result.needs_ocr:
+                info["needs_ocr"] = True
+            yield Segment(None, result.text, ocr=result.needs_ocr)
+
+    # ---- PDF, a page at a time ------------------------------------------
+
+    @staticmethod
+    def _image_coverage(page) -> float:
+        """What fraction of the page's area is covered by pictures (0..1)."""
+        try:
+            page_area = abs(page.rect) or 1.0
+            covered = 0.0
+            for image in page.get_image_info():
+                box = fitz.Rect(image["bbox"]) & page.rect
+                covered += abs(box)
+            return min(1.0, covered / page_area)
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _iter_pdf(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """
+        Yield each page's text, OCR'ing the pages that need it.
+
+        THE SCANNED-PAGE DECISION IS NOW PER PAGE. `extract_pdf` judges the
+        whole file by its AVERAGE characters per page, which needs every page
+        read first. Here each page is judged alone: under
+        OCR_CHAR_THRESHOLD_PER_PAGE characters AND something drawn on it (a
+        picture, or vector shapes -- a truly blank page is skipped) means it
+        is a scan, and only that page is rasterised. That also gets mixed
+        documents right: a typed report with three scanned appendix pages
+        has exactly those three pages OCR'd.
+
+        Memory: one page object, at most one page's pixels, released before
+        the next page. MuPDF's internal cache is trimmed every 25 pages.
+        """
+        from app.services import vision
+
+        document = fitz.open(file_path)
+        try:
+            page_count = len(document)
+            info.update(
+                {
+                    "title": document.metadata.get("title", "") if document.metadata else "",
+                    "author": document.metadata.get("author", "") if document.metadata else "",
+                    "creator": document.metadata.get("creator", "") if document.metadata else "",
+                    "page_count": page_count,
+                }
+            )
+            if page_count > settings.INGESTION_MAX_PAGES:
+                raise DocumentTooLarge(
+                    f"This PDF has {page_count:,} pages; the limit is "
+                    f"{settings.INGESTION_MAX_PAGES:,} (INGESTION_MAX_PAGES). "
+                    "Split it into smaller files, or raise the limit."
+                )
+            captions_left = settings.VISION_MAX_IMAGES_PER_DOCUMENT if vision.enabled() else 0
+            ocr_pages = 0
+            captions = 0
+
+            for index in range(page_count):
+                page = document.load_page(index)
+                text = page.get_text()
+                used_ocr = False
+                if len(text.strip()) < settings.OCR_CHAR_THRESHOLD_PER_PAGE and (
+                    page.get_images() or page.get_cdrawings()
+                ):
+                    ocr_text = OCRService.ocr_page(page)
+                    text = f"{text.strip()}\n{ocr_text}".strip()
+                    used_ocr = True
+                    ocr_pages += 1
+                if captions_left > 0 and cls._image_coverage(page) >= settings.VISION_MIN_IMAGE_COVERAGE:
+                    caption = vision.caption_image(OCRService.render_page(page))
+                    if caption:
+                        text += vision.caption_block(caption)
+                        captions += 1
+                    captions_left -= 1
+                # Let go of the page before reading the next one.
+                del page
+                if index % 25 == 24:
+                    fitz.TOOLS.store_shrink(100)
+                yield Segment(index + 1, text, ocr=used_ocr)
+
+            if ocr_pages:
+                info.update(
+                    {"ocr_applied": True, "ocr_provider": settings.OCR_PROVIDER, "ocr_pages": ocr_pages, "needs_ocr": True}
+                )
+            if captions:
+                info["vision_captions"] = captions
+        finally:
+            # Release the file handle (Windows keeps an open file locked).
+            document.close()
+            fitz.TOOLS.store_shrink(100)
+
+    # ---- one image --------------------------------------------------------
+
+    @classmethod
+    def _iter_image(cls, file_path: str, file_type: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """OCR the image, add a caption when vision is on, yield it once."""
+        from app.services import vision
+
+        result = cls.extract_image(file_path, file_type)
+        info.update(result.metadata)
+        info["needs_ocr"] = True
+        text = result.text
+        if vision.enabled() and "error" not in result.metadata:
+            with open(file_path, "rb") as handle:
+                caption = vision.caption_image(handle.read())
+            if caption:
+                text += vision.caption_block(caption)
+                info["vision_captions"] = 1
+        yield Segment(1, text, ocr=True)
+
+    # ---- rows, a batch at a time ----------------------------------------
+
+    @staticmethod
+    def _row_segment(title: str, header: Optional[str], rows: list, first_row: int, meta: dict) -> Segment:
+        """
+        A batch of rows as one segment. The column header is repeated at the
+        top of every batch after the first, so a chunk from row 40,000 still
+        says which column is "Budget" and which is "Actual".
+        """
+        last_row = first_row + len(rows) - 1
+        lines = [f"{title} (rows {first_row}-{last_row}):"] if title else []
+        if header is not None and first_row > 1:
+            lines.append(header)
+        lines.extend(rows)
+        return Segment(1, "\n".join(lines), meta={**meta, "rows": f"{first_row}-{last_row}"})
+
+    @classmethod
+    def _iter_csv(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """A CSV, INGESTION_ROWS_PER_SEGMENT rows at a time."""
+        per_segment = max(1, settings.INGESTION_ROWS_PER_SEGMENT)
+        total = 0
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as handle:
+                reader = csv.reader(handle)
+                header: Optional[str] = None
+                batch: list = []
+                first = 1
+                for row in reader:
+                    line = " , ".join(row)
+                    total += 1
+                    if header is None:
+                        header = line
+                    batch.append(line)
+                    if len(batch) >= per_segment:
+                        yield cls._row_segment("", header, batch, first, {})
+                        first += len(batch)
+                        batch = []
+                if batch:
+                    yield cls._row_segment("", header, batch, first, {})
+        except Exception as exc:
+            yield Segment(1, f"CSV extraction failed: {exc}")
+        info["row_count"] = total
+
+    @classmethod
+    def _iter_xlsx(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """
+        A workbook, sheet by sheet, INGESTION_ROWS_PER_SEGMENT rows at a time.
+
+        `read_only=True` makes openpyxl STREAM the sheet XML instead of
+        building every cell object up front -- the difference between a few
+        megabytes and a few gigabytes for a large sheet. `data_only=True` gives
+        each formula's calculated value, as in extract_xlsx.
+        """
+        per_segment = max(1, settings.INGESTION_ROWS_PER_SEGMENT)
+        try:
+            workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        except Exception as exc:
+            yield Segment(1, f"Excel extraction failed: {exc}")
+            return
+        try:
+            info["sheet_names"] = list(workbook.sheetnames)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                header: Optional[str] = None
+                batch: list = []
+                first = 1
+                for row in sheet.iter_rows(values_only=True):
+                    if not any(value is not None and value != "" for value in row):
+                        continue
+                    line = " | ".join("" if value is None else str(value) for value in row)
+                    if header is None:
+                        header = line
+                    batch.append(line)
+                    if len(batch) >= per_segment:
+                        yield cls._row_segment(f"Sheet '{sheet_name}'", header, batch, first, {"sheet": sheet_name})
+                        first += len(batch)
+                        batch = []
+                if batch:
+                    yield cls._row_segment(f"Sheet '{sheet_name}'", header, batch, first, {"sheet": sheet_name})
+        finally:
+            workbook.close()
+
+    # ---- long text, a slice at a time -------------------------------------
+
+    @classmethod
+    def _iter_text(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
+        """A text or Markdown file in ~256 KB slices, cut at line breaks."""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+                buffer: list = []
+                size = 0
+                for line in handle:
+                    buffer.append(line)
+                    size += len(line)
+                    if size >= cls._TEXT_SEGMENT_BYTES:
+                        yield Segment(1, "".join(buffer))
+                        buffer, size = [], 0
+                if buffer:
+                    yield Segment(1, "".join(buffer))
+        except Exception as exc:
+            yield Segment(1, f"Text extraction failed: {exc}")
 
     # ==================================================================
     # PDF  -- the most important format, and the only one needing OCR logic
