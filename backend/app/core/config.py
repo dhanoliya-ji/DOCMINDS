@@ -1035,18 +1035,24 @@ class Settings(BaseSettings):
     CONNECTOR_IMPORT_STALE_MINUTES: int = 15
 
     # ==================================================================
-    # 23. BILLING WITH STRIPE (optional) -- services/billing.py, api/v1/billing.py
+    # 23. BILLING WITH STRIPE OR RAZORPAY (optional) -- services/billing.py, api/v1/billing.py
     # ==================================================================
     # Three plans, each mapped onto the quotas of section 16:
     #   free  -> the QUOTA_* settings themselves (the override columns are
     #            cleared back to NULL)
     #   pro   -> BILLING_PLAN_LIMITS["pro"]
     #   team  -> BILLING_PLAN_LIMITS["team"]
-    # A plan change arrives as a SIGNED Stripe webhook and writes the limits
+    # A plan change arrives as a SIGNED provider webhook and writes the limits
     # onto the organization's own quota columns. Off by default: with
     # BILLING_ENABLED=false every /billing route answers 404, and quotas are
     # managed by hand exactly as before (docs/DEPLOYMENT.md, "Quotas").
     BILLING_ENABLED: bool = False
+    # Which payment provider NEW subscriptions go through. "stripe" (the
+    # default) or "razorpay" (India, where Stripe is not available). An
+    # organization already subscribed through the other provider keeps
+    # being managed there, and either provider's signed webhooks are
+    # accepted as long as its webhook secret is set.
+    BILLING_PROVIDER: Literal["stripe", "razorpay"] = "stripe"
     # From the Stripe dashboard: Developers -> API keys (sk_live_... or
     # sk_test_...), and Developers -> Webhooks -> your endpoint's signing
     # secret (whsec_...). Secrets: .env or the host's secret store only.
@@ -1057,6 +1063,19 @@ class Settings(BaseSettings):
     STRIPE_PRICE_TEAM: str = ""
     # A signed webhook older than this is refused (replay protection).
     STRIPE_WEBHOOK_TOLERANCE_SECONDS: int = 300
+    # Razorpay (BILLING_PROVIDER=razorpay). From the Razorpay dashboard
+    # (docs/DEPLOYMENT.md, "Billing with Razorpay"): Account & Settings ->
+    # API keys (rzp_test_... / rzp_live_... and its secret), Webhooks -> the
+    # secret YOU typed when adding the endpoint, and Subscriptions -> Plans
+    # -> the plan ids (plan_...) customers subscribe to.
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+    RAZORPAY_PLAN_PRO: str = ""
+    RAZORPAY_PLAN_TEAM: str = ""
+    # Razorpay subscriptions need a fixed number of billing cycles; 120
+    # monthly cycles is ten years. Lower it for a yearly plan.
+    RAZORPAY_TOTAL_COUNT: int = 120
     # What each paid plan allows. Keys are the quota names; 0 = unlimited.
     # From the environment, set it as JSON like LLM_PRICING.
     BILLING_PLAN_LIMITS: Dict[str, Dict[str, int]] = {
@@ -1071,7 +1090,9 @@ class Settings(BaseSettings):
             "max_storage_bytes": 250 * 1024 * 1024 * 1024,
         },
     }
-    # Shown on the upgrade page only; Stripe Checkout shows the real price.
+    # Shown on the upgrade page only; the provider's checkout shows the real
+    # price. With Razorpay, set INR labels, e.g.
+    #   {"free": "₹0", "pro": "₹2,499 / month", "team": "₹7,999 / month"}
     BILLING_PRICE_LABELS: Dict[str, str] = {"free": "$0", "pro": "$29 / month", "team": "$99 / month"}
 
     # ==================================================================

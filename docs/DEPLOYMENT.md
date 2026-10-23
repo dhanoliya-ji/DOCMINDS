@@ -174,14 +174,33 @@ Imported documents count against the same document and storage quotas as uploads
 
 ## Billing
 
-Off by default. With Stripe:
+Off by default. Two providers: **Stripe** (`BILLING_PROVIDER=stripe`, the default) and **Razorpay** (`BILLING_PROVIDER=razorpay`, for India, where Stripe is not available). Pick one for new subscriptions; an organization already subscribed through the other keeps being managed there, and both webhooks share the one endpoint.
+
+### Billing with Stripe
 
 1. Create two recurring prices (Pro, Team) and set `STRIPE_PRICE_PRO` / `STRIPE_PRICE_TEAM`, and `STRIPE_SECRET_KEY`.
 2. Add a webhook endpoint `https://<your API>/api/v1/billing/webhook` for `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`, and set its signing secret as `STRIPE_WEBHOOK_SECRET`.
 3. Enable the Customer Portal in the Stripe dashboard (Settings → Billing → Customer portal), including plan switching if you want customers to move between Pro and Team themselves.
 4. Set `BILLING_ENABLED=true` and, if the defaults do not fit, `BILLING_PLAN_LIMITS` and `BILLING_PRICE_LABELS`.
 
-Plans write the quota columns described under [Quotas](#quotas): a paid plan overwrites any manual override for that organization, and Free (including a cancellation) clears the columns back to NULL. For a custom contract, leave the organization off Stripe and set its columns by hand. Stripe retries a webhook that does not answer 2xx, and each event id is applied only once, so retries are safe.
+### Billing with Razorpay
+
+Do everything first in **Test Mode** (the mode toggle at the top of the [Razorpay dashboard](https://dashboard.razorpay.com)); test and live mode have separate plans, keys and webhooks, so repeat steps 1-3 in Live Mode once the account is activated (KYC done) and Subscriptions are enabled for it.
+
+1. **Plans**: *Subscriptions → Plans → Create Plan*, once for Pro and once for Team: a plan name, billing frequency *Monthly* (every 1 month), the price in INR, then *Create*. Copy each plan id (`plan_...`) into `RAZORPAY_PLAN_PRO` / `RAZORPAY_PLAN_TEAM`.
+2. **API keys**: *Account & Settings → API Keys → Generate Key* (Test: `rzp_test_...`, Live: `rzp_live_...`). Copy the Key Id into `RAZORPAY_KEY_ID` and the Key Secret, shown only once, into `RAZORPAY_KEY_SECRET`.
+3. **Webhook**: *Account & Settings → Webhooks → Add New Webhook*:
+   - Webhook URL: `https://<your API>/api/v1/billing/webhook`
+   - Secret: a long random value you generate (`python -c "import secrets; print(secrets.token_urlsafe(32))"`); put the same value in `RAZORPAY_WEBHOOK_SECRET`
+   - Active events: `subscription.activated`, `subscription.charged`, `subscription.cancelled`, `subscription.halted`, `subscription.completed`
+4. Set `BILLING_ENABLED=true`, `BILLING_PROVIDER=razorpay`, and INR labels, e.g. `BILLING_PRICE_LABELS={"free": "₹0", "pro": "₹2,499 / month", "team": "₹7,999 / month"}` (display only; Razorpay's page shows the real amount). On Render these are commented in `render.yaml` (secrets `sync: false`).
+5. Test: as an organization admin open **Settings → Plan and billing → Upgrade to Pro**; you are sent to Razorpay's subscription page. Pay with Razorpay's test-mode card or UPI details; within seconds the webhook moves the organization to Pro (the dashboard's *Webhooks* page shows each delivery). **Cancel subscription** stops renewal at the end of the paid cycle, when `subscription.cancelled` moves it back to Free.
+
+A Razorpay subscription runs for `RAZORPAY_TOTAL_COUNT` cycles (default 120 monthly = ten years). Razorpay cannot switch a running UPI / card mandate to another plan, so to move between Pro and Team an admin cancels first and subscribes again once the cancellation is accepted.
+
+### Plans and quotas
+
+Plans write the quota columns described under [Quotas](#quotas): a paid plan overwrites any manual override for that organization, and Free (including a cancellation) clears the columns back to NULL. For a custom contract, leave the organization off the payment provider and set its columns by hand. Both providers retry a webhook that does not answer 2xx, and each event id is applied only once, so retries are safe.
 
 ## Admin dashboard
 
@@ -275,4 +294,6 @@ Admins of an organisation see their month at `GET /api/v1/org/usage`: requests, 
 | The provider says "redirect_uri mismatch" | The registered redirect URI differs from the one DocMinds sends | Register `<API>/api/v1/integrations/callback/<provider>` exactly, or set `CONNECTOR_REDIRECT_BASE_URL` |
 | Every connection shows "Needs reconnecting" after a deploy | `CONNECTOR_ENCRYPTION_KEY` (or, without it, `SECRET_KEY`) changed | Restore the old key as the second entry of `CONNECTOR_ENCRYPTION_KEY`, or reconnect |
 | Stripe shows webhook deliveries failing with `400` | `STRIPE_WEBHOOK_SECRET` is not that endpoint's signing secret, or the server clock is off by more than `STRIPE_WEBHOOK_TOLERANCE_SECONDS` | Copy the secret from the endpoint's page; check the clock |
-| Paid in Checkout, but the plan still says Free | The webhook has not arrived or was refused | Check the endpoint's deliveries in the Stripe dashboard |
+| Paid in Checkout, but the plan still says Free | The webhook has not arrived or was refused | Check the endpoint's deliveries in the Stripe (or Razorpay *Webhooks*) dashboard |
+| Razorpay webhook deliveries fail with `400` | `RAZORPAY_WEBHOOK_SECRET` differs from the secret typed on the webhook, or the webhook was added in the other mode (test / live) | Edit the webhook and set the secret again; keep test keys with test plans and webhooks |
+| "Upgrade" answers that an active subscription exists (Razorpay) | Razorpay cannot change a running subscription's plan | Cancel subscription first, then choose the new plan |

@@ -935,7 +935,7 @@ Sentry is optional: with `SENTRY_DSN` set, the API (Starlette/FastAPI integratio
 
 ## Cloud imports, billing and the admin dashboard
 
-Three optional features, each off by default and answering `404` on every route until it is switched on: `CONNECTORS_ENABLED` (cloud imports), `BILLING_ENABLED` (Stripe plans) and `ADMIN_DASHBOARD_ENABLED`. The frontend probes each one and hides what is off, so it needs no setting of its own. Their tables come from migration `b3d5f7a9c1e2`.
+Three optional features, each off by default and answering `404` on every route until it is switched on: `CONNECTORS_ENABLED` (cloud imports), `BILLING_ENABLED` (Stripe or Razorpay plans) and `ADMIN_DASHBOARD_ENABLED`. The frontend probes each one and hides what is off, so it needs no setting of its own. Their tables come from migration `b3d5f7a9c1e2`.
 
 ### Cloud imports
 
@@ -1010,7 +1010,7 @@ Only a changed revision costs a download, and only changed bytes cost an embeddi
 
 ### Billing
 
-`services/billing.py` maps the plans `free`, `pro` and `team` onto the three quotas `services/usage.py` already enforces: `free` clears the organisation's override columns, so it behaves exactly as without billing; `pro` and `team` write `BILLING_PLAN_LIMITS`. There is no Stripe SDK: Checkout, the Customer Portal and the webhook check are a few httpx calls and one HMAC.
+`services/billing.py` maps the plans `free`, `pro` and `team` onto the three quotas `services/usage.py` already enforces: `free` clears the organisation's override columns, so it behaves exactly as without billing; `pro` and `team` write `BILLING_PLAN_LIMITS`. Two providers implement one small interface (`BillingProvider`: checkout, portal / cancel, verify + parse webhook): Stripe, and Razorpay for India (`BILLING_PROVIDER`). Each translates its signed webhooks into a provider-neutral `BillingUpdate`, so plan mapping, idempotency and auditing are shared; `organizations.billing_provider` (migration `d7f9a1c3e5b8`) records which provider holds a subscription. There is no payment SDK: a few httpx calls and one HMAC per provider. The diagram shows Stripe; with Razorpay the admin is sent to the subscription's `short_url`, and the webhook carries `X-Razorpay-Signature` (HMAC-SHA256 of the raw body) and `x-razorpay-event-id`.
 
 The plan changes only through a verified webhook, never from what the browser says, including the Checkout success redirect.
 
@@ -1124,8 +1124,9 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `POST` | `/api/v1/integrations/connections/{id}/sync`, `/documents/{id}/sync` | Sync now |
 | `GET` / `PATCH` | `/api/v1/integrations/documents`, `/documents/{id}` | Imported documents with sync status / auto-sync on or off |
 | `GET` | `/api/v1/billing` | Plan, limits and subscription status (`404` while `BILLING_ENABLED` is off) |
-| `POST` | `/api/v1/billing/checkout`, `/billing/portal` | Stripe Checkout or Customer Portal URL (admin) |
-| `POST` | `/api/v1/billing/webhook` | Stripe events; signature-checked and idempotent, not in the schema |
+| `POST` | `/api/v1/billing/checkout`, `/billing/portal` | Stripe Checkout / Razorpay subscription link, or the Stripe Customer Portal URL (admin) |
+| `POST` | `/api/v1/billing/cancel` | Cancel at the end of the paid period (admin) |
+| `POST` | `/api/v1/billing/webhook` | Stripe and Razorpay events; signature-checked and idempotent, not in the schema |
 | `GET` | `/api/v1/analytics/overview` | Admin dashboard series (`days`); also `/usage`, `/documents`, `/active-users`, `/feedback`, `/top-questions` (admin; `404` while `ADMIN_DASHBOARD_ENABLED` is off) |
 | `GET` | `/api/v1/health/ready` | Readiness: per-component status of the database, Redis and (Celery mode) a worker; `503` when a hard dependency is down |
 

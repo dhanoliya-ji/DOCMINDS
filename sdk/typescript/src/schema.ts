@@ -443,6 +443,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel
+         * @description Stop renewing. The plan stays until the end of the paid period, when
+         *     the provider's signed webhook moves the organization back to free.
+         */
+        post: operations["cancel_api_v1_billing_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/checkout": {
         parameters: {
             query?: never;
@@ -2054,6 +2075,16 @@ export interface components {
         };
         /** BillingStatus */
         BillingStatus: {
+            /**
+             * Can Cancel
+             * @default false
+             */
+            can_cancel: boolean;
+            /**
+             * Can Manage
+             * @default false
+             */
+            can_manage: boolean;
             /** Has Customer */
             has_customer: boolean;
             limits: components["schemas"]["PlanLimits"];
@@ -2061,6 +2092,12 @@ export interface components {
             plan: string;
             /** Plans */
             plans: components["schemas"]["PlanOut"][];
+            /**
+             * Provider
+             * @default stripe
+             * @enum {string}
+             */
+            provider: "stripe" | "razorpay";
             /** Renews At */
             renews_at?: string | null;
             /** Subscription Status */
@@ -4500,6 +4537,26 @@ export interface operations {
         };
     };
     get_billing_api_v1_billing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStatus"];
+                };
+            };
+        };
+    };
+    cancel_api_v1_billing_cancel_post: {
         parameters: {
             query?: never;
             header?: never;

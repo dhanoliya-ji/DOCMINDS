@@ -105,9 +105,18 @@ class Organization(Base):
     # admin can call -- the same reason the quota columns above are not.
     # A paid plan also writes its limits into the three quota columns.
     plan: Mapped[str] = mapped_column(String(16), nullable=False, default="free", server_default="free")
+    # Which provider holds this organization's subscription: "stripe",
+    # "razorpay", or NULL (never subscribed; rows from before Razorpay
+    # support that have a Stripe id were backfilled to "stripe").
+    billing_provider: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # The Stripe customer (Stripe only -- Razorpay subscriptions need none).
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    # The PROVIDER's subscription id: Stripe's or Razorpay's "sub_...". The
+    # column kept its original name; billing_provider says whose it is.
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # Stripe's subscription status: active, trialing, past_due, canceled...
+    # The provider's subscription status: active, trialing, past_due,
+    # canceled (Stripe), halted, cancelled, completed (Razorpay), plus our
+    # own "cancelling" once a cancel-at-period-end was accepted.
     subscription_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # When the current paid period ends (renews, or lapses if cancelled).
     plan_renews_at: Mapped[Optional[datetime.datetime]] = mapped_column(

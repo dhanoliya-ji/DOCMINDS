@@ -4,9 +4,9 @@ schemas/integrations.py
 Request and response shapes for cloud imports (api/v1/integrations.py),
 billing (api/v1/billing.py) and the admin dashboard (api/v1/analytics.py).
 
-No response ever carries an OAuth token, a Stripe secret or a raw Stripe
-object: connections are described by provider, account label and status
-only.
+No response ever carries an OAuth token, a Stripe or Razorpay secret or a
+raw provider object: connections are described by provider, account label
+and status only.
 """
 
 import datetime
@@ -154,9 +154,15 @@ class PlanOut(BaseModel):
 
 class BillingStatus(BaseModel):
     plan: str
+    # The provider new subscriptions go through (BILLING_PROVIDER).
+    provider: Literal["stripe", "razorpay"] = "stripe"
     subscription_status: Optional[str] = None
     renews_at: Optional[datetime.datetime] = None
     has_customer: bool
+    # Stripe: POST /billing/portal opens the Customer Portal.
+    can_manage: bool = False
+    # Razorpay: POST /billing/cancel cancels at the end of the paid cycle.
+    can_cancel: bool = False
     limits: PlanLimits
     plans: List[PlanOut]
 
