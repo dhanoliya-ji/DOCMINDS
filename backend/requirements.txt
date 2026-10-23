@@ -103,6 +103,13 @@ pillow==13.0.0
 #            genuinely 500 tokens rather than 500 characters.
 tiktoken==0.14.0
 
+# numpy : the PCA behind the 3D embedding map (services/embedding_map.py).
+#            Listed directly, not left to arrive with sentence-transformers:
+#            the hosted-embeddings image (EMBEDDING_PROVIDER=gemini) leaves
+#            sentence-transformers out, and without this line the API crashed
+#            on start-up with "No module named 'numpy'".
+numpy==2.3.2
+
 # sentence-transformers : runs the embedding model LOCALLY on this server.
 #            This is our default provider: free, no API key, works offline, and
 #            document text never leaves the machine.
