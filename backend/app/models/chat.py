@@ -154,6 +154,17 @@ class ChatMessage(Base):
         JSONB, default=list, server_default="[]", nullable=False
     )
 
+    # How far the answer can be trusted, worked out from the retrieval scores
+    # and how much of it is backed by citations (services/confidence.py):
+    #     {"level": "high"|"medium"|"low", "score": 0.0-1.0,
+    #      "retrieval": 0.0-1.0, "coverage": 0.0-1.0,
+    #      "reasons": [{"code": "strong_match", "value": 0.82}, ...]}
+    # Stored rather than recomputed so a reopened or shared answer shows the
+    # verdict it was given at the time, even if the formula is tuned later.
+    # NULL on user messages and on answers saved before migration
+    # b8d0f2a4c6e8.
+    confidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

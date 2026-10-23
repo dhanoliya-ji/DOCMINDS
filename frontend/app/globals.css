@@ -118,6 +118,39 @@
     --wash-2: rgba(168, 85, 247, 0.08);
     --overlay: rgba(15, 23, 42, 0.45);
     --scrollbar: rgba(15, 23, 42, 0.18);
+
+    /* Chart series, light steps of the same eight hues (AnswerChart.tsx). */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #6250d6;
+    --series-8: #e34948;
+    --chart-surface: #ffffff;
+    --chart-grid: rgba(15, 23, 42, 0.1);
+  }
+
+  /* ====================================================================
+     CHART SERIES (dark, the default theme)
+     --------------------------------------------------------------------
+     A fixed categorical order, never cycled: series N is always hue N. The
+     dark steps are the same hues re-stepped for the dark surface and
+     validated against it (adjacent CVD separation >= 8). Charts drawn
+     from answers use no more than eight series.
+     ==================================================================== */
+  :root:not([data-theme="light"]) {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --chart-surface: #12141c;
+    --chart-grid: rgba(255, 255, 255, 0.08);
   }
 
   /* ====================================================================
@@ -561,4 +594,37 @@
   .lift-card:focus-within {
     transform: none;
   }
+}
+
+/* ======================================================================
+   ANSWER MARKDOWN: tables (remark-gfm) inside assistant answers
+   ====================================================================== */
+.answer-table-wrap {
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.6rem;
+}
+.answer-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8rem;
+}
+.answer-table-wrap th,
+.answer-table-wrap td {
+  padding: 0.4rem 0.65rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+.answer-table-wrap th {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.answer-table-wrap tr:last-child td {
+  border-bottom: none;
+}
+.answer-table-wrap td {
+  font-variant-numeric: tabular-nums;
 }

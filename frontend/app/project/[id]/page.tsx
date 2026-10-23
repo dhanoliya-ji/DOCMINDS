@@ -33,6 +33,12 @@
  * everything has settled, the polling stops on its own so we are not making
  * pointless requests forever.
  *
+ * COMPARE AND SHARE
+ * -----------------
+ * A fourth tab compares two ready documents (ComparePanel). Editors and
+ * admins can also make a public read-only link to the project -- its name
+ * and the list of its documents, nothing else (ShareDialog).
+ *
  * LAYOUT AND FIRST RUN
  * --------------------
  * Wrapped in <AppShell>. A project with no documents shows a first-run empty
@@ -47,6 +53,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
   Check,
+  GitCompare,
+  Share2,
   FileUp,
   CheckCircle2,
   Clock,
@@ -67,15 +75,17 @@ import AppShell from "@/components/app/AppShell";
 import LogoLoader from "@/components/app/LogoLoader";
 import { FirstRunEmpty, GuidedTour, type TourStep } from "@/components/app/Onboarding";
 import ChatPanel from "@/components/ChatPanel";
+import ComparePanel from "@/components/ComparePanel";
 import DocumentActions from "@/components/DocumentActions";
 import SearchPanel from "@/components/SearchPanel";
+import ShareDialog from "@/components/ShareDialog";
 import UploadZone from "@/components/UploadZone";
 import { api, DocumentItem, getErrorMessage, getToken } from "@/lib/api";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
-/** The three tabs of the workspace. */
-type Tab = "documents" | "search" | "chat";
+/** The four tabs of the workspace. */
+type Tab = "documents" | "search" | "chat" | "compare";
 
 /** Example files shown on a fresh project, to suggest what is worth uploading. */
 const SAMPLE_UPLOADS = ["Employee handbook.pdf", "Contract.docx", "Pricing.xlsx", "Scanned receipt.jpg"];
@@ -132,6 +142,7 @@ export default function ProjectPage({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   // ------------------------------------------------------------------
   // FETCH THE DOCUMENT LIST
@@ -331,6 +342,15 @@ export default function ProjectPage({
                 >
                   <Pencil size={14} />
                 </button>
+                <button
+                  type="button"
+                  className="rounded p-1.5 hover:bg-white/5"
+                  onClick={() => setSharing(true)}
+                  aria-label="Share project"
+                  title="Share project"
+                >
+                  <Share2 size={14} />
+                </button>
                 {confirmDelete ? (
                   <>
                     <button
@@ -376,6 +396,7 @@ export default function ProjectPage({
             { key: "documents", label: "Documents", icon: FileText },
             { key: "search", label: "Search", icon: Search },
             { key: "chat", label: "Ask AI", icon: MessageSquare },
+            { key: "compare", label: "Compare", icon: GitCompare },
           ] as const
         ).map((item) => {
           const Icon = item.icon;
@@ -607,10 +628,14 @@ export default function ProjectPage({
                 message="Upload a document and wait for processing to finish, then ask questions about it."
               />
             ) : (
-              <ChatPanel projectId={projectId} documents={readyDocuments} />
+              <ChatPanel projectId={projectId} documents={readyDocuments} canShareOrgPrompts={mayUpload} />
             ))}
+
+          {/* ================= COMPARE ================= */}
+          {tab === "compare" && <ComparePanel documents={readyDocuments} />}
         </motion.div>
       </AnimatePresence>
+      {sharing && <ShareDialog kind="project" targetId={projectId} onClose={() => setSharing(false)} />}
     </AppShell>
   );
 }

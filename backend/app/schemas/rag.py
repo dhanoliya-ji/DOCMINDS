@@ -281,6 +281,10 @@ class ChatMessageOut(BaseModel):
     model: Optional[str] = None
     steps: List[Dict[str, Any]] = []
 
+    # The high / medium / low verdict and its reasons (services/confidence.py).
+    # None on user messages and on answers saved before migration b8d0f2a4c6e8.
+    confidence: Optional[Dict[str, Any]] = None
+
     created_at: datetime.datetime
 
 
@@ -315,6 +319,10 @@ class ChatResponse(BaseModel):
     # (services/query_rewrite.py); None in agent mode, which searches with
     # queries of its own choosing.
     search_query: Optional[str] = None
+
+    # The same verdict as assistant_message.confidence, at the top level for
+    # API clients that read only the summary fields.
+    confidence: Optional[Dict[str, Any]] = None
 
 
 class FeedbackCreate(BaseModel):

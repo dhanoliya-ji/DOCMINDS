@@ -43,6 +43,7 @@ import { useCallback, useSyncExternalStore } from "react";
 
 import auth from "./auth";
 import chat from "./chat";
+import collab from "./collab";
 import shell from "./shell";
 import upload from "./upload";
 
@@ -59,7 +60,7 @@ export type AreaMessages = { en: Dictionary; hi: Partial<Dictionary> };
 
 /** Every area's strings, merged per language. */
 const MESSAGES: Record<Locale, Dictionary> = { en: {}, hi: {} };
-for (const area of [auth, chat, shell, upload] as AreaMessages[]) {
+for (const area of [auth, chat, collab, shell, upload] as AreaMessages[]) {
   Object.assign(MESSAGES.en, area.en);
   Object.assign(MESSAGES.hi, area.hi);
 }

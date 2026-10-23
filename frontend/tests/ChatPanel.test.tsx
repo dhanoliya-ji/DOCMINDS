@@ -124,6 +124,7 @@ type Handlers = {
   onStep?: (s: unknown) => void;
   onCitations?: (c: unknown[]) => void;
   onToken?: (t: string) => void;
+  onReset?: () => void;
 };
 
 /** A streamQuestion fake: sources, then the answer word by word, then done. */
@@ -911,5 +912,42 @@ describe("agentPhase", () => {
     expect(agentPhase([agentStep("list_documents", "x")], "")).toBe("read");
     expect(agentPhase([agentStep("search_documents", "x")], "")).toBe("search");
     expect(agentPhase([agentStep("read_document_section", "x")], "words")).toBe("summarise");
+  });
+});
+
+describe("collaboration in the chat", () => {
+  it("clears the draft when Deep research resets it", async () => {
+    const stream = controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "A question");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+
+    act(() => stream.handlers.onToken?.("Let me look that up."));
+    expect(await screen.findByText("Let me look that up.")).toBeInTheDocument();
+    act(() => stream.handlers.onReset?.());
+    act(() => stream.handlers.onToken?.("Twenty days."));
+    expect(await screen.findByText("Twenty days.")).toBeInTheDocument();
+    expect(screen.queryByText(/Let me look that up/)).toBeNull();
+    await act(async () => stream.finish(answer("Twenty days.")));
+  });
+
+  it("shows the confidence verdict and offers to share the answer", async () => {
+    streamQuestion.mockImplementation(
+      streams("Twenty days [1].", [citation(1)], {
+        assistant_message: {
+          id: "assistant-1", session_id: "session-1", role: "assistant", content: "Twenty days [1].",
+          citations: [], created_at: new Date().toISOString(),
+          confidence: { level: "high", score: 0.8, retrieval: 0.8, coverage: 1, reasons: [] },
+        },
+      })
+    );
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "Leave?");
+    expect(await screen.findByRole("button", { name: /high confidence/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Share this answer" })).toBeInTheDocument();
+    // The whole conversation can be shared from the toolbar once it exists.
+    expect(screen.getByRole("button", { name: /^share$/i })).toBeEnabled();
   });
 });

@@ -95,6 +95,8 @@ LIMITS: Dict[str, Tuple[str, str]] = {
     "chat": ("RATE_LIMIT_CHAT", "questions"),
     "search": ("RATE_LIMIT_SEARCH", "searches"),
     "upload": ("RATE_LIMIT_UPLOAD", "uploads"),
+    "share_view": ("RATE_LIMIT_SHARE_VIEW", "shared-link views from this address"),
+    "compare": ("RATE_LIMIT_COMPARE", "document comparisons"),
 }
 
 

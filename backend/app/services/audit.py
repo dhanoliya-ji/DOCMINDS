@@ -21,6 +21,7 @@ THE ACTIONS WRITTEN TODAY
     document.upload  document.delete  document.rename  document.reindex
     project.create  project.rename  project.delete
     api_key.create  api_key.revoke
+    share.create  share.revoke
 
 WEBHOOKS
 --------

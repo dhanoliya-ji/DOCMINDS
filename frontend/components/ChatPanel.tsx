@@ -48,6 +48,16 @@
  * stream itself (the latest step's tool, then the first token), so it is
  * never a guess. Static under prefers-reduced-motion.
  *
+ * SHARING, PROMPTS, CONFIDENCE, CHARTS
+ * ------------------------------------
+ * Every answer carries a confidence badge with its reasons
+ * (ConfidenceBadge.tsx) and a Share button that makes a public read-only
+ * link (ShareDialog.tsx); the toolbar shares the whole conversation. The
+ * Prompts menu (PromptLibrary.tsx) inserts a saved prompt into the box.
+ * Answers render tables and ```chart blocks (AnswerMarkdown.tsx). In Deep
+ * research the answer now streams token by token; a "reset" event means
+ * the text so far was not the answer, and the draft is cleared.
+ *
  * WHY CITATIONS ARE THE POINT
  * ---------------------------
  * An AI answer you cannot verify is worth very little in a workplace. Every
@@ -67,6 +77,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Share2,
   FileText,
   History,
   ListChecks,
@@ -79,11 +90,14 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 
 import AgentStepIndicator, { agentPhase } from "@/components/AgentStepIndicator";
+import AnswerMarkdown from "@/components/AnswerMarkdown";
 import ChatSidebar from "@/components/ChatSidebar";
+import ConfidenceBadge from "@/components/ConfidenceBadge";
 import DocumentFilter from "@/components/DocumentFilter";
+import PromptLibrary from "@/components/PromptLibrary";
+import ShareDialog from "@/components/ShareDialog";
 import SourceViewer, { SourceRef } from "@/components/SourceViewer";
 import {
   AgentStep,
@@ -92,6 +106,7 @@ import {
   ChatSessionItem,
   CitationItem,
   DocumentItem,
+  ShareKind,
   api,
   getErrorMessage,
 } from "@/lib/api";
@@ -108,6 +123,8 @@ interface Props {
   projectId: string;
   /** The project's searchable documents, for the "only these files" filter. */
   documents?: DocumentItem[];
+  /** May this user save prompts to the organization's library (editor+)? */
+  canShareOrgPrompts?: boolean;
 }
 
 /** Example questions offered on an empty conversation, to get people started. */
@@ -171,7 +188,7 @@ function toggled(current: Set<string>, id: string): Set<string> {
   return next;
 }
 
-export default function ChatPanel({ projectId, documents = [] }: Props) {
+export default function ChatPanel({ projectId, documents = [], canShareOrgPrompts = false }: Props) {
   const { t } = useT();
   // ---- History ----
   const [sessions, setSessions] = useState<ChatSessionItem[]>([]);
@@ -210,6 +227,10 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
   // The source open in the viewer, and which answer was just copied.
   const [viewing, setViewing] = useState<SourceRef | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  // What the share dialog is open for, if anything.
+  const [sharing, setSharing] = useState<{ kind: ShareKind; id: string } | null>(null);
+  // The composer, so an inserted prompt can take the focus.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // The empty div at the bottom of the message list, used as a scroll target.
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -364,6 +385,8 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
           onStep: (step: AgentStep) => updateDraft((m) => ({ ...m, steps: [...(m.steps ?? []), step] })),
           onCitations: (citations) => updateDraft((m) => ({ ...m, citations })),
           onToken: (piece) => updateDraft((m) => ({ ...m, content: m.content + piece })),
+          // Deep research: that text was not the final answer after all.
+          onReset: () => updateDraft((m) => ({ ...m, content: "" })),
         }
       );
 
@@ -468,6 +491,15 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
           <button
             type="button"
             className="btn-ghost text-xs"
+            onClick={() => sessionId && setSharing({ kind: "session", id: sessionId })}
+            disabled={!sessionId || messages.length === 0 || sending}
+            title={t("share.conversation")}
+          >
+            <Share2 size={13} aria-hidden="true" /> {t("share.button")}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost text-xs"
             onClick={exportConversation}
             disabled={messages.length === 0 || sending}
             title={t("chat.exportTitle")}
@@ -555,10 +587,8 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                       // `whitespace-pre-wrap` preserves the user's own line breaks.
                       <div className="whitespace-pre-wrap">{message.content}</div>
                     ) : (
-                      // The model writes Markdown, so we render it.
-                      <div className="prose-invert space-y-2">
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
-                      </div>
+                      // The model writes Markdown -- with tables and charts.
+                      <AnswerMarkdown>{message.content}</AnswerMarkdown>
                     )}
                   </div>
 
@@ -572,6 +602,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                           </span>
                         )}
                         {isDraft && <span>Writing...</span>}
+                        {!isDraft && <ConfidenceBadge confidence={message.confidence} />}
                         {message.model && !isDraft && <span title="Model">{message.model}</span>}
                         {message.latency !== null && message.latency !== undefined && (
                           <span>{message.latency}s</span>
@@ -589,6 +620,16 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                               {copied === message.id ? <Check size={12} /> : <Copy size={12} />}
                               {copied === message.id ? "Copied" : null}
                             </button>
+                            {!message.id.startsWith("temp-") && (
+                              <button
+                                onClick={() => setSharing({ kind: "message", id: message.id })}
+                                className="flex items-center gap-1 transition-colors"
+                                title={t("share.answer")}
+                                aria-label={t("share.answer")}
+                              >
+                                <Share2 size={12} />
+                              </button>
+                            )}
                             <button
                               onClick={() => rate(message.id, 1)}
                               className="transition-colors hover:text-emerald-400"
@@ -809,7 +850,17 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
         </div>
 
         <div className="mt-2 flex items-end gap-2">
+          <PromptLibrary
+            draft={input}
+            canShare={canShareOrgPrompts}
+            disabled={sending}
+            onInsert={(body) => {
+              setInput(body);
+              inputRef.current?.focus();
+            }}
+          />
           <textarea
+            ref={inputRef}
             className="input resize-none py-3"
             rows={1}
             placeholder={t("chat.placeholder")}
@@ -847,6 +898,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
       </div>
 
       {viewing && <SourceViewer source={viewing} onClose={() => setViewing(null)} />}
+      {sharing && <ShareDialog kind={sharing.kind} targetId={sharing.id} onClose={() => setSharing(null)} />}
     </div>
   );
 }

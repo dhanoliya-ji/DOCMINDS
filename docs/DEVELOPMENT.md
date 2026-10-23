@@ -165,7 +165,7 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`). With `ENV=production` the app refuses to start if it is the committed default or shorter than 32 characters |
+| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`). With `ENV=production` the app refuses to start if it is the committed default or shorter than 32 characters. It also keys the HMAC of public share-link tokens, so rotating it revokes every share link at once |
 | `ALGORITHM` | `HS256` | JWT signing algorithm |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifetime; also how long a signed-out token stays on the denylist |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime. Refresh tokens are stored hashed and rotated on every use |
@@ -258,6 +258,8 @@ Over a limit, the endpoint answers `429` with `Retry-After` (seconds) and `X-Rat
 | `RATE_LIMIT_CHAT` | `30/minute` | Per user, asking a question |
 | `RATE_LIMIT_SEARCH` | `60/minute` | Per user, `POST /search/` |
 | `RATE_LIMIT_UPLOAD` | `30/minute` | Per user, upload requests |
+| `RATE_LIMIT_SHARE_VIEW` | `120/minute` | Per IP, views of public share links (`/share/<token>`) |
+| `RATE_LIMIT_COMPARE` | `10/minute` | Per user, document comparisons |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies you control in front of the API. With N > 0 the client IP is the Nth `X-Forwarded-For` entry from the right; 0 ignores the header and uses the TCP peer |
 | `CLIENT_IP_HEADER` | *(empty)* | A header your proxy or CDN overwrites with the client IP (e.g. `CF-Connecting-IP`); wins when present. Only set it if every request passes through that proxy |
 

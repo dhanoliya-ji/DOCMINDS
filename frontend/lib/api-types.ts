@@ -493,6 +493,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compare
+         * @description Compare two documents and list what was added, removed or changed.
+         */
+        post: operations["compare_api_v1_compare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/": {
         parameters: {
             query?: never;
@@ -1052,6 +1072,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Prompts
+         * @description Built-ins first, then mine, then the organization's.
+         */
+        get: operations["list_prompts_api_v1_prompts_get"];
+        put?: never;
+        /**
+         * Create Prompt
+         * @description Save a prompt to my library, or (editor+) to the organization's.
+         */
+        post: operations["create_prompt_api_v1_prompts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompts/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Prompt */
+        delete: operations["delete_prompt_api_v1_prompts__template_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Prompt */
+        patch: operations["update_prompt_api_v1_prompts__template_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/public/shares/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View Shared
+         * @description Read a shared answer, conversation or project. No login needed.
+         */
+        get: operations["view_shared_api_v1_public_shares__token__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/search/": {
         parameters: {
             query?: never;
@@ -1074,6 +1156,55 @@ export interface paths {
          */
         post: operations["semantic_search_api_v1_search__post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Share Links
+         * @description The links the caller may manage, newest first.
+         *
+         *     With kind + target_id: every link to that target (the share dialog's
+         *     list), provided the caller may share it. Without: the links the caller
+         *     made -- or, for an admin, every link in the organization.
+         */
+        get: operations["list_share_links_api_v1_shares_get"];
+        put?: never;
+        /**
+         * Create Share Link
+         * @description Make a public read-only link. The token is returned in THIS response
+         *     only -- store or copy it now; the server keeps just its HMAC.
+         */
+        post: operations["create_share_link_api_v1_shares_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Share Link
+         * @description Revoke a link. It stops working at once; the row stays for the record.
+         */
+        delete: operations["revoke_share_link_api_v1_shares__share_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1555,6 +1686,10 @@ export interface components {
             citations: {
                 [key: string]: unknown;
             }[];
+            /** Confidence */
+            confidence?: {
+                [key: string]: unknown;
+            } | null;
             /** Content */
             content: string;
             /**
@@ -1629,6 +1764,10 @@ export interface components {
             assistant_message: components["schemas"]["ChatMessageOut"];
             /** Citations */
             citations: components["schemas"]["Citation"][];
+            /** Confidence */
+            confidence?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Mode
              * @default rag
@@ -1768,6 +1907,121 @@ export interface components {
             score: number;
             /** Snippet */
             snippet: string;
+        };
+        /** ComparedDocument */
+        ComparedDocument: {
+            /** Filename */
+            filename: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+        };
+        /** ComparisonCitation */
+        ComparisonCitation: {
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Filename */
+            filename: string;
+            /** Label */
+            label: string;
+            /** Number */
+            number: number;
+            /** Page Number */
+            page_number?: number | null;
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "a" | "b";
+            /** Snippet */
+            snippet: string;
+        };
+        /** ComparisonOut */
+        ComparisonOut: {
+            /** Alignment */
+            alignment: string;
+            /** Citations */
+            citations: components["schemas"]["ComparisonCitation"][];
+            /** Differences */
+            differences: components["schemas"]["Difference"][];
+            document_a: components["schemas"]["ComparedDocument"];
+            document_b: components["schemas"]["ComparedDocument"];
+            /**
+             * Identical
+             * @default 0
+             */
+            identical: number;
+            /**
+             * Latency
+             * @default 0
+             */
+            latency: number;
+            /** Model */
+            model: string;
+            /**
+             * Pairs
+             * @default 0
+             */
+            pairs: number;
+            /** Summary */
+            summary: string;
+            /**
+             * Tokens Used
+             * @default 0
+             */
+            tokens_used: number;
+        };
+        /** ComparisonRequest */
+        ComparisonRequest: {
+            /**
+             * Document A
+             * Format: uuid
+             * @description The first (usually older) document.
+             */
+            document_a: string;
+            /**
+             * Document B
+             * Format: uuid
+             * @description The second (usually newer) document.
+             */
+            document_b: string;
+            /**
+             * Focus
+             * @description Optional: compare only what concerns this, e.g. "termination".
+             */
+            focus?: string | null;
+        };
+        /** Difference */
+        Difference: {
+            /**
+             * A
+             * @default []
+             */
+            a: number[];
+            /**
+             * B
+             * @default []
+             */
+            b: number[];
+            /** Detail */
+            detail: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "added" | "removed" | "changed";
+            /** Topic */
+            topic: string;
         };
         /**
          * DocumentOut
@@ -2310,6 +2564,124 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** PromptTemplateCreate */
+        PromptTemplateCreate: {
+            /** Body */
+            body: string;
+            /**
+             * Scope
+             * @description "personal" (only you) or "org" (everyone; editor role).
+             * @default personal
+             * @enum {string}
+             */
+            scope: "personal" | "org";
+            /** Title */
+            title: string;
+        };
+        /** PromptTemplateOut */
+        PromptTemplateOut: {
+            /** Body */
+            body: string;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Editable
+             * @default false
+             */
+            editable: boolean;
+            /** Id */
+            id: string;
+            /** Key */
+            key?: string | null;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Scope */
+            scope: string;
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** PromptTemplateUpdate */
+        PromptTemplateUpdate: {
+            /** Body */
+            body?: string | null;
+            /** Scope */
+            scope?: ("personal" | "org") | null;
+            /** Title */
+            title?: string | null;
+        };
+        /** PublicCitation */
+        PublicCitation: {
+            /** Filename */
+            filename?: string | null;
+            /** Number */
+            number?: number | null;
+            /** Page Number */
+            page_number?: number | null;
+            /** Score */
+            score?: number | null;
+            /** Snippet */
+            snippet?: string | null;
+        };
+        /** PublicDocument */
+        PublicDocument: {
+            /** Created At */
+            created_at?: string | null;
+            /** File Type */
+            file_type: string;
+            /** Filename */
+            filename: string;
+            /** Page Count */
+            page_count?: number | null;
+            /** Word Count */
+            word_count?: number | null;
+        };
+        /** PublicMessage */
+        PublicMessage: {
+            /**
+             * Citations
+             * @default []
+             */
+            citations: components["schemas"]["PublicCitation"][];
+            /** Confidence */
+            confidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Mode */
+            mode?: string | null;
+            /** Role */
+            role: string;
+        };
+        /**
+         * PublicShare
+         * @description What GET /public/shares/{token} returns -- an allow-list of fields, built
+         *     in services/sharing.py public_view. No ids, no emails, no organization.
+         */
+        PublicShare: {
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Documents
+             * @default []
+             */
+            documents: components["schemas"]["PublicDocument"][];
+            /** Expires At */
+            expires_at?: string | null;
+            /** Kind */
+            kind: string;
+            /**
+             * Messages
+             * @default []
+             */
+            messages: components["schemas"]["PublicMessage"][];
+            /** Title */
+            title: string;
+        };
         /** QuotaUsage */
         QuotaUsage: {
             /** Quota */
@@ -2425,6 +2797,113 @@ export interface components {
             rerank_score?: number | null;
             /** Score */
             score: number;
+        };
+        /**
+         * ShareLinkCreate
+         * @description Make a public read-only link to an answer, a conversation or a project.
+         */
+        ShareLinkCreate: {
+            /**
+             * Expires In Days
+             * @description Days until the link stops working; omit for never.
+             */
+            expires_in_days?: number | null;
+            /**
+             * Kind
+             * @description What to share: an answer, a conversation or a project.
+             * @enum {string}
+             */
+            kind: "message" | "session" | "project";
+            /**
+             * Target Id
+             * Format: uuid
+             * @description The assistant message, chat session or project id.
+             */
+            target_id: string;
+        };
+        /**
+         * ShareLinkCreated
+         * @description The create response: the only time the token is ever returned.
+         */
+        ShareLinkCreated: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Last Viewed At */
+            last_viewed_at?: string | null;
+            /** Path */
+            path: string;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+            /** Target Id */
+            target_id?: string | null;
+            /** Token */
+            token: string;
+            /** Token Prefix */
+            token_prefix: string;
+            /**
+             * View Count
+             * @default 0
+             */
+            view_count: number;
+        };
+        /**
+         * ShareLinkOut
+         * @description A link in the management list. The token itself is never shown again.
+         */
+        ShareLinkOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Last Viewed At */
+            last_viewed_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+            /** Target Id */
+            target_id?: string | null;
+            /** Token Prefix */
+            token_prefix: string;
+            /**
+             * View Count
+             * @default 0
+             */
+            view_count: number;
         };
         /**
          * Token
@@ -3391,6 +3870,39 @@ export interface operations {
             };
         };
     };
+    compare_api_v1_compare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComparisonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComparisonOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_documents_api_v1_documents__get: {
         parameters: {
             query: {
@@ -4211,6 +4723,154 @@ export interface operations {
             };
         };
     };
+    list_prompts_api_v1_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateOut"][];
+                };
+            };
+        };
+    };
+    create_prompt_api_v1_prompts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptTemplateCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_prompt_api_v1_prompts__template_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_prompt_api_v1_prompts__template_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptTemplateUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    view_shared_api_v1_public_shares__token__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicShare"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     semantic_search_api_v1_search__post: {
         parameters: {
             query?: never;
@@ -4232,6 +4892,102 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SearchResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_share_links_api_v1_shares_get: {
+        parameters: {
+            query?: {
+                /** @description Only links of this kind. */
+                kind?: ("message" | "session" | "project") | null;
+                /** @description Only links to this target (needs kind). */
+                target_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_share_link_api_v1_shares_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareLinkCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_share_link_api_v1_shares__share_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
