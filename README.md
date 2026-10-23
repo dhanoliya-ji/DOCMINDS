@@ -20,6 +20,8 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Semantic search:** page-aware chunking, configurable embeddings (local, OpenAI, Gemini) and HNSW-indexed cosine search in pgvector.
 - **Grounded answers:** every answer cites numbered excerpts mapped to file and page; weak matches are discarded so the system can say it does not know.
 - **Two chat modes:** a single-pass RAG pipeline, or a Pydantic AI agent with search, list and read tools.
+- **Answers you can judge and pass on:** each answer carries a high / medium / low confidence badge computed from retrieval scores and citation coverage (with the reasons), renders Markdown tables and bar / line / pie charts drawn from figures in the documents, and streams token by token in both modes. Answers, conversations and projects can be shared through read-only public links (expiring, revocable, audited, stored only as an HMAC), and a prompt library offers built-in, personal and team-shared prompts.
+- **Document comparison:** pick two documents and get a structured list of what was added, removed or changed, each difference citing the passages on both sides.
 - **Multi-tenant by design:** organisation scoping is enforced inside every SQL query, including the vector search. Existing organisations can only be joined by invite.
 - **Access control:** viewer, editor and admin roles; member management, invites, API keys, an audit log and a usage page for admins under `/settings`; rotating refresh tokens with silent refresh in the browser, server-side logout, password reset and email verification pages. The frontend hides actions a role cannot perform and sends a Content-Security-Policy and other security headers.
 - **Background ingestion:** Celery workers via Redis, or inline processing for single-service deployments. Transient failures are retried with backoff, a database claim stops a job running twice, and a recovery sweep re-queues documents orphaned by a dead worker.
@@ -28,6 +30,8 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Limits and metering:** per-IP limits on sign-in, sign-up and password reset, per-user limits on chat, search and upload (Redis-backed, in-memory fallback), and per-organisation monthly token, document and storage quotas with usage and estimated cost reported to admins.
 - **Robust model calls:** Groq is called asynchronously with retries, backoff and an optional fallback model; document text is fenced as untrusted data against prompt injection.
 - **Observable:** structured JSON logs carrying a request id, user and organisation; optional Sentry; liveness and readiness health checks; security headers on every response.
+- **For developers:** a public API guide at `/developers` (API keys, rate limits, endpoints, curl / Python / TypeScript examples) and two small SDKs in `sdk/`, typed from the same OpenAPI schema.
+- **Accessible and bilingual:** every screen in English and Hindi, WCAG AA contrast checked in CI for both themes, and installable as a PWA with an offline page.
 - **Runs offline:** deterministic mock providers for OCR, embeddings and the LLM allow development and testing without API keys.
 
 ## Architecture
@@ -152,7 +156,7 @@ Settings are read from environment variables or `backend/.env`. The most importa
 | `STORAGE_BACKEND` | `local` | `local` (`backend/uploads`) or `s3` (any S3-compatible bucket; set `S3_BUCKET` and friends) |
 | `MALWARE_SCAN` | `off` | `off` or `clamav` (scan every upload with a clamd daemon before processing) |
 | `MAX_UPLOAD_SIZE_BYTES` | `104857600` | Per-file upload limit (100 MB), enforced while the file streams in |
-| `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload) |
+| `RATE_LIMIT_LOGIN` / `RATE_LIMIT_CHAT` | `20/minute` / `30/minute` | Per-IP sign-in and per-user chat limits (others: signup, password reset, search, upload, `RATE_LIMIT_SHARE_VIEW` per IP for public links, `RATE_LIMIT_COMPARE` per user) |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API, so per-IP limits see the real client address (1 on Render) |
 | `QUOTA_MONTHLY_TOKENS` | `1000000` | AI tokens per organisation per month; `0` is unlimited (also `QUOTA_MAX_DOCUMENTS`, `QUOTA_MAX_STORAGE_BYTES`) |
 | `LLM_FALLBACK_MODEL` | *(empty)* | Groq model used when the main one keeps failing or is retired |
@@ -187,6 +191,7 @@ DOCMINDS/
 ├── backend/            FastAPI app, Celery tasks, Alembic migrations, tests, Dockerfile, docker-compose.yml
 │   └── app/            core/, db/, models/, schemas/, api/, services/, tasks/
 ├── frontend/           Next.js app: app/ (routes), components/, lib/api.ts, tests/, tests-e2e/
+├── sdk/                TypeScript and Python API clients
 ├── docs/               Architecture, development and deployment guides; screenshots
 ├── .github/            CI, security scanning and repository automation workflows
 └── render.yaml         Render blueprint for the API

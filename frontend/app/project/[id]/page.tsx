@@ -33,6 +33,12 @@
  * everything has settled, the polling stops on its own so we are not making
  * pointless requests forever.
  *
+ * COMPARE AND SHARE
+ * -----------------
+ * A fourth tab compares two ready documents (ComparePanel). Editors and
+ * admins can also make a public read-only link to the project -- its name
+ * and the list of its documents, nothing else (ShareDialog).
+ *
  * LAYOUT AND FIRST RUN
  * --------------------
  * Wrapped in <AppShell>. A project with no documents shows a first-run empty
@@ -47,6 +53,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
   Check,
+  GitCompare,
+  Share2,
   FileUp,
   CheckCircle2,
   Clock,
@@ -67,8 +75,10 @@ import AppShell from "@/components/app/AppShell";
 import LogoLoader from "@/components/app/LogoLoader";
 import { FirstRunEmpty, GuidedTour, type TourStep } from "@/components/app/Onboarding";
 import ChatPanel from "@/components/ChatPanel";
+import ComparePanel from "@/components/ComparePanel";
 import DocumentActions from "@/components/DocumentActions";
 import SearchPanel from "@/components/SearchPanel";
+import ShareDialog from "@/components/ShareDialog";
 import UploadZone from "@/components/UploadZone";
 import { api, DocumentItem, getErrorMessage, getToken } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -76,26 +86,14 @@ import { describeProgress, documentProgress } from "@/lib/progress";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
-/** The three tabs of the workspace. */
-type Tab = "documents" | "search" | "chat";
+/** The four tabs of the workspace. */
+type Tab = "documents" | "search" | "chat" | "compare";
 
-/** Example files shown on a fresh project, to suggest what is worth uploading. */
-const SAMPLE_UPLOADS = ["Employee handbook.pdf", "Contract.docx", "Pricing.xlsx", "Scanned receipt.jpg"];
+/** Example files shown on a fresh project (i18n keys), to suggest what is worth uploading. */
+const SAMPLE_UPLOADS = [1, 2, 3, 4].map((n) => `project.sample.${n}`);
 
-const TOUR: TourStep[] = [
-  {
-    title: "Drop documents in",
-    body: "Drag files onto the upload area. 19 formats are supported, and scans are read with OCR.",
-  },
-  {
-    title: "Watch them process",
-    body: "Each file moves from Queued to Processing to Ready. This page refreshes on its own.",
-  },
-  {
-    title: "Then search or ask",
-    body: "Use the Search tab for matching passages, or Ask AI for answers with page-level citations.",
-  },
-];
+/** The tour's steps, as i18n keys (lib/i18n/project.ts). */
+const TOUR_STEPS = [1, 2, 3];
 
 export default function ProjectPage({
   params,
@@ -114,8 +112,12 @@ export default function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const router = useRouter();
-  // The reader's language, for the live ingestion progress line.
-  const { locale } = useT();
+  // `locale` is the reader's language, for the live ingestion progress line.
+  const { t, locale } = useT();
+  const tour: TourStep[] = TOUR_STEPS.map((n) => ({
+    title: t(`project.tour.${n}.title`),
+    body: t(`project.tour.${n}.body`),
+  }));
 
   // The signed-in user's role decides whether the upload zone is offered.
   const { user, loading: userLoading } = useCurrentUser();
@@ -127,7 +129,8 @@ export default function ProjectPage({
   const projectId = use(params).id;
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [projectName, setProjectName] = useState("Project");
+  // null until the project loads; the heading shows a translated "Project".
+  const [projectName, setProjectName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("documents");
   // A failed rename / delete / re-index, shown above the list.
@@ -136,6 +139,7 @@ export default function ProjectPage({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   // ------------------------------------------------------------------
   // FETCH THE DOCUMENT LIST
@@ -233,25 +237,25 @@ export default function ProjectPage({
         return {
           className: "pill-success",
           icon: <CheckCircle2 size={11} />,
-          label: "Ready",
+          label: t("project.status.completed"),
         };
       case "processing":
         return {
           className: "pill-info",
           icon: <Loader2 size={11} className="animate-spin" />,
-          label: "Processing",
+          label: t("project.status.processing"),
         };
       case "failed":
         return {
           className: "pill-danger",
           icon: <XCircle size={11} />,
-          label: "Failed",
+          label: t("project.status.failed"),
         };
       default:
         return {
           className: "pill-warning",
           icon: <Clock size={11} />,
-          label: "Queued",
+          label: t("project.status.pending"),
         };
     }
   }
@@ -270,7 +274,7 @@ export default function ProjectPage({
       const project = await api.renameProject(projectId, name);
       setProjectName(project.name);
     } catch (err) {
-      setActionError(getErrorMessage(err, "Could not rename the project."));
+      setActionError(getErrorMessage(err, t("project.renameError")));
     }
   }
 
@@ -280,7 +284,7 @@ export default function ProjectPage({
       router.push("/dashboard");
     } catch (err) {
       setConfirmDelete(false);
-      setActionError(getErrorMessage(err, "Could not delete the project."));
+      setActionError(getErrorMessage(err, t("project.deleteError")));
     }
   }
 
@@ -293,7 +297,7 @@ export default function ProjectPage({
         style={{ color: "var(--text-secondary)" }}
       >
         <ArrowLeft size={14} aria-hidden="true" />
-        All projects
+        {t("project.allProjects")}
       </Link>
 
       <div className="mb-6 min-w-0">
@@ -303,7 +307,7 @@ export default function ProjectPage({
               className="input max-w-md text-lg"
               value={nameDraft}
               autoFocus
-              aria-label="Project name"
+              aria-label={t("project.nameLabel")}
               maxLength={255}
               onChange={(e) => setNameDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -311,29 +315,40 @@ export default function ProjectPage({
                 if (e.key === "Escape") setRenaming(false);
               }}
             />
-            <button type="button" className="btn-ghost" onClick={saveProjectName} aria-label="Save project name">
+            <button type="button" className="btn-ghost" onClick={saveProjectName} aria-label={t("project.saveName")}>
               <Check size={15} />
             </button>
-            <button type="button" className="btn-ghost" onClick={() => setRenaming(false)} aria-label="Cancel rename">
+            <button type="button" className="btn-ghost" onClick={() => setRenaming(false)} aria-label={t("project.cancelRename")}>
               <X size={15} />
             </button>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-gradient break-words text-3xl font-bold">{projectName}</h1>
+            <h1 className="text-gradient break-words text-3xl font-bold">
+              {projectName ?? t("project.fallbackName")}
+            </h1>
             {mayUpload && (
               <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
                 <button
                   type="button"
                   className="rounded p-1.5 hover:bg-white/5"
                   onClick={() => {
-                    setNameDraft(projectName);
+                    setNameDraft(projectName ?? "");
                     setRenaming(true);
                   }}
-                  aria-label="Rename project"
-                  title="Rename project"
+                  aria-label={t("project.rename")}
+                  title={t("project.rename")}
                 >
                   <Pencil size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded p-1.5 hover:bg-white/5"
+                  onClick={() => setSharing(true)}
+                  aria-label="Share project"
+                  title="Share project"
+                >
+                  <Share2 size={14} />
                 </button>
                 {confirmDelete ? (
                   <>
@@ -343,9 +358,9 @@ export default function ProjectPage({
                       style={{ color: "var(--danger)" }}
                       onClick={deleteProject}
                     >
-                      Delete the project, its documents and conversations?
+                      {t("project.deleteConfirm")}
                     </button>
-                    <button type="button" className="p-1" onClick={() => setConfirmDelete(false)} aria-label="Keep project">
+                    <button type="button" className="p-1" onClick={() => setConfirmDelete(false)} aria-label={t("project.keep")}>
                       <X size={13} />
                     </button>
                   </>
@@ -354,8 +369,8 @@ export default function ProjectPage({
                     type="button"
                     className="rounded p-1.5 hover:bg-white/5"
                     onClick={() => setConfirmDelete(true)}
-                    aria-label="Delete project"
-                    title="Delete project"
+                    aria-label={t("project.delete")}
+                    title={t("project.delete")}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -365,8 +380,10 @@ export default function ProjectPage({
           </div>
         )}
         <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-          {documents.length} document{documents.length === 1 ? "" : "s"} ·{" "}
-          {readyCount} ready to search
+          {t(documents.length === 1 ? "project.count.one" : "project.count.other", {
+            count: documents.length,
+            ready: readyCount,
+          })}
         </p>
       </div>
 
@@ -377,9 +394,10 @@ export default function ProjectPage({
       >
         {(
           [
-            { key: "documents", label: "Documents", icon: FileText },
-            { key: "search", label: "Search", icon: Search },
-            { key: "chat", label: "Ask AI", icon: MessageSquare },
+            { key: "documents", label: t("project.tab.documents"), icon: FileText },
+            { key: "search", label: t("project.tab.search"), icon: Search },
+            { key: "chat", label: t("project.tab.chat"), icon: MessageSquare },
+            { key: "compare", label: t("project.tab.compare"), icon: GitCompare },
           ] as const
         ).map((item) => {
           const Icon = item.icon;
@@ -446,8 +464,7 @@ export default function ProjectPage({
                     className="glass px-4 py-3 text-sm"
                     style={{ color: "var(--text-secondary)" }}
                   >
-                    You have view-only access to this project. Ask an editor or
-                    admin to upload documents.
+                    {t("project.viewOnly")}
                   </p>
                 )
               )}
@@ -459,27 +476,23 @@ export default function ProjectPage({
                   style={{ background: "rgba(248,113,113,0.1)", color: "var(--danger)" }}
                 >
                   <span>{actionError}</span>
-                  <button onClick={() => setActionError("")} aria-label="Dismiss error">
+                  <button onClick={() => setActionError("")} aria-label={t("project.dismissError")}>
                     <X size={14} />
                   </button>
                 </div>
               )}
 
               {loading ? (
-                <LogoLoader label="Loading documents" />
+                <LogoLoader label={t("project.loading")} />
               ) : documents.length === 0 ? (
                 <>
-                  <GuidedTour id="project" steps={TOUR} />
+                  <GuidedTour id="project" steps={tour} />
                   <FirstRunEmpty
                     icon={<FileUp size={26} />}
-                    title="No documents yet"
-                    body={
-                      mayUpload
-                        ? "Upload one above to get started. Good first picks are documents people ask about often."
-                        : "Nothing has been uploaded to this project yet."
-                    }
-                    suggestionsLabel="For example"
-                    suggestions={SAMPLE_UPLOADS}
+                    title={t("project.empty.title")}
+                    body={mayUpload ? t("project.empty.editor") : t("project.empty.viewer")}
+                    suggestionsLabel={t("project.empty.examples")}
+                    suggestions={SAMPLE_UPLOADS.map((key) => t(key))}
                   />
                 </>
               ) : (
@@ -520,20 +533,22 @@ export default function ProjectPage({
                             {/* Facts recorded by the ingestion pipeline. They
                                 only exist once processing has completed. */}
                             {doc.meta_data?.chunk_count && (
-                              <span>· {doc.meta_data.chunk_count} chunks</span>
+                              <span>· {t("project.meta.chunks", { count: doc.meta_data.chunk_count })}</span>
                             )}
                             {doc.meta_data?.word_count && (
-                              <span>· {doc.meta_data.word_count} words</span>
+                              <span>· {t("project.meta.words", { count: doc.meta_data.word_count })}</span>
                             )}
                             {doc.meta_data?.needs_ocr && (
                               <span style={{ color: "var(--warning)" }}>
-                                · OCR applied
+                                · {t("project.meta.ocr")}
                               </span>
                             )}
                             {doc.meta_data?.processing_seconds && (
                               <span>
-                                · processed in{" "}
-                                {doc.meta_data.processing_seconds}s
+                                ·{" "}
+                                {t("project.meta.processed", {
+                                  seconds: doc.meta_data.processing_seconds,
+                                })}
                               </span>
                             )}
                           </div>
@@ -574,14 +589,14 @@ export default function ProjectPage({
                               className="mt-1 text-xs"
                               style={{ color: "var(--warning)" }}
                             >
-                              Retrying after a temporary problem: {doc.error_message}
+                              {t("project.retrying", { error: doc.error_message })}
                             </div>
                           )}
                           {/* F12 hover preview: when it was added. */}
                           <div className="card-preview">
                             <div>
                               <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-                                Uploaded {new Date(doc.created_at).toLocaleString()}
+                                {t("project.uploaded", { date: new Date(doc.created_at).toLocaleString() })}
                               </div>
                             </div>
                           </div>
@@ -612,9 +627,7 @@ export default function ProjectPage({
           {/* ================= SEARCH ================= */}
           {tab === "search" &&
             (readyCount === 0 ? (
-              <EmptyPrompt
-                message="Upload a document and wait for it to finish processing before searching."
-              />
+              <EmptyPrompt message={t("project.searchEmpty")} />
             ) : (
               <SearchPanel projectId={projectId} documents={readyDocuments} />
             ))}
@@ -622,14 +635,16 @@ export default function ProjectPage({
           {/* ================= CHAT ================= */}
           {tab === "chat" &&
             (readyCount === 0 ? (
-              <EmptyPrompt
-                message="Upload a document and wait for processing to finish, then ask questions about it."
-              />
+              <EmptyPrompt message={t("project.chatEmpty")} />
             ) : (
-              <ChatPanel projectId={projectId} documents={readyDocuments} />
+              <ChatPanel projectId={projectId} documents={readyDocuments} canShareOrgPrompts={mayUpload} />
             ))}
+
+          {/* ================= COMPARE ================= */}
+          {tab === "compare" && <ComparePanel documents={readyDocuments} />}
         </motion.div>
       </AnimatePresence>
+      {sharing && <ShareDialog kind="project" targetId={projectId} onClose={() => setSharing(false)} />}
     </AppShell>
   );
 }

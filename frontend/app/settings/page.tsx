@@ -49,29 +49,32 @@ import UsagePanel from "@/components/settings/UsagePanel";
 import WebhooksPanel, { webhooksAvailable } from "@/components/settings/WebhooksPanel";
 import VerifyBanner from "@/components/VerifyBanner";
 import { getToken } from "@/lib/api";
+import { rich, useT } from "@/lib/i18n";
 import { isAdmin, roleLabel } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
+// Each tab's label is the i18n key `settings.tab.<id>`.
 const TABS = [
-  { id: "members", label: "Members" },
-  { id: "api-keys", label: "API keys" },
-  { id: "audit", label: "Audit log" },
-  { id: "usage", label: "Usage" },
-  { id: "feedback", label: "Feedback" },
-  { id: "webhooks", label: "Webhooks" },
+  { id: "members" },
+  { id: "api-keys" },
+  { id: "audit" },
+  { id: "usage" },
+  { id: "feedback" },
+  { id: "webhooks" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
 export default function SettingsPage() {
   const router = useRouter();
+  const { t } = useT();
   const { user, loading, error } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("members");
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   // Whether the Webhooks tab exists: unknown (false) until the probe answers.
   const [webhooksOn, setWebhooksOn] = useState(false);
   const admin = !!user && isAdmin(user.role);
-  const tabs = TABS.filter((t) => t.id !== "webhooks" || webhooksOn);
+  const tabs = TABS.filter((tab) => tab.id !== "webhooks" || webhooksOn);
 
   useEffect(() => {
     if (!admin) return;
@@ -91,7 +94,7 @@ export default function SettingsPage() {
 
   function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const index = tabs.findIndex((t) => t.id === tab);
+    const index = tabs.findIndex((item) => item.id === tab);
     const step = event.key === "ArrowRight" ? 1 : -1;
     const next = tabs[(index + step + tabs.length) % tabs.length].id;
     setTab(next);
@@ -100,26 +103,28 @@ export default function SettingsPage() {
 
   return (
     <AppShell>
-      <h1 className="text-gradient mb-8 text-3xl font-bold">Settings</h1>
+      <h1 className="text-gradient mb-8 text-3xl font-bold">{t("settings.title")}</h1>
 
       {loading ? (
-        <LogoLoader label="Loading your account" />
+        <LogoLoader label={t("settings.loading")} />
       ) : error || !user ? (
-        <Notice tone="error">{error || "Could not load your account."}</Notice>
+        <Notice tone="error">{error || t("settings.loadError")}</Notice>
       ) : (
         <>
           {!user.is_verified && <VerifyBanner email={user.email} />}
 
           {/* ---- Your account: shown to everyone ---- */}
-          <section className="glass mb-8 p-5 text-sm" aria-label="Your account">
+          <section className="glass mb-8 p-5 text-sm" aria-label={t("settings.account")}>
             <div className="break-words">
-              Signed in as <strong>{user.email}</strong> · {roleLabel(user.role)}
+              {rich(t("settings.signedInAs"), {
+                email: <strong>{user.email}</strong>,
+                role: roleLabel(user.role),
+              })}
               <PlanBadge />
             </div>
             {!isAdmin(user.role) && (
               <p className="mt-2" style={{ color: "var(--text-secondary)" }}>
-                Members, API keys, the audit log, usage and answer feedback are managed by your
-                organization&apos;s admins.
+                {t("settings.notAdmin")}
               </p>
             )}
           </section>
@@ -129,26 +134,26 @@ export default function SettingsPage() {
 
           {isAdmin(user.role) && (
             <>
-              <div role="tablist" aria-label="Settings sections" className="mb-6 flex flex-wrap gap-2">
-                {tabs.map((t) => (
+              <div role="tablist" aria-label={t("settings.sections")} className="mb-6 flex flex-wrap gap-2">
+                {tabs.map((item) => (
                   <button
-                    key={t.id}
+                    key={item.id}
                     ref={(el) => {
-                      tabRefs.current[t.id] = el;
+                      tabRefs.current[item.id] = el;
                     }}
-                    id={`tab-${t.id}`}
+                    id={`tab-${item.id}`}
                     role="tab"
                     type="button"
-                    aria-selected={tab === t.id}
-                    aria-controls={`panel-${t.id}`}
+                    aria-selected={tab === item.id}
+                    aria-controls={`panel-${item.id}`}
                     // Roving tabindex: only the active tab is in the Tab order;
                     // arrows move between the others.
-                    tabIndex={tab === t.id ? 0 : -1}
+                    tabIndex={tab === item.id ? 0 : -1}
                     onKeyDown={onTabKey}
-                    onClick={() => setTab(t.id)}
-                    className={tab === t.id ? "btn-primary" : "btn-ghost"}
+                    onClick={() => setTab(item.id)}
+                    className={tab === item.id ? "btn-primary" : "btn-ghost"}
                   >
-                    {t.label}
+                    {t(`settings.tab.${item.id}`)}
                   </button>
                 ))}
               </div>

@@ -31,29 +31,23 @@ import { FirstRunEmpty, GuidedTour, type TourStep } from "@/components/app/Onboa
 import ProjectCard from "@/components/app/ProjectCard";
 import VerifyBanner from "@/components/VerifyBanner";
 import { Project, api, getErrorMessage, getToken } from "@/lib/api";
+import { rich, useT } from "@/lib/i18n";
 import { canEdit } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
-/** Sample names offered on first run; clicking one pre-fills the dialog. */
-const SAMPLE_PROJECTS = ["HR Policies", "Q3 Contracts", "Product Docs", "Research Papers"];
+/** Sample names offered on first run (i18n keys); clicking one pre-fills the dialog. */
+const SAMPLE_PROJECTS = [1, 2, 3, 4].map((n) => `dashboard.sample.${n}`);
 
-const TOUR: TourStep[] = [
-  {
-    title: "Projects keep answers on topic",
-    body: "Each project is its own document collection. Questions asked inside one only search the files in it.",
-  },
-  {
-    title: "Upload, then wait a moment",
-    body: "Open a project and drop in PDFs, Office files, images or text. Processing runs in the background.",
-  },
-  {
-    title: "Search or Ask AI",
-    body: "Once a document shows Ready, search it semantically or ask questions and get answers with page citations.",
-  },
-];
+/** The tour's steps, as i18n keys (lib/i18n/dashboard.ts). */
+const TOUR_STEPS = [1, 2, 3];
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { t } = useT();
+  const tour: TourStep[] = TOUR_STEPS.map((n) => ({
+    title: t(`dashboard.tour.${n}.title`),
+    body: t(`dashboard.tour.${n}.body`),
+  }));
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,7 +95,7 @@ export default function DashboardPage() {
         setProjects(projectList);
         setAiReady(health ? health.llm.api_key_configured : null);
       } catch (err) {
-        setError(getErrorMessage(err, "Could not load your projects."));
+        setError(getErrorMessage(err, t("dashboard.loadError")));
       } finally {
         setLoading(false);
       }
@@ -110,6 +104,8 @@ export default function DashboardPage() {
     load();
     // `router` is in the dependency list because the effect uses it. The
     // effect still runs only once, since the router object is stable.
+    // `t` is left out on purpose: switching language must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   // ------------------------------------------------------------------
@@ -129,7 +125,7 @@ export default function DashboardPage() {
       setShowModal(false);
       setNewName("");
     } catch (err) {
-      setError(getErrorMessage(err, "Could not create the project."));
+      setError(getErrorMessage(err, t("dashboard.createError")));
     } finally {
       setCreating(false);
     }
@@ -148,15 +144,15 @@ export default function DashboardPage() {
       {/* ---- Header ---- */}
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-gradient text-3xl font-bold">Projects</h1>
+          <h1 className="text-gradient text-3xl font-bold">{t("dashboard.title")}</h1>
           <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-            Each project is its own document collection and search boundary.
+            {t("dashboard.subtitle")}
           </p>
         </div>
         {mayCreate && (
           <button onClick={() => openCreate()} className="btn-primary">
             <Plus size={16} aria-hidden="true" />
-            New project
+            {t("dashboard.newProject")}
           </button>
         )}
       </div>
@@ -183,22 +179,24 @@ export default function DashboardPage() {
           />
           <div className="text-sm">
             <div className="font-medium" style={{ color: "var(--warning)" }}>
-              Running in demo mode
+              {t("dashboard.demo.title")}
             </div>
             <p className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              Upload, OCR, chunking and semantic search all work fully. Chat
-              returns the best matching passage directly instead of an
-              AI-written summary. To enable AI answers, add a free key from{" "}
-              <a
-                href="https://console.groq.com/keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline"
-                style={{ color: "var(--accent-hover)" }}
-              >
-                console.groq.com/keys
-              </a>{" "}
-              to <code>backend/.env</code> as <code>GROQ_API_KEY</code>.
+              {rich(t("dashboard.demo.body"), {
+                link: (
+                  <a
+                    href="https://console.groq.com/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                    style={{ color: "var(--accent-hover)" }}
+                  >
+                    console.groq.com/keys
+                  </a>
+                ),
+                file: <code>backend/.env</code>,
+                variable: <code>GROQ_API_KEY</code>,
+              })}
             </p>
           </div>
         </motion.div>
@@ -222,26 +220,22 @@ export default function DashboardPage() {
       {/* ---- Content: loading, empty, or the grid ---- */}
       {loading ? (
         // F18: the logo-morph loader while the first page of data arrives.
-        <LogoLoader label="Loading projects" fullscreen />
+        <LogoLoader label={t("dashboard.loading")} fullscreen />
       ) : projects.length === 0 ? (
         <>
-          <GuidedTour id="dashboard" steps={TOUR} />
+          <GuidedTour id="dashboard" steps={tour} />
           <FirstRunEmpty
             icon={<FolderOpen size={26} />}
-            title="No projects yet"
-            body={
-              mayCreate
-                ? "Create your first project, then upload documents into it to start asking questions."
-                : "Your organization has no projects yet. Ask an editor or admin to create one."
-            }
-            suggestionsLabel={mayCreate ? "Start from an example" : undefined}
-            suggestions={mayCreate ? SAMPLE_PROJECTS : undefined}
+            title={t("dashboard.empty.title")}
+            body={mayCreate ? t("dashboard.empty.editor") : t("dashboard.empty.viewer")}
+            suggestionsLabel={mayCreate ? t("dashboard.empty.examples") : undefined}
+            suggestions={mayCreate ? SAMPLE_PROJECTS.map((key) => t(key)) : undefined}
             onSuggestion={(name) => openCreate(name)}
             action={
               mayCreate && (
                 <button onClick={() => openCreate()} className="btn-primary">
                   <Plus size={16} aria-hidden="true" />
-                  Create a project
+                  {t("dashboard.createProject")}
                 </button>
               )
             }
@@ -295,11 +289,11 @@ export default function DashboardPage() {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mb-5 flex items-center justify-between">
-                <h2 id="new-project-heading" className="text-lg font-semibold">New project</h2>
+                <h2 id="new-project-heading" className="text-lg font-semibold">{t("dashboard.newProject")}</h2>
                 <button
                   onClick={() => setShowModal(false)}
                   style={{ color: "var(--text-muted)" }}
-                  aria-label="Close"
+                  aria-label={t("dashboard.dialog.close")}
                 >
                   <X size={18} aria-hidden="true" />
                 </button>
@@ -307,8 +301,8 @@ export default function DashboardPage() {
 
               <input
                 className="input"
-                aria-label="Project name"
-                placeholder="e.g. HR Policies, Q3 Contracts"
+                aria-label={t("dashboard.dialog.name")}
+                placeholder={t("dashboard.dialog.placeholder")}
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 // Let Enter submit, so the user need not reach for the mouse.
@@ -322,7 +316,7 @@ export default function DashboardPage() {
                   onClick={() => setShowModal(false)}
                   className="btn-ghost"
                 >
-                  Cancel
+                  {t("dashboard.dialog.cancel")}
                 </button>
                 <button
                   onClick={handleCreate}
@@ -334,7 +328,7 @@ export default function DashboardPage() {
                   ) : (
                     <Plus size={15} />
                   )}
-                  Create
+                  {t("dashboard.dialog.create")}
                 </button>
               </div>
             </motion.div>

@@ -18,6 +18,8 @@
 import { Sparkles, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { useT } from "@/lib/i18n";
+
 // ----------------------------------------------------------------------
 // Remembering dismissal
 // ----------------------------------------------------------------------
@@ -52,6 +54,7 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
   // then hiding it would flash for returning users.
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
+  const { t } = useT();
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reading storage after hydration
@@ -75,13 +78,13 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
         onClick={finish}
         className="absolute right-3 top-3 rounded-lg p-1"
         style={{ color: "var(--text-muted)" }}
-        aria-label="Dismiss tour"
+        aria-label={t("onboarding.dismiss")}
       >
         <X size={16} aria-hidden="true" />
       </button>
       <p className="mb-1 flex items-center gap-1.5 text-xs font-medium" style={{ color: "var(--accent-hover)" }}>
         <Sparkles size={13} aria-hidden="true" />
-        Quick tour · step {step + 1} of {steps.length}
+        {t("onboarding.step", { step: step + 1, total: steps.length })}
       </p>
       <h2 id={headingId} className="pr-8 font-semibold">
         {current.title}
@@ -106,7 +109,7 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
         <div className="flex gap-2">
           {!last && (
             <button type="button" className="btn-ghost" onClick={finish}>
-              Skip
+              {t("onboarding.skip")}
             </button>
           )}
           <button
@@ -114,7 +117,7 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
             className="btn-primary"
             onClick={() => (last ? finish() : setStep(step + 1))}
           >
-            {last ? "Got it" : "Next"}
+            {last ? t("onboarding.gotIt") : t("onboarding.next")}
           </button>
         </div>
       </div>

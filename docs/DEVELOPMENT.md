@@ -165,7 +165,7 @@ All backend settings are defined in [`backend/app/core/config.py`](../backend/ap
 
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`). With `ENV=production` the app refuses to start if it is the committed default or shorter than 32 characters |
+| `SECRET_KEY` | A committed development value | JWT signing key. **Set your own outside local development** (`openssl rand -hex 32`). With `ENV=production` the app refuses to start if it is the committed default or shorter than 32 characters. It also keys the HMAC of public share-link tokens, so rotating it revokes every share link at once |
 | `ALGORITHM` | `HS256` | JWT signing algorithm |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifetime; also how long a signed-out token stays on the denylist |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime. Refresh tokens are stored hashed and rotated on every use |
@@ -258,6 +258,8 @@ Over a limit, the endpoint answers `429` with `Retry-After` (seconds) and `X-Rat
 | `RATE_LIMIT_CHAT` | `30/minute` | Per user, asking a question |
 | `RATE_LIMIT_SEARCH` | `60/minute` | Per user, `POST /search/` |
 | `RATE_LIMIT_UPLOAD` | `30/minute` | Per user, upload requests |
+| `RATE_LIMIT_SHARE_VIEW` | `120/minute` | Per IP, views of public share links (`/share/<token>`) |
+| `RATE_LIMIT_COMPARE` | `10/minute` | Per user, document comparisons |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies you control in front of the API. With N > 0 the client IP is the Nth `X-Forwarded-For` entry from the right; 0 ignores the header and uses the TCP peer |
 | `CLIENT_IP_HEADER` | *(empty)* | A header your proxy or CDN overwrites with the client IP (e.g. `CF-Connecting-IP`); wins when present. Only set it if every request passes through that proxy |
 
@@ -456,8 +458,11 @@ There is no development proxy; the browser calls the API directly, so the API's 
 - **Loading, error and success are separate states**, each with its own render.
 - **Write Tailwind class names out in full.** Tailwind generates only classes it finds literally in source, so a runtime-built class such as `` `text-${color}-500` `` is purged from the build.
 - **Signed-in pages go inside `<AppShell>`** (`components/app/`), which supplies the sidebar/topbar, theme toggle, sign-out and the page transition. Use theme tokens (`var(--text-secondary)`, `var(--surface-1)`, ...) rather than literal colours, so both themes work; the light palette is `:root[data-theme="light"]` in `globals.css`, set before first paint by the inline script from `lib/theme.ts`.
-- **Translations:** user-facing strings in the app shell, auth pages, chat and upload come from `lib/i18n` (`const { t } = useT(); t("upload.dropToUpload")`), one dictionary file per area with `en` and `hi`. English is the default and the fallback for any key Hindi lacks; the switcher (`components/app/LanguageSwitcher.tsx`) stores the choice in localStorage and sets `<html lang>`. Add the English string first; a missing translation is never an error.
+- **Translations:** every user-facing string comes from `lib/i18n` (`const { t } = useT(); t("upload.dropToUpload")`), one dictionary file per area (`auth`, `chat`, `dashboard`, `developers`, `landing`, `project`, `search`, `settings`, `shell`, `upload`) with `en` and `hi`. A string that wraps markup uses `{slot}` placeholders filled with elements by `rich(t("verify.body"), { email: <strong>{email}</strong> })`. English is the default and the runtime fallback; the switcher (`components/app/LanguageSwitcher.tsx`, also on the landing and `/developers` pages) stores the choice in localStorage and sets `<html lang>`. `tests/I18n.test.tsx` fails on an English key without a Hindi translation or with different placeholders, so add both together. Product role names and code samples stay untranslated.
 - **Destructive actions use `<HoldToConfirm>`**, not `window.confirm()`. Loading states use `<LogoLoader>`; first-run states use `FirstRunEmpty` / `GuidedTour` from `components/app/Onboarding.tsx`.
+- **Colour contrast is tested:** `npm run check:contrast` (`scripts/contrast.mjs`) measures every text token on every surface, the white label on both ends of the button gradient, the focus ring (3:1) and each status pill, in both themes, compositing translucent tokens as the browser paints them; `tests/contrast.test.ts` runs it in the unit suite, so a token below WCAG AA fails CI.
+- **Installable (PWA):** `app/manifest.ts` serves `/manifest.webmanifest`; `components/PwaSupport.tsx` registers `public/sw.js` in production builds only and shows the "Install app" card when the browser fires `beforeinstallprompt`. The worker caches page navigations network-first (falling back to `public/offline.html`) and Next's hashed `/_next/static/` assets cache-first; it never touches the API's origin. Bump `VERSION` in `sw.js` to discard old caches.
+- **SDKs:** `sdk/typescript` (fetch client typed by a copy of `lib/api-types.ts`, kept in step by `npm run gen:api` and checked by `npm run check:api`) and `sdk/python` (httpx client; `cd sdk/python && python -m pytest`). The TypeScript client is tested from `frontend/tests/Developers.test.tsx`, together with the public `/developers` page.
 - **Accessibility is tested:** `tests/Accessibility.test.tsx` runs axe (vitest-axe) over the dashboard, project and settings pages. Motion must respect `prefers-reduced-motion` (CSS block at the end of `globals.css`, `usePrefersReducedMotion` in JS).
 
 ---

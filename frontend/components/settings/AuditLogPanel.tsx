@@ -23,10 +23,12 @@ import { FormEvent, useEffect, useState } from "react";
 
 import { Notice } from "@/components/AuthCard";
 import { AuditLogPage, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export const AUDIT_PAGE_SIZE = 25;
 
 export default function AuditLogPanel() {
+  const { t } = useT();
   const [offset, setOffset] = useState(0);
   const [action, setAction] = useState("");
   const [draft, setDraft] = useState("");
@@ -43,10 +45,12 @@ export default function AuditLogPanel() {
           setError("");
         }
       })
-      .catch((err) => !cancelled && setError(getErrorMessage(err, "Could not load the audit log.")));
+      .catch((err) => !cancelled && setError(getErrorMessage(err, t("audit.loadError"))));
     return () => {
       cancelled = true;
     };
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offset, action]);
 
   function applyFilter(event: FormEvent) {
@@ -63,13 +67,13 @@ export default function AuditLogPanel() {
       <form onSubmit={applyFilter} className="flex flex-wrap gap-2">
         <input
           className="input max-w-xs"
-          aria-label="Filter by action"
-          placeholder='Action, e.g. "user.login" or "member."'
+          aria-label={t("audit.filterLabel")}
+          placeholder={t("audit.filterPlaceholder")}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
         <button type="submit" className="btn-ghost">
-          Filter
+          {t("audit.filter")}
         </button>
       </form>
 
@@ -79,19 +83,19 @@ export default function AuditLogPanel() {
         <div className="glass shimmer h-40" aria-busy="true" />
       ) : page.items.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          No matching events.
+          {t("audit.empty")}
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <caption className="sr-only">Audit log</caption>
+            <caption className="sr-only">{t("audit.caption")}</caption>
             <thead style={{ color: "var(--text-muted)" }}>
               <tr>
-                <th className="py-2 pr-3 font-medium">When</th>
-                <th className="py-2 pr-3 font-medium">Action</th>
-                <th className="py-2 pr-3 font-medium">User</th>
-                <th className="py-2 pr-3 font-medium">IP</th>
-                <th className="py-2 font-medium">Details</th>
+                <th className="py-2 pr-3 font-medium">{t("audit.when")}</th>
+                <th className="py-2 pr-3 font-medium">{t("audit.action")}</th>
+                <th className="py-2 pr-3 font-medium">{t("audit.user")}</th>
+                <th className="py-2 pr-3 font-medium">{t("audit.ip")}</th>
+                <th className="py-2 font-medium">{t("audit.details")}</th>
               </tr>
             </thead>
             <tbody>
@@ -118,9 +122,9 @@ export default function AuditLogPanel() {
       )}
 
       {page && page.total > 0 && (
-        <nav aria-label="Audit log pages" className="flex items-center justify-between text-sm">
+        <nav aria-label={t("audit.pages")} className="flex items-center justify-between text-sm">
           <span style={{ color: "var(--text-secondary)" }}>
-            {first}–{last} of {page.total}
+            {t("audit.range", { first, last, total: page.total })}
           </span>
           <div className="flex gap-2">
             <button
@@ -129,7 +133,7 @@ export default function AuditLogPanel() {
               disabled={offset === 0}
               onClick={() => setOffset(Math.max(0, offset - AUDIT_PAGE_SIZE))}
             >
-              <ChevronLeft size={15} aria-hidden="true" /> Previous
+              <ChevronLeft size={15} aria-hidden="true" /> {t("audit.previous")}
             </button>
             <button
               type="button"
@@ -137,7 +141,7 @@ export default function AuditLogPanel() {
               disabled={offset + AUDIT_PAGE_SIZE >= page.total}
               onClick={() => setOffset(offset + AUDIT_PAGE_SIZE)}
             >
-              Next <ChevronRight size={15} aria-hidden="true" />
+              {t("audit.next")} <ChevronRight size={15} aria-hidden="true" />
             </button>
           </div>
         </nav>

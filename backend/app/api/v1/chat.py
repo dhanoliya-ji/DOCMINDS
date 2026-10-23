@@ -73,8 +73,14 @@ by a blank line (the SSE format, readable by any HTTP client):
     step       {"tool", "args", "summary"}             agent: one tool call
     citations  {"citations": [...]}                    the sources, BEFORE the
                                                        text that cites them
+                                                       (agent: may repeat as
+                                                       the research grows)
     token      {"text": "..."}                         the next piece of answer
-    done       the full ChatResponse, exactly as the JSON endpoint returns it
+    reset      {}                                      agent: discard the text
+                                                       streamed so far; it was
+                                                       not the final answer
+    done       the full ChatResponse, exactly as the JSON endpoint returns it,
+               including the answer's confidence verdict
     error      {"detail": "..."}                       something failed;
                                                        nothing was saved
 
@@ -126,6 +132,7 @@ from app.schemas.rag import (
     Citation,
     FeedbackCreate,
 )
+from app.services import confidence as confidence_service
 from app.services import export, usage
 from app.services.agent import run_agent
 from app.services.llm import LLMService
@@ -421,34 +428,47 @@ Event = Tuple[str, Any]
 
 async def _agent_events(*, stream: bool, **agent_kwargs: Any) -> AsyncIterator[Event]:
     """
-    Run the agent, yielding ("step", step) as each tool call happens and,
-    last, ("result", the run_agent dictionary).
+    Run the agent, yielding events as they happen and, last, ("result", the
+    run_agent dictionary). While streaming, the events are:
+
+        ("step", step)          a tool call
+        ("citations", chunks)   the sources so far, just before answer text
+        ("token", text)         the next piece of the FINAL answer
+        ("reset", None)         the text so far was not the answer after all
 
     Not streaming: simply await it -- the steps come back inside the result.
 
-    Streaming: run_agent goes on a background task and reports each step into
-    a queue through its `on_step` hook. The loop waits for "a step arrived"
-    OR "the agent finished", whichever comes first, so every step is
-    forwarded the moment it exists rather than all at once at the end.
+    Streaming: run_agent goes on a background task and reports into a queue
+    through its on_step / on_token / on_reset / on_citations hooks. The loop
+    waits for "something arrived" OR "the agent finished", whichever comes
+    first, so every step and every word is forwarded the moment it exists.
     """
     if not stream:
         yield "result", await run_agent(**agent_kwargs)
         return
 
     queue: asyncio.Queue = asyncio.Queue()
-    task = asyncio.create_task(run_agent(on_step=queue.put_nowait, **agent_kwargs))
+    task = asyncio.create_task(
+        run_agent(
+            on_step=lambda step: queue.put_nowait(("step", step)),
+            on_token=lambda text: queue.put_nowait(("token", text)),
+            on_reset=lambda: queue.put_nowait(("reset", None)),
+            on_citations=lambda chunks: queue.put_nowait(("citations", chunks)),
+            **agent_kwargs,
+        )
+    )
     try:
         while True:
             getter = asyncio.ensure_future(queue.get())
             done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
             if getter in done:
-                yield "step", getter.result()
+                yield getter.result()
                 continue
             getter.cancel()
             break
-        # Steps recorded in the agent's very last moments.
+        # Events recorded in the agent's very last moments.
         while not queue.empty():
-            yield "step", queue.get_nowait()
+            yield queue.get_nowait()
         yield "result", task.result()
     finally:
         # The browser went away mid-answer: stop the agent as well, rather
@@ -517,6 +537,8 @@ async def _answer_events(
     if payload.mode == "agent":
         # ---- AGENT MODE: steps 3-5 handled by the Pydantic AI agent ---
         agent_result: Dict[str, Any] = {}
+        # The final answer's text as streamed so far (since the last reset).
+        streamed: List[str] = []
         async for kind, value in _agent_events(
             stream=stream,
             db=db,
@@ -529,6 +551,15 @@ async def _answer_events(
         ):
             if kind == "step":
                 yield "step", value
+            elif kind == "citations":
+                live = _citations_from(value, numbered=True)
+                yield "citations", {"citations": [c.model_dump(mode="json") for c in live]}
+            elif kind == "token":
+                streamed.append(value)
+                yield "token", {"text": value}
+            elif kind == "reset":
+                streamed.clear()
+                yield "reset", {}
             else:
                 agent_result = value
         # Same dictionary keys as LLMService.generate_answer returns, so
@@ -536,11 +567,18 @@ async def _answer_events(
         llm_result = agent_result
         citations = _citations_from(agent_result["citations_chunks"], numbered=True)
         steps = [AgentStep(**step) for step in agent_result["steps"]]
+        # The complete list: the last tool may have run after the text began.
         yield "citations", {"citations": [c.model_dump(mode="json") for c in citations]}
-        # The agent's final answer arrives in one piece (its tool loop cannot
-        # be streamed token by token), so it is sent on word by word.
-        for piece in _words(llm_result["answer"]):
-            yield "token", {"text": piece}
+        # The final answer normally streamed token by token above, straight
+        # from the model. When it did not -- demo mode, a failed run, a
+        # non-streaming caller -- or when what was streamed differs from the
+        # saved output, (re)send the saved text word by word, so the screen
+        # always ends up showing exactly what was saved.
+        if "".join(streamed).strip() != llm_result["answer"].strip():
+            if streamed:
+                yield "reset", {}
+            for piece in _words(llm_result["answer"]):
+                yield "token", {"text": piece}
     else:
         # ---- STEP 3: REWRITE a follow-up into a standalone search -------
         # "and for part-timers?" searched as-is finds the wrong passages.
@@ -597,6 +635,13 @@ async def _answer_events(
     total_tokens = int(llm_result.get("tokens_used") or 0) + extra_prompt + extra_completion
     model = llm_result.get("model") or "unknown"
 
+    # ---- STEP 5b: How far can this answer be trusted? ---------------------
+    # Measured, not asked of the model: the retrieval scores and how much of
+    # the answer carries a valid citation (services/confidence.py). Saved with
+    # the message so a reopened or shared answer keeps its verdict.
+    citation_dicts = [citation.model_dump(mode="json") for citation in citations]
+    verdict = confidence_service.assess(llm_result["answer"], citation_dicts, model=model)
+
     # ---- STEP 6: Save the answer -------------------------------------
     assistant_message = ChatMessage(
         session_id=session_id,
@@ -606,7 +651,8 @@ async def _answer_events(
         latency=llm_result.get("latency"),
         # Citations are stored as JSONB, so they must be plain JSON-safe types.
         # `mode="json"` converts the UUID objects into strings for us.
-        citations=[citation.model_dump(mode="json") for citation in citations],
+        citations=citation_dicts,
+        confidence=verdict,
         # Saved so a resumed conversation looks exactly like the live one.
         mode=payload.mode,
         model=model,
@@ -648,6 +694,7 @@ async def _answer_events(
         mode=payload.mode,
         steps=steps,
         search_query=rewrite.query if payload.mode == "rag" else None,
+        confidence=verdict,
     )
 
 

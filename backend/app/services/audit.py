@@ -23,6 +23,7 @@ THE ACTIONS WRITTEN TODAY
     api_key.create  api_key.revoke
     connector.connect  connector.disconnect  connector.import  document.sync
     billing.checkout  billing.portal  billing.plan_change
+    share.create  share.revoke
 
 WEBHOOKS
 --------

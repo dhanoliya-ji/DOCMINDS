@@ -423,7 +423,25 @@ export interface ChatMessageItem {
   mode?: ChatMode | null;
   model?: string | null;
   steps?: AgentStep[];
+  // How far the answer can be trusted (backend services/confidence.py).
+  // Absent on user messages and on answers saved before it existed.
+  confidence?: Confidence | null;
   created_at: string;
+}
+
+/** One reason behind a confidence verdict, e.g. {code: "strong_match", value: 0.82}. */
+export interface ConfidenceReason {
+  code: string;
+  value?: number;
+}
+
+/** The high / medium / low verdict on an answer, computed from measurements. */
+export interface Confidence {
+  level: "high" | "medium" | "low";
+  score: number;
+  retrieval: number;
+  coverage: number;
+  reasons: ConfidenceReason[];
 }
 
 export type ChatSessionItem = Schema<"ChatSessionOut">;
@@ -604,7 +622,21 @@ export interface ChatResponse {
   // What retrieval actually searched for -- differs from the question when
   // a follow-up was rewritten into a standalone query. Rag mode only.
   search_query?: string | null;
+  confidence?: Confidence | null;
 }
+
+// ---- Collaboration: share links, the prompt library, comparison -------
+export type ShareKind = "message" | "session" | "project";
+export type ShareLink = Schema<"ShareLinkOut">;
+/** The create response: the ONLY time the token is returned. */
+export type ShareLinkCreated = Schema<"ShareLinkCreated">;
+/** What an anonymous visitor to /share/<token> receives. */
+export type PublicShare = Schema<"PublicShare">;
+export type PromptTemplate = Schema<"PromptTemplateOut">;
+export type PromptScope = "personal" | "org";
+export type Comparison = Schema<"ComparisonOut">;
+export type ComparisonCitation = Schema<"ComparisonCitation">;
+export type Difference = Schema<"Difference">;
 
 // ----------------------------------------------------------------------
 // BATCH 2: projects, documents, streaming, history, feedback
@@ -678,6 +710,9 @@ export interface StreamHandlers {
   onStep?: (step: AgentStep) => void;
   onCitations?: (citations: CitationItem[]) => void;
   onToken?: (text: string) => void;
+  // Deep research: the text streamed so far was not the final answer (the
+  // model went on to call a tool). Discard it; the answer streams afresh.
+  onReset?: () => void;
 }
 
 /** One parsed Server-Sent Event. */
@@ -1261,6 +1296,9 @@ export const api = {
           case "token":
             handlers.onToken?.(payload.text);
             break;
+          case "reset":
+            handlers.onReset?.();
+            break;
           case "error":
             throw new ApiError(payload.detail || "Could not get an answer.", 500);
           case "done":
@@ -1316,6 +1354,70 @@ export const api = {
   /** Thumbs up / down over the last `days` days, summarised. */
   getFeedbackSummary(days = 30) {
     return apiFetch<FeedbackSummary>(`/org/feedback?days=${days}`);
+  },
+
+  // ---- Share links -------------------------------------------------------
+
+  /** Make a public read-only link. The token is in this response only. */
+  createShareLink(kind: ShareKind, targetId: string, expiresInDays?: number | null) {
+    return apiFetch<ShareLinkCreated>("/shares", {
+      method: "POST",
+      body: JSON.stringify({
+        kind,
+        target_id: targetId,
+        ...(expiresInDays ? { expires_in_days: expiresInDays } : {}),
+      }),
+    });
+  },
+
+  /** Every link to one target (the share dialog's list). */
+  listShareLinks(kind: ShareKind, targetId: string) {
+    return apiFetch<ShareLink[]>(`/shares?kind=${kind}&target_id=${encodeURIComponent(targetId)}`);
+  },
+
+  revokeShareLink(shareId: string) {
+    return apiFetch<void>(`/shares/${shareId}`, { method: "DELETE" });
+  },
+
+  /**
+   * The public view of a share link. No Authorization header on purpose:
+   * the page is for visitors without an account, and a signed-in viewer
+   * must see exactly what they see.
+   */
+  async getPublicShare(token: string) {
+    const response = await fetch(`${API_V1}/public/shares/${encodeURIComponent(token)}`);
+    if (!response.ok) throw await errorFromResponse(response, "This link could not be opened.");
+    return (await response.json()) as PublicShare;
+  },
+
+  // ---- Prompt library ----------------------------------------------------
+
+  listPrompts() {
+    return apiFetch<PromptTemplate[]>("/prompts");
+  },
+
+  createPrompt(title: string, body: string, scope: PromptScope = "personal") {
+    return apiFetch<PromptTemplate>("/prompts", {
+      method: "POST",
+      body: JSON.stringify({ title, body, scope }),
+    });
+  },
+
+  deletePrompt(promptId: string) {
+    return apiFetch<void>(`/prompts/${promptId}`, { method: "DELETE" });
+  },
+
+  // ---- Document comparison ------------------------------------------------
+
+  compareDocuments(documentA: string, documentB: string, focus?: string) {
+    return apiFetch<Comparison>("/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        document_a: documentA,
+        document_b: documentB,
+        ...(focus?.trim() ? { focus: focus.trim() } : {}),
+      }),
+    });
   },
 
   // ---- Health ----------------------------------------------------------

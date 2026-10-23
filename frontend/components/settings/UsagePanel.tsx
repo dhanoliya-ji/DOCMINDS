@@ -18,8 +18,10 @@ import { useEffect, useState } from "react";
 import { Notice } from "@/components/AuthCard";
 import QuotaBar, { formatBytes } from "@/components/settings/QuotaBar";
 import { UsageSummary, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export default function UsagePanel() {
+  const { t } = useT();
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [error, setError] = useState("");
 
@@ -28,10 +30,12 @@ export default function UsagePanel() {
     api
       .getUsage()
       .then((u) => !cancelled && setUsage(u))
-      .catch((err) => !cancelled && setError(getErrorMessage(err, "Could not load usage.")));
+      .catch((err) => !cancelled && setError(getErrorMessage(err, t("usage.loadError"))));
     return () => {
       cancelled = true;
     };
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (error) return <Notice tone="error">{error}</Notice>;
@@ -44,30 +48,30 @@ export default function UsagePanel() {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-3">
-        <Stat label="Questions answered" value={usage.requests.toLocaleString()} />
+        <Stat label={t("usage.questions")} value={usage.requests.toLocaleString()} />
         <Stat
-          label="Tokens in / out"
+          label={t("usage.tokens")}
           value={`${usage.prompt_tokens.toLocaleString()} / ${usage.completion_tokens.toLocaleString()}`}
         />
-        <Stat label="Estimated cost" value={`$${usage.estimated_cost_usd.toFixed(4)}`} />
+        <Stat label={t("usage.cost")} value={`$${usage.estimated_cost_usd.toFixed(4)}`} />
       </div>
       <div className="glass space-y-5 p-5">
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          Billing period {period}
+          {t("usage.period", { period })}
         </p>
-        <QuotaBar label="AI tokens this month" usage={usage.tokens} />
-        <QuotaBar label="Documents" usage={usage.documents} />
-        <QuotaBar label="Storage" usage={usage.storage_bytes} format={formatBytes} />
+        <QuotaBar label={t("usage.aiTokens")} usage={usage.tokens} />
+        <QuotaBar label={t("usage.documents")} usage={usage.documents} />
+        <QuotaBar label={t("usage.storage")} usage={usage.storage_bytes} format={formatBytes} />
       </div>
       {usage.by_model.length > 0 && (
         <table className="w-full text-left text-sm">
-          <caption className="sr-only">Usage by model</caption>
+          <caption className="sr-only">{t("usage.byModel")}</caption>
           <thead style={{ color: "var(--text-muted)" }}>
             <tr>
-              <th className="py-2 font-medium">Model</th>
-              <th className="py-2 font-medium">Requests</th>
-              <th className="py-2 font-medium">Tokens</th>
-              <th className="py-2 font-medium">Est. cost</th>
+              <th className="py-2 font-medium">{t("usage.model")}</th>
+              <th className="py-2 font-medium">{t("usage.requests")}</th>
+              <th className="py-2 font-medium">{t("usage.tokensCol")}</th>
+              <th className="py-2 font-medium">{t("usage.estCost")}</th>
             </tr>
           </thead>
           <tbody>

@@ -41,6 +41,7 @@ import {
   api,
   getErrorMessage,
 } from "@/lib/api";
+import { rich, useT } from "@/lib/i18n";
 
 /** Subscribe to every event, including ones added in later versions. */
 const ALL_EVENTS = "*";
@@ -64,6 +65,7 @@ function when(value: string | null | undefined): string {
 }
 
 export default function WebhooksPanel() {
+  const { t } = useT();
   const [hooks, setHooks] = useState<Webhook[] | null>(null);
   // True once the API has said 404: render nothing at all.
   const [disabled, setDisabled] = useState(false);
@@ -86,8 +88,10 @@ export default function WebhooksPanel() {
       setHooks(await api.listWebhooks());
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) setDisabled(true);
-      else setError(getErrorMessage(err, "Could not load webhooks."));
+      else setError(getErrorMessage(err, t("webhooks.loadError")));
     }
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -121,7 +125,7 @@ export default function WebhooksPanel() {
       setChosen([ALL_EVENTS]);
       await load();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not create the webhook."));
+      setError(getErrorMessage(err, t("webhooks.createError")));
     } finally {
       setCreating(false);
     }
@@ -132,10 +136,10 @@ export default function WebhooksPanel() {
     try {
       await api.deleteWebhook(hook.id);
       if (openId === hook.id) setOpenId(null);
-      setStatus(`Deleted the webhook for ${hook.url}.`);
+      setStatus(t("webhooks.deleted", { url: hook.url }));
       await load();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not delete the webhook."));
+      setError(getErrorMessage(err, t("webhooks.deleteError")));
     }
   }
 
@@ -143,10 +147,10 @@ export default function WebhooksPanel() {
     setError("");
     try {
       await api.testWebhook(hook.id);
-      setStatus(`Test event queued for ${hook.url}.`);
+      setStatus(t("webhooks.testQueued", { url: hook.url }));
       if (openId === hook.id) setDeliveries(await api.listWebhookDeliveries(hook.id));
     } catch (err) {
-      setError(getErrorMessage(err, "Could not send the test event."));
+      setError(getErrorMessage(err, t("webhooks.testError")));
     }
   }
 
@@ -161,17 +165,17 @@ export default function WebhooksPanel() {
       setDeliveries(await api.listWebhookDeliveries(hook.id));
     } catch (err) {
       setDeliveries([]);
-      setError(getErrorMessage(err, "Could not load the deliveries."));
+      setError(getErrorMessage(err, t("webhooks.deliveriesError")));
     }
   }
 
   return (
     <div className="space-y-6">
-      <form onSubmit={create} className="glass space-y-4 p-5" aria-label="New webhook">
+      <form onSubmit={create} className="glass space-y-4 p-5" aria-label={t("webhooks.form")}>
         <div className="flex flex-wrap gap-3">
           <label className="min-w-[14rem] flex-[2] text-sm">
             <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-              Endpoint URL
+              {t("webhooks.url")}
             </span>
             <input
               className="input"
@@ -185,7 +189,7 @@ export default function WebhooksPanel() {
           </label>
           <label className="min-w-[12rem] flex-1 text-sm">
             <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-              Description (optional)
+              {t("webhooks.description")}
             </span>
             <input
               className="input"
@@ -197,12 +201,12 @@ export default function WebhooksPanel() {
         </div>
         <fieldset className="text-sm">
           <legend className="mb-2" style={{ color: "var(--text-secondary)" }}>
-            Events
+            {t("webhooks.events")}
           </legend>
           <div className="flex flex-wrap gap-x-4 gap-y-2">
             <label className="inline-flex items-center gap-2">
               <input type="checkbox" checked={chosen.includes(ALL_EVENTS)} onChange={() => toggleEvent(ALL_EVENTS)} />
-              All events
+              {t("webhooks.allEvents")}
             </label>
             {events
               .filter((e) => e.name !== ALL_EVENTS)
@@ -225,17 +229,21 @@ export default function WebhooksPanel() {
           ) : (
             <WebhookIcon size={15} aria-hidden="true" />
           )}
-          Add webhook
+          {t("webhooks.add")}
         </button>
       </form>
 
       {created && (
         <Notice tone="success">
-          Signing secret for {created.url}. Copy it now — it will not be shown again:{" "}
-          <code className="break-all" data-testid="new-webhook-secret">
-            {created.secret}
-          </code>{" "}
-          <CopyButton text={created.secret} label="Copy secret" />
+          {rich(t("webhooks.secret"), {
+            url: created.url,
+            secret: (
+              <code className="break-all" data-testid="new-webhook-secret">
+                {created.secret}
+              </code>
+            ),
+            copy: <CopyButton text={created.secret} label={t("webhooks.copySecret")} />,
+          })}
         </Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
@@ -252,10 +260,10 @@ export default function WebhooksPanel() {
         <div className="glass shimmer h-24" aria-busy="true" />
       ) : hooks.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          No webhooks yet.
+          {t("webhooks.empty")}
         </p>
       ) : (
-        <ul className="space-y-3" aria-label="Webhooks">
+        <ul className="space-y-3" aria-label={t("webhooks.list")}>
           {hooks.map((hook) => (
             <li key={hook.id} className="glass p-4 text-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -263,9 +271,9 @@ export default function WebhooksPanel() {
                   <p className="break-all font-medium">{hook.url}</p>
                   {hook.description && <p style={{ color: "var(--text-secondary)" }}>{hook.description}</p>}
                   <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-                    {hook.event_types.includes(ALL_EVENTS) ? "All events" : hook.event_types.join(", ")} ·{" "}
+                    {hook.event_types.includes(ALL_EVENTS) ? t("webhooks.allEvents") : hook.event_types.join(", ")} ·{" "}
                     <span style={{ color: hook.is_active ? "var(--success)" : "var(--text-muted)" }}>
-                      {hook.is_active ? "Active" : "Paused"}
+                      {hook.is_active ? t("webhooks.active") : t("webhooks.paused")}
                     </span>
                   </p>
                 </div>
@@ -275,9 +283,9 @@ export default function WebhooksPanel() {
                     className="btn-ghost text-xs"
                     onClick={() => sendTest(hook)}
                     disabled={!hook.is_active}
-                    aria-label={`Send a test event to ${hook.url}`}
+                    aria-label={t("webhooks.sendTestLabel", { url: hook.url })}
                   >
-                    <Send size={13} aria-hidden="true" /> Send test
+                    <Send size={13} aria-hidden="true" /> {t("webhooks.sendTest")}
                   </button>
                   <button
                     type="button"
@@ -286,15 +294,15 @@ export default function WebhooksPanel() {
                     aria-expanded={openId === hook.id}
                     aria-controls={`deliveries-${hook.id}`}
                   >
-                    Deliveries
+                    {t("webhooks.deliveries")}
                     <ChevronDown
                       size={13}
                       aria-hidden="true"
                       style={{ transform: openId === hook.id ? "rotate(180deg)" : undefined }}
                     />
                   </button>
-                  <HoldToConfirm onConfirm={() => remove(hook)} aria-label={`Delete the webhook for ${hook.url}`}>
-                    Hold to delete
+                  <HoldToConfirm onConfirm={() => remove(hook)} aria-label={t("webhooks.deleteLabel", { url: hook.url })}>
+                    {t("webhooks.holdDelete")}
                   </HoldToConfirm>
                 </div>
               </div>
@@ -304,17 +312,17 @@ export default function WebhooksPanel() {
                   {deliveries === null ? (
                     <div className="shimmer h-10 rounded-lg" aria-busy="true" />
                   ) : deliveries.length === 0 ? (
-                    <p style={{ color: "var(--text-secondary)" }}>No deliveries yet.</p>
+                    <p style={{ color: "var(--text-secondary)" }}>{t("webhooks.noDeliveries")}</p>
                   ) : (
                     <table className="w-full text-left text-xs">
-                      <caption className="sr-only">Recent deliveries to {hook.url}</caption>
+                      <caption className="sr-only">{t("webhooks.recent", { url: hook.url })}</caption>
                       <thead style={{ color: "var(--text-muted)" }}>
                         <tr>
-                          <th className="py-1.5 font-medium">Event</th>
-                          <th className="py-1.5 font-medium">Status</th>
-                          <th className="py-1.5 font-medium">Attempts</th>
-                          <th className="py-1.5 font-medium">Response</th>
-                          <th className="py-1.5 font-medium">Created</th>
+                          <th className="py-1.5 font-medium">{t("webhooks.colEvent")}</th>
+                          <th className="py-1.5 font-medium">{t("webhooks.colStatus")}</th>
+                          <th className="py-1.5 font-medium">{t("webhooks.colAttempts")}</th>
+                          <th className="py-1.5 font-medium">{t("webhooks.colResponse")}</th>
+                          <th className="py-1.5 font-medium">{t("webhooks.colCreated")}</th>
                         </tr>
                       </thead>
                       <tbody>

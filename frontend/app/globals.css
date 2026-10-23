@@ -51,15 +51,21 @@
     --border-subtle: rgba(255, 255, 255, 0.07);
     --border-strong: rgba(255, 255, 255, 0.14);
 
+    /* Every text token keeps at least 4.5:1 on the page, a panel, a card and
+       a hovered input -- checked by scripts/contrast.mjs and its unit test.
+       (--text-muted was #64738f: 3.1:1 on a hovered input.) */
     --text-primary: #eef2ff;
     --text-secondary: #9aa8c7;
-    --text-muted: #64738f;
+    --text-muted: #8190b0;
 
-    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows. */
-    --accent: #6366f1;
+    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows.
+       --accent and --violet are the two ends of the primary button, so both
+       keep 4.5:1 under its white label (they were #6366f1 at 4.47:1 and
+       #a855f7 at 3.96:1); --accent still clears 3:1 as a focus ring. */
+    --accent: #5b5ff0;
     --accent-hover: #818cf8;
     --accent-glow: rgba(99, 102, 241, 0.4);
-    --violet: #a855f7;
+    --violet: #9645e8;
     --cyan: #22d3ee;
 
     --success: #34d399;
@@ -84,8 +90,8 @@
      --------------------------------------------------------------------
      Set by lib/theme.ts (and its inline no-flash script in layout.tsx) as
      `data-theme="light"` on <html>. Only the tokens change; every component
-     reads tokens, so nothing else needs a light variant. Text colours are
-     chosen for at least 4.5:1 contrast on the light card surface.
+     reads tokens, so nothing else needs a light variant. Text colours keep
+     at least 4.5:1 on every light surface (scripts/contrast.mjs).
      ==================================================================== */
   :root[data-theme="light"] {
     --bg-base: #f5f7fc;
@@ -106,7 +112,8 @@
     --cyan: #0e7490;
 
     --success: #047857;
-    --warning: #a16207;
+    /* #a16207 fell to 4.2:1 on a hovered input; one step darker clears it. */
+    --warning: #92580a;
     --danger: #b91c1c;
 
     --surface-1: rgba(15, 23, 42, 0.035);
@@ -118,6 +125,39 @@
     --wash-2: rgba(168, 85, 247, 0.08);
     --overlay: rgba(15, 23, 42, 0.45);
     --scrollbar: rgba(15, 23, 42, 0.18);
+
+    /* Chart series, light steps of the same eight hues (AnswerChart.tsx). */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #6250d6;
+    --series-8: #e34948;
+    --chart-surface: #ffffff;
+    --chart-grid: rgba(15, 23, 42, 0.1);
+  }
+
+  /* ====================================================================
+     CHART SERIES (dark, the default theme)
+     --------------------------------------------------------------------
+     A fixed categorical order, never cycled: series N is always hue N. The
+     dark steps are the same hues re-stepped for the dark surface and
+     validated against it (adjacent CVD separation >= 8). Charts drawn
+     from answers use no more than eight series.
+     ==================================================================== */
+  :root:not([data-theme="light"]) {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --chart-surface: #12141c;
+    --chart-grid: rgba(255, 255, 255, 0.08);
   }
 
   /* ====================================================================
@@ -561,4 +601,37 @@
   .lift-card:focus-within {
     transform: none;
   }
+}
+
+/* ======================================================================
+   ANSWER MARKDOWN: tables (remark-gfm) inside assistant answers
+   ====================================================================== */
+.answer-table-wrap {
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.6rem;
+}
+.answer-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8rem;
+}
+.answer-table-wrap th,
+.answer-table-wrap td {
+  padding: 0.4rem 0.65rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+.answer-table-wrap th {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.answer-table-wrap tr:last-child td {
+  border-bottom: none;
+}
+.answer-table-wrap td {
+  font-variant-numeric: tabular-nums;
 }

@@ -20,6 +20,7 @@ import { useEffect, useState } from "react";
 
 import { Notice } from "@/components/AuthCard";
 import { FeedbackBreakdown, FeedbackSummary, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 const PERIODS = [7, 30, 90] as const;
 
@@ -29,6 +30,7 @@ export function formatSatisfaction(value: number | null): string {
 }
 
 export default function FeedbackPanel() {
+  const { t } = useT();
   const [days, setDays] = useState<number>(30);
   const [summary, setSummary] = useState<FeedbackSummary | null>(null);
   const [error, setError] = useState("");
@@ -42,15 +44,17 @@ export default function FeedbackPanel() {
         setSummary(s);
         setError("");
       })
-      .catch((err) => !cancelled && setError(getErrorMessage(err, "Could not load feedback.")));
+      .catch((err) => !cancelled && setError(getErrorMessage(err, t("feedback.loadError"))));
     return () => {
       cancelled = true;
     };
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days]);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2 text-xs" role="group" aria-label="Period">
+      <div className="flex items-center gap-2 text-xs" role="group" aria-label={t("feedback.period")}>
         {PERIODS.map((p) => (
           <button
             key={p}
@@ -59,7 +63,7 @@ export default function FeedbackPanel() {
             aria-pressed={p === days}
             onClick={() => setDays(p)}
           >
-            Last {p} days
+            {t("feedback.lastDays", { days: p })}
           </button>
         ))}
       </div>
@@ -70,34 +74,37 @@ export default function FeedbackPanel() {
         <div className="glass shimmer h-40" aria-busy="true" />
       ) : summary.total === 0 ? (
         <div className="glass px-6 py-10 text-center text-sm" style={{ color: "var(--text-secondary)" }}>
-          No answers have been rated in this period yet. Ratings come from the
-          thumbs up / down under every answer in Ask AI.
+          {t("feedback.empty")}
         </div>
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
-            <Stat label="Satisfaction" value={formatSatisfaction(summary.satisfaction)} />
-            <Stat label="Helpful" value={summary.up.toLocaleString()} />
-            <Stat label="Not helpful" value={summary.down.toLocaleString()} />
+            <Stat label={t("feedback.satisfaction")} value={formatSatisfaction(summary.satisfaction)} />
+            <Stat label={t("feedback.helpful")} value={summary.up.toLocaleString()} />
+            <Stat label={t("feedback.notHelpful")} value={summary.down.toLocaleString()} />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Breakdown title="By answer mode" rows={summary.by_mode} labels={{ rag: "Quick answer", agent: "Deep research" }} />
-            <Breakdown title="By model" rows={summary.by_model} />
+            <Breakdown
+              title={t("feedback.byMode")}
+              rows={summary.by_mode}
+              labels={{ rag: t("chat.mode.rag"), agent: t("chat.mode.agent") }}
+            />
+            <Breakdown title={t("feedback.byModel")} rows={summary.by_model} />
           </div>
 
           {summary.recent_negative.length > 0 && (
-            <section aria-label="Recent unhelpful answers" className="space-y-3">
-              <h3 className="text-sm font-semibold">Recent unhelpful answers</h3>
+            <section aria-label={t("feedback.recent")} className="space-y-3">
+              <h3 className="text-sm font-semibold">{t("feedback.recent")}</h3>
               {summary.recent_negative.map((item) => (
                 <article key={`${item.message_id}-${item.created_at}`} className="glass space-y-2 p-4 text-sm">
                   <div className="text-xs" style={{ color: "var(--text-muted)" }}>
                     {new Date(item.created_at).toLocaleString()}
-                    {item.mode ? ` · ${item.mode === "agent" ? "Deep research" : "Quick answer"}` : ""}
+                    {item.mode ? ` · ${item.mode === "agent" ? t("chat.mode.agent") : t("chat.mode.rag")}` : ""}
                     {item.model ? ` · ${item.model}` : ""}
                   </div>
                   <p>
-                    <strong>Q:</strong> {item.question ?? "(question not found)"}
+                    <strong>Q:</strong> {item.question ?? t("feedback.questionMissing")}
                   </p>
                   <p style={{ color: "var(--text-secondary)" }}>
                     <strong>A:</strong> {item.answer.length > 400 ? `${item.answer.slice(0, 400)}...` : item.answer}
@@ -137,6 +144,7 @@ function Breakdown({
   rows: FeedbackBreakdown[];
   labels?: Record<string, string>;
 }) {
+  const { t } = useT();
   return (
     <table className="glass w-full text-left text-sm">
       <caption className="px-4 pt-3 text-left text-xs font-medium" style={{ color: "var(--text-muted)" }}>
@@ -144,9 +152,9 @@ function Breakdown({
       </caption>
       <thead style={{ color: "var(--text-muted)" }}>
         <tr>
-          <th className="px-4 py-2 font-medium">Slice</th>
-          <th className="px-4 py-2 font-medium">Up</th>
-          <th className="px-4 py-2 font-medium">Down</th>
+          <th className="px-4 py-2 font-medium">{t("feedback.slice")}</th>
+          <th className="px-4 py-2 font-medium">{t("feedback.up")}</th>
+          <th className="px-4 py-2 font-medium">{t("feedback.down")}</th>
         </tr>
       </thead>
       <tbody>

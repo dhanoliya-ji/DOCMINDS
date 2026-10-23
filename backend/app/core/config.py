@@ -770,6 +770,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_CHAT: str = "30/minute"
     RATE_LIMIT_SEARCH: str = "60/minute"
     RATE_LIMIT_UPLOAD: str = "30/minute"
+    # Per IP: anonymous visitors to public share links (/share/<token>).
+    # Generous for people reading; a script guessing 256-bit tokens never
+    # finds one anyway, this only keeps it from costing database time.
+    RATE_LIMIT_SHARE_VIEW: str = "120/minute"
+    # Per user: a document comparison is one large model call.
+    RATE_LIMIT_COMPARE: str = "10/minute"
 
     # ------------------------------------------------------------------
     # WHO IS THE CLIENT? (behind a proxy, the TCP peer is the proxy)
@@ -1248,6 +1254,7 @@ class Settings(BaseSettings):
         for name in (
             "RATE_LIMIT_LOGIN", "RATE_LIMIT_SIGNUP", "RATE_LIMIT_PASSWORD_RESET", "RATE_LIMIT_VERIFY_RESEND",
             "RATE_LIMIT_CHAT", "RATE_LIMIT_SEARCH", "RATE_LIMIT_UPLOAD",
+            "RATE_LIMIT_SHARE_VIEW", "RATE_LIMIT_COMPARE",
         ):
             try:
                 parse_rate_limit(getattr(self, name))
