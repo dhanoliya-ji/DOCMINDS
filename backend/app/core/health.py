@@ -88,11 +88,39 @@ async def check_celery_worker() -> None:
         raise RuntimeError("no Celery worker replied")
 
 
+class StorageCheckFailed(Exception):
+    """Carries only the S3 error CODE, which is safe to show publicly."""
+
+
+async def check_storage() -> None:
+    """
+    HEAD the S3 bucket with the configured credentials.
+
+    Without this, a wrong bucket name or key is only discovered when a user's
+    upload fails. The reply carries just the provider's error code
+    ("AccessDenied", "NoSuchBucket", "InvalidAccessKeyId", a connection error
+    type) -- never the bucket, endpoint or key.
+    """
+    from app.services.storage import S3Storage
+
+    def _head() -> None:
+        client = S3Storage._make_client()
+        try:
+            client.head_bucket(Bucket=settings.S3_BUCKET)
+        except Exception as exc:
+            response = getattr(exc, "response", None) or {}
+            code = response.get("Error", {}).get("Code") or type(exc).__name__
+            raise StorageCheckFailed(str(code)) from None
+
+    await asyncio.to_thread(_head)
+
+
 # Indirection so the tests can swap a check for a fake one.
 CHECKS: Dict[str, Callable[[], Awaitable[None]]] = {
     "database": check_database,
     "redis": check_redis,
     "celery_worker": check_celery_worker,
+    "storage": check_storage,
 }
 
 
@@ -102,6 +130,9 @@ def _plan() -> Dict[str, bool]:
     plan = {"database": True, "redis": celery}
     if celery:
         plan["celery_worker"] = True
+    if settings.STORAGE_BACKEND == "s3":
+        # Uploads cannot work without it, so it is a hard dependency.
+        plan["storage"] = True
     return plan
 
 
@@ -113,6 +144,8 @@ async def _run(name: str) -> Tuple[str, Dict[str, Any]]:
         status = {"status": "ok"}
     except asyncio.TimeoutError:
         status = {"status": "down", "error": "timeout"}
+    except StorageCheckFailed as exc:
+        status = {"status": "down", "error": str(exc)}
     except Exception as exc:
         status = {"status": "down", "error": type(exc).__name__}
     status["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)

@@ -248,6 +248,11 @@ class S3Storage(Storage):
             # boto3's own retries, with backoff, for throttling and 5xx. Our
             # ingestion retries sit on top of these for longer outages.
             "retries": {"max_attempts": 5, "mode": "standard"},
+            # boto3 waits 60 s for a connection by default; five attempts at
+            # that left an upload hanging for minutes before it failed. A
+            # healthy endpoint connects in well under a second.
+            "connect_timeout": 5,
+            "read_timeout": 60,
         }
         kwargs: dict = {}
         # Every one of these is optional; an empty setting means "let boto3
