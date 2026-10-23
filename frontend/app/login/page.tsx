@@ -40,6 +40,7 @@ import { FormEvent, Suspense, useEffect, useState } from "react";
 
 import { AuthCard, Notice, PasswordHints } from "@/components/AuthCard";
 import { ApiError, InvitePreview, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { PASSWORD_MIN_LENGTH, passwordProblems } from "@/lib/password";
 import { roleLabel } from "@/lib/roles";
 import { SsoConfig, getSsoConfig, ssoLoginUrl } from "@/lib/sso";
@@ -66,6 +67,7 @@ function LoginForm() {
   // Each input is a "controlled component": React holds the value in state and
   // the input displays it. An invite link opens straight into signup mode.
   const [isSignup, setIsSignup] = useState(Boolean(inviteToken));
+  const { t } = useT();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [orgName, setOrgName] = useState("");
@@ -171,7 +173,7 @@ function LoginForm() {
     } catch (err) {
       // Show the backend's real message ("A user with this email already
       // exists", "Too many sign-in attempts...") rather than a generic one.
-      setError(getErrorMessage(err, "Something went wrong. Please try again."));
+      setError(getErrorMessage(err, t("auth.genericError")));
     } finally {
       // `finally` runs whether or not an error was thrown, so the button can
       // never get permanently stuck in its loading state.
@@ -180,15 +182,15 @@ function LoginForm() {
   }
 
   const title = joining
-    ? `Join ${invite.org_name}`
+    ? t("auth.joinTitle", { org: invite.org_name })
     : isSignup
-      ? "Create your workspace"
-      : "Welcome back";
+      ? t("auth.createWorkspaceTitle")
+      : t("auth.welcomeBack");
   const subtitle = joining
-    ? `You've been invited as ${roleLabel(invite.role)}. Choose a password to finish.`
+    ? t("auth.joinSubtitle", { role: roleLabel(invite.role) })
     : isSignup
-      ? "Set up an organization and start uploading documents."
-      : "Sign in to search and question your documents.";
+      ? t("auth.signupSubtitle")
+      : t("auth.signInSubtitle");
 
   return (
     <AuthCard title={title} subtitle={subtitle}>
@@ -215,8 +217,8 @@ function LoginForm() {
               className="input pl-11"
               // aria-label because the visible cue is the placeholder, which
               // screen readers do not reliably announce as a label.
-              aria-label="Organization name"
-              placeholder="Organization name"
+              aria-label={t("auth.orgName")}
+              placeholder={t("auth.orgName")}
               value={orgName}
               onChange={(e) => setOrgName(e.target.value)}
               required
@@ -237,7 +239,7 @@ function LoginForm() {
             // type="email" makes mobile browsers show an @-friendly keyboard
             // and gives basic format validation for free.
             type="email"
-            aria-label="Email"
+            aria-label={t("auth.email")}
             autoComplete="email"
             className="input pl-11"
             placeholder="you@company.com"
@@ -260,13 +262,13 @@ function LoginForm() {
             <input
               // type="password" masks the characters as they are typed.
               type="password"
-              aria-label="Password"
+              aria-label={t("auth.password")}
               // Tells password managers whether to offer a saved password or
               // to generate a new one.
               autoComplete={isSignup ? "new-password" : "current-password"}
               aria-describedby={isSignup ? hintsId : undefined}
               className="input pl-11"
-              placeholder="Password"
+              placeholder={t("auth.password")}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -280,7 +282,7 @@ function LoginForm() {
         {!isSignup && (
           <div className="text-right text-sm">
             <Link href="/forgot-password" style={{ color: "var(--accent-hover)" }}>
-              Forgot password?
+              {t("auth.forgot")}
             </Link>
           </div>
         )}
@@ -297,11 +299,11 @@ function LoginForm() {
           {loading ? (
             <>
               <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-              {isSignup ? "Creating account..." : "Signing in..."}
+              {isSignup ? t("auth.creatingAccount") : t("auth.signingIn")}
             </>
           ) : (
             <>
-              {joining ? "Join workspace" : isSignup ? "Create workspace" : "Sign in"}
+              {joining ? t("auth.joinWorkspace") : isSignup ? t("auth.createWorkspace") : t("auth.signIn")}
               <ArrowRight size={16} aria-hidden="true" />
             </>
           )}
@@ -315,7 +317,7 @@ function LoginForm() {
         <div className="mt-4">
           <a href={ssoLoginUrl(joining ? inviteToken : undefined)} className="btn-ghost w-full py-3">
             <KeyRound size={16} aria-hidden="true" />
-            Continue with {sso.provider_name}
+            {t("auth.continueWith", { provider: sso.provider_name })}
           </a>
         </div>
       )}
@@ -323,7 +325,7 @@ function LoginForm() {
       {/* Toggle between the two modes */}
       <div className="mt-6 text-center text-sm">
         <span style={{ color: "var(--text-muted)" }}>
-          {isSignup ? "Already have an account?" : "No account yet?"}
+          {isSignup ? t("auth.haveAccount") : t("auth.noAccount")}
         </span>{" "}
         <button
           type="button"
@@ -337,7 +339,7 @@ function LoginForm() {
           className="font-medium transition-colors"
           style={{ color: "var(--accent-hover)" }}
         >
-          {isSignup ? "Sign in" : "Create one"}
+          {isSignup ? t("auth.signIn") : t("auth.createOne")}
         </button>
       </div>
     </AuthCard>

@@ -25,6 +25,24 @@
  * Three at a time keeps the browser's connection pool and the upload rate
  * limit (RATE_LIMIT_UPLOAD) comfortable while still finishing a batch fast.
  *
+ * THE ZONE'S STATES (F11)
+ * ------------------------
+ * The drop area itself animates between its states, so you can tell from
+ * across the room what it is doing:
+ *
+ *     idle -> drag-over -> uploading -> processing -> done | error
+ *
+ *   drag-over    the dashed border takes the accent colour, the icon lifts
+ *   uploading    an arrow climbs on a loop inside a ring that fills with
+ *                the batch's overall progress
+ *   processing   every byte is sent but the server has not replied yet (it
+ *                is storing, scanning and queueing) -- the ring pulses
+ *   done / error a tick or a cross pops in, until the rows clear
+ *
+ * Each row keeps its own bar and percentage, as before. Under
+ * prefers-reduced-motion nothing moves: the same icons and colours appear
+ * with every transition set to zero.
+ *
  * HOW HTML DRAG AND DROP WORKS
  * ----------------------------
  * A browser's default reaction to a file dropped on a page is to NAVIGATE to
@@ -37,10 +55,12 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle2, Loader2, UploadCloud, X, XCircle } from "lucide-react";
+import { ArrowUp, Check, CheckCircle2, Loader2, UploadCloud, X, XCircle } from "lucide-react";
 import { DragEvent, useRef, useState } from "react";
 
+import { usePrefersReducedMotion } from "@/components/landing/hooks";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 /**
  * Word an upload failure for the person who just dropped the files.
@@ -114,6 +134,132 @@ export async function runPool<T>(items: T[], limit: number, worker: (item: T) =>
   await Promise.all(lanes);
 }
 
+/** What the drop area as a whole is showing (F11). */
+export type ZonePhase = "idle" | "drag-over" | "uploading" | "processing" | "done" | "error";
+
+/**
+ * Work out the zone's phase from the rows. Exported for the tests.
+ *
+ * A row whose bytes are all sent (progress 1) but whose request has not yet
+ * returned is "processing": the server is storing and scanning it.
+ */
+export function zonePhase(dragging: boolean, rows: UploadRow[]): ZonePhase {
+  if (dragging) return "drag-over";
+  const active = rows.filter((r) => r.status === "queued" || r.status === "uploading");
+  if (active.length > 0) {
+    const sending = active.some((r) => r.status === "queued" || r.progress < 1);
+    return sending ? "uploading" : "processing";
+  }
+  if (rows.some((r) => r.status === "error")) return "error";
+  if (rows.some((r) => r.status === "done")) return "done";
+  return "idle";
+}
+
+/** The headline for each phase (an i18n key). */
+const PHASE_TEXT: Record<ZonePhase, string> = {
+  idle: "upload.idle",
+  "drag-over": "upload.dragOver",
+  uploading: "upload.uploading",
+  processing: "upload.processing",
+  done: "upload.done",
+  error: "upload.error",
+};
+
+/** Colour per phase, as theme tokens so light and dark both work. */
+const PHASE_COLOR: Record<ZonePhase, string> = {
+  idle: "var(--accent-hover)",
+  "drag-over": "var(--accent)",
+  uploading: "var(--accent)",
+  processing: "var(--violet)",
+  done: "var(--success)",
+  error: "var(--danger)",
+};
+
+/**
+ * The animated icon in the middle of the zone.
+ *
+ * An SVG ring around a lucide icon: the ring's `pathLength` follows the
+ * batch's overall progress while uploading, and pulses while processing.
+ * Icons swap through AnimatePresence so each state pops in rather than
+ * cutting. `reduced` makes every transition instant.
+ */
+function ZoneIcon({ phase, progress, reduced }: { phase: ZonePhase; progress: number; reduced: boolean }) {
+  const color = PHASE_COLOR[phase];
+  const still = { duration: 0 };
+  const icon =
+    phase === "done" ? (
+      <Check size={22} />
+    ) : phase === "error" ? (
+      <X size={22} />
+    ) : phase === "uploading" ? (
+      <motion.span
+        className="inline-flex"
+        // The arrow climbs and fades on a loop: "going up".
+        animate={reduced ? undefined : { y: [4, -4], opacity: [0.4, 1, 0.4] }}
+        transition={reduced ? still : { duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+      >
+        <ArrowUp size={22} />
+      </motion.span>
+    ) : phase === "processing" ? (
+      <Loader2 size={22} className={reduced ? undefined : "animate-spin"} />
+    ) : (
+      <UploadCloud size={22} />
+    );
+
+  return (
+    <motion.div
+      data-testid="upload-zone-icon"
+      data-phase={phase}
+      // Lifts while a file hovers over the zone, reinforcing the highlight.
+      animate={{ scale: phase === "drag-over" ? 1.1 : 1, y: phase === "drag-over" ? -4 : 0 }}
+      transition={reduced ? still : { type: "spring", stiffness: 300, damping: 20 }}
+      className="relative order-first mb-3 inline-flex h-14 w-14 items-center justify-center rounded-2xl"
+      style={{ background: "var(--surface-2)", color }}
+      aria-hidden="true"
+    >
+      <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 56 56" fill="none">
+        {(phase === "uploading" || phase === "processing") && (
+          <motion.circle
+            cx="28"
+            cy="28"
+            r="25"
+            stroke={color}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            initial={false}
+            animate={
+              phase === "uploading"
+                ? { pathLength: Math.max(0.04, progress), opacity: 1 }
+                : reduced
+                  ? { pathLength: 1, opacity: 0.8 }
+                  : { pathLength: 1, opacity: [0.3, 1, 0.3] }
+            }
+            transition={
+              reduced
+                ? still
+                : phase === "processing"
+                  ? { opacity: { duration: 1.4, repeat: Infinity }, pathLength: { duration: 0.3 } }
+                  : { duration: 0.3 }
+            }
+          />
+        )}
+      </svg>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={phase === "drag-over" ? "idle" : phase}
+          className="inline-flex"
+          initial={reduced ? false : { scale: 0.4, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={reduced ? undefined : { scale: 0.4, opacity: 0 }}
+          transition={reduced ? still : { type: "spring", stiffness: 400, damping: 22 }}
+        >
+          {icon}
+        </motion.span>
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 interface Props {
   projectId: string;
   /** Called after each successful upload so the parent can refresh its list. */
@@ -125,6 +271,8 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
   const [dragging, setDragging] = useState(false);
   const [rows, setRows] = useState<UploadRow[]>([]);
   const nextKey = useRef(0);
+  const { t } = useT();
+  const reduced = usePrefersReducedMotion();
 
   // A `ref` holds a direct handle on a DOM element. We need one here because
   // the native file input is ugly and cannot be styled, so we hide it and
@@ -201,40 +349,51 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
 
   const done = rows.filter((r) => r.status === "done").length;
   const failed = rows.filter((r) => r.status === "error").length;
+  const phase = zonePhase(dragging, rows);
+  // The whole batch's progress, for the ring around the icon.
+  const overall = rows.length
+    ? rows.reduce((sum, r) => sum + (r.status === "error" ? 1 : r.progress), 0) / rows.length
+    : 0;
 
   return (
     <div>
-      <div
+      <motion.div
+        data-testid="upload-zone"
+        data-phase={phase}
+        role="button"
+        tabIndex={0}
+        aria-label={t("upload.zoneLabel")}
+        // Keyboard users open the picker with Enter or Space, like any button.
+        onKeyDown={(e) => {
+          if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            fileInputRef.current?.click();
+          }
+        }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         // Clicking anywhere in the zone opens the system file picker, by
         // forwarding the click to the hidden input.
         onClick={() => fileInputRef.current?.click()}
-        className="glass glass-hover flex cursor-pointer flex-col items-center justify-center px-6 py-10 text-center transition-all"
+        // The zone swells a touch while a file hovers over it.
+        animate={{ scale: phase === "drag-over" && !reduced ? 1.01 : 1 }}
+        transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 300, damping: 24 }}
+        className="glass glass-hover flex cursor-pointer flex-col items-center justify-center px-6 py-10 text-center transition-colors"
         style={{
-          // Highlight the zone while a file hovers over it.
-          borderColor: dragging ? "var(--accent)" : "var(--border-subtle)",
-          background: dragging ? "rgba(99,102,241,0.08)" : undefined,
+          // The border takes the phase's colour; dashed while waiting for a drop.
+          borderColor: phase === "idle" ? "var(--border-subtle)" : PHASE_COLOR[phase],
+          borderStyle: phase === "idle" || phase === "drag-over" ? "dashed" : "solid",
+          background: phase === "drag-over" ? "var(--surface-2)" : undefined,
         }}
       >
-        <p className="font-medium">
-          {busy ? "Uploading..." : dragging ? "Drop to upload" : "Drag files here, or click to browse"}
-        </p>
-        <motion.div
-          // The icon lifts slightly while dragging, reinforcing the highlight.
-          animate={{ scale: dragging ? 1.08 : 1, y: dragging ? -3 : 0 }}
-          transition={{ type: "spring", stiffness: 300, damping: 20 }}
-          className="order-first mb-3 inline-flex h-12 w-12 items-center justify-center rounded-xl"
-          style={{ background: "rgba(99,102,241,0.14)", color: "var(--accent-hover)" }}
-        >
-          {busy ? <Loader2 size={22} className="animate-spin" /> : <UploadCloud size={22} />}
-        </motion.div>
+        <p className="font-medium">{t(PHASE_TEXT[phase])}</p>
+        <ZoneIcon phase={phase} progress={overall} reduced={reduced} />
         <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-          PDF · DOCX · PPTX · XLSX · HTML · EML · CSV · TXT · MD · ZIP · images — many at once
+          {t("upload.formats")}
         </p>
         <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-          Scanned PDFs are detected automatically and sent through OCR.
+          {t("upload.ocr")}
         </p>
 
         {/* The real file input, hidden. `multiple` allows selecting several files. */}
@@ -252,7 +411,7 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
             e.target.value = "";
           }}
         />
-      </div>
+      </motion.div>
 
       {/* ---- Per-file progress ---- */}
       <AnimatePresence>
@@ -265,8 +424,8 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
           >
             <div className="mb-2 flex items-center justify-between text-xs" style={{ color: "var(--text-muted)" }}>
               <span aria-live="polite">
-                {done} of {rows.length} uploaded
-                {failed > 0 ? ` · ${failed} failed` : ""}
+                {t("upload.summary", { done, total: rows.length })}
+                {failed > 0 ? t("upload.failedCount", { failed }) : ""}
               </span>
               {!busy && failed > 0 && (
                 <button
@@ -274,39 +433,47 @@ export default function UploadZone({ projectId, onUploaded }: Props) {
                   className="flex items-center gap-1"
                   onClick={() => setRows((current) => current.filter((r) => r.status !== "error"))}
                 >
-                  <X size={12} /> Clear errors
+                  <X size={12} /> {t("upload.clearErrors")}
                 </button>
               )}
             </div>
-            <ul className="space-y-2" aria-label="Uploads">
+            <ul className="space-y-2" aria-label={t("upload.list")}>
               {rows.map((row) => (
                 <li key={row.key} className="text-xs">
                   <div className="flex items-center gap-2">
                     {row.status === "done" ? (
-                      <CheckCircle2 size={13} style={{ color: "var(--success)" }} aria-label="Uploaded" />
+                      <CheckCircle2 size={13} style={{ color: "var(--success)" }} aria-label={t("upload.rowUploaded")} />
                     ) : row.status === "error" ? (
-                      <XCircle size={13} style={{ color: "var(--danger)" }} aria-label="Failed" />
+                      <XCircle size={13} style={{ color: "var(--danger)" }} aria-label={t("upload.rowFailed")} />
                     ) : (
-                      <Loader2 size={13} className="animate-spin" aria-label="Uploading" />
+                      <Loader2
+                        size={13}
+                        className={reduced ? undefined : "animate-spin"}
+                        aria-label={t("upload.rowUploading")}
+                      />
                     )}
                     <span className="min-w-0 flex-1 truncate">{row.name}</span>
                     <span style={{ color: "var(--text-muted)" }}>{formatSize(row.size)}</span>
-                    <span className="w-10 text-right" style={{ color: "var(--text-muted)" }}>
-                      {row.status === "queued" ? "queued" : `${Math.round(row.progress * 100)}%`}
+                    <span className="min-w-10 text-right" style={{ color: "var(--text-muted)" }}>
+                      {row.status === "queued"
+                        ? t("upload.queued")
+                        : row.status === "uploading" && row.progress >= 1
+                          ? t("upload.rowProcessing")
+                          : `${Math.round(row.progress * 100)}%`}
                     </span>
                   </div>
                   {(row.status === "uploading" || row.status === "queued") && (
                     <div
                       className="mt-1 h-1 overflow-hidden rounded-full"
-                      style={{ background: "rgba(255,255,255,0.06)" }}
+                      style={{ background: "var(--surface-2)" }}
                       role="progressbar"
-                      aria-label={`Uploading ${row.name}`}
+                      aria-label={t("upload.progressLabel", { name: row.name })}
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={Math.round(row.progress * 100)}
                     >
                       <div
-                        className="h-full rounded-full transition-all"
+                        className={`h-full rounded-full ${reduced ? "" : "transition-all"}`}
                         style={{
                           width: `${Math.round(row.progress * 100)}%`,
                           background: "linear-gradient(90deg, var(--accent), var(--violet))",

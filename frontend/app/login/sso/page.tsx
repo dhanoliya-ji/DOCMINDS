@@ -22,9 +22,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { AuthCard, Notice } from "@/components/AuthCard";
+import { useT } from "@/lib/i18n";
 import { exchangeSsoCode, parseSsoFragment } from "@/lib/sso";
 
 export default function SsoCallbackPage() {
+  const { t } = useT();
   const router = useRouter();
   const [error, setError] = useState("");
   // React's development mode runs effects twice; the code is single-use, so
@@ -56,14 +58,14 @@ export default function SsoCallbackPage() {
 
   return (
     <AuthCard
-      title={error ? "Sign-in failed" : "Signing you in"}
-      subtitle={error ? undefined : "Finishing single sign-on..."}
+      title={error ? t("auth.ssoFailed") : t("auth.ssoSigningIn")}
+      subtitle={error ? undefined : t("auth.ssoFinishing")}
     >
       {error ? (
         <div className="space-y-4">
           <Notice tone="error">{error}</Notice>
           <Link href="/login" className="btn-primary w-full py-3">
-            Back to sign in
+            {t("auth.backToSignIn")}
           </Link>
         </div>
       ) : (

@@ -40,6 +40,14 @@
  * did live. A conversation is only created when its first question is sent,
  * so opening the tab does not litter the history with empty "New Chat"s.
  *
+ * THE LIVE STEP INDICATOR (F10)
+ * -----------------------------
+ * While a Deep research answer streams, AgentStepIndicator.tsx sits on top
+ * of the draft: a glyph that morphs lens -> page -> spark as the agent goes
+ * from searching, to reading sections, to writing. The phase is read off the
+ * stream itself (the latest step's tool, then the first token), so it is
+ * never a guess. Static under prefers-reduced-motion.
+ *
  * WHY CITATIONS ARE THE POINT
  * ---------------------------
  * An AI answer you cannot verify is worth very little in a workplace. Every
@@ -73,6 +81,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
+import AgentStepIndicator, { agentPhase } from "@/components/AgentStepIndicator";
 import ChatSidebar from "@/components/ChatSidebar";
 import DocumentFilter from "@/components/DocumentFilter";
 import SourceViewer, { SourceRef } from "@/components/SourceViewer";
@@ -93,6 +102,7 @@ import {
   downloadText,
   safeFilename,
 } from "@/lib/export";
+import { useT } from "@/lib/i18n";
 
 interface Props {
   projectId: string;
@@ -101,17 +111,14 @@ interface Props {
 }
 
 /** Example questions offered on an empty conversation, to get people started. */
-const SUGGESTIONS = [
-  "Summarise the key points of these documents",
-  "What are the main policies described here?",
-  "List any deadlines or dates mentioned",
-];
+const SUGGESTIONS = ["chat.suggestion.1", "chat.suggestion.2", "chat.suggestion.3"];
 
 /**
  * The two answer modes, as the toggle presents them.
  *
  * Kept as data rather than written out twice in JSX, so the label, the icon
- * and the one-line hint for each mode cannot drift apart.
+ * and the one-line hint for each mode cannot drift apart. `label` and `hint`
+ * are i18n keys, translated at render.
  */
 const MODES: {
   value: ChatMode;
@@ -121,15 +128,15 @@ const MODES: {
 }[] = [
   {
     value: "rag",
-    label: "Quick answer",
+    label: "chat.mode.rag",
     icon: Zap,
-    hint: "One search, one answer. Fastest; best for simple, direct questions.",
+    hint: "chat.mode.rag.hint",
   },
   {
     value: "agent",
-    label: "Deep research",
+    label: "chat.mode.agent",
     icon: Telescope,
-    hint: "Searches several times and combines documents. Slower; best for complex questions.",
+    hint: "chat.mode.agent.hint",
   },
 ];
 
@@ -165,6 +172,7 @@ function toggled(current: Set<string>, id: string): Set<string> {
 }
 
 export default function ChatPanel({ projectId, documents = [] }: Props) {
+  const { t } = useT();
   // ---- History ----
   const [sessions, setSessions] = useState<ChatSessionItem[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -409,7 +417,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
     }
   }
 
-  const title = sessions.find((s) => s.id === sessionId)?.title ?? "New conversation";
+  const title = sessions.find((s) => s.id === sessionId)?.title ?? t("chat.newConversation");
 
   function exportConversation() {
     downloadText(safeFilename(title), conversationToMarkdown(title, messages));
@@ -446,7 +454,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
             onClick={() => setHistoryOpen((v) => !v)}
             aria-expanded={historyOpen}
           >
-            <History size={13} aria-hidden="true" /> History
+            <History size={13} aria-hidden="true" /> {t("chat.history")}
           </button>
           <h2 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>
             {title}
@@ -462,9 +470,9 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
             className="btn-ghost text-xs"
             onClick={exportConversation}
             disabled={messages.length === 0 || sending}
-            title="Download this conversation as Markdown"
+            title={t("chat.exportTitle")}
           >
-            <Download size={13} aria-hidden="true" /> Export
+            <Download size={13} aria-hidden="true" /> {t("chat.export")}
           </button>
         </div>
 
@@ -484,16 +492,15 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
               >
                 <Sparkles size={24} />
               </div>
-              <h3 className="text-lg font-semibold">Ask your documents</h3>
+              <h3 className="text-lg font-semibold">{t("chat.emptyTitle")}</h3>
               <p className="mt-2 max-w-sm text-sm" style={{ color: "var(--text-secondary)" }}>
-                Questions are answered only from the documents in this project,
-                and every answer shows the page it came from.
+                {t("chat.emptyBody")}
               </p>
 
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 {SUGGESTIONS.map((suggestion) => (
-                  <button key={suggestion} onClick={() => send(suggestion)} className="btn-ghost text-xs">
-                    {suggestion}
+                  <button key={suggestion} onClick={() => send(t(suggestion))} className="btn-ghost text-xs">
+                    {t(suggestion)}
                   </button>
                 ))}
               </div>
@@ -608,7 +615,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                             aria-expanded={showSteps}
                           >
                             <ListChecks size={12} />
-                            Research steps ({messageSteps.length})
+                            {t("chat.researchSteps")} ({messageSteps.length})
                             <ChevronDown
                               size={12}
                               className="transition-transform"
@@ -639,6 +646,9 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                       {/* ---- Research steps: live while streaming, then
                           collapsible. Above the citations, because the steps
                           are how the agent found its sources. ---- */}
+                      {isDraft && mode === "agent" && (
+                        <AgentStepIndicator phase={agentPhase(messageSteps, message.content)} />
+                      )}
                       <AnimatePresence>
                         {showSteps && messageSteps.length > 0 && (
                           <motion.ol
@@ -646,7 +656,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                             animate={{ opacity: 1, height: "auto" }}
                             exit={{ opacity: 0, height: 0 }}
                             className="glass mt-2 space-y-2 overflow-hidden p-3 text-xs"
-                            aria-label="Research steps"
+                            aria-label={t("chat.researchSteps")}
                           >
                             {messageSteps.map((step, index) => (
                               // Index in the key: the same tool can be called
@@ -745,7 +755,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
         <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <div
             role="radiogroup"
-            aria-label="Answer mode"
+            aria-label={t("chat.modeGroup")}
             aria-describedby="chat-mode-hint"
             className="inline-flex rounded-xl p-1"
             style={{ background: "rgba(255,255,255,0.045)" }}
@@ -788,13 +798,13 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
                   }}
                 >
                   <Icon size={13} />
-                  {label}
+                  {t(label)}
                 </button>
               );
             })}
           </div>
           <p id="chat-mode-hint" className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {MODES.find((m) => m.value === mode)?.hint}
+            {t(MODES.find((m) => m.value === mode)?.hint ?? "")}
           </p>
         </div>
 
@@ -802,7 +812,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
           <textarea
             className="input resize-none py-3"
             rows={1}
-            placeholder="Ask a question about these documents..."
+            placeholder={t("chat.placeholder")}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -818,8 +828,8 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
             <button
               onClick={() => abortRef.current?.abort()}
               className="btn-ghost h-[46px] w-[46px] shrink-0 px-0!"
-              title="Stop"
-              aria-label="Stop answering"
+              title={t("chat.stop")}
+              aria-label={t("chat.stopLabel")}
             >
               <Square size={16} />
             </button>
@@ -828,7 +838,7 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
               onClick={() => send()}
               disabled={!input.trim()}
               className="btn-primary h-[46px] w-[46px] shrink-0 px-0!"
-              title="Send"
+              title={t("chat.send")}
             >
               <ArrowUp size={18} />
             </button>
@@ -841,7 +851,21 @@ export default function ChatPanel({ projectId, documents = [] }: Props) {
   );
 }
 
-/** The "thinking" bubble shown until the first word (or step) arrives. */
+/** The words beside the dots in Deep research mode (a hook needs a component). */
+function ResearchingLabel() {
+  const { t } = useT();
+  return (
+    <span className="ml-2 text-xs" style={{ color: "var(--text-muted)" }}>
+      {t("chat.researching")}
+    </span>
+  );
+}
+
+/**
+ * The "thinking" bubble shown until the first word (or step) arrives. In
+ * Deep research mode the step indicator (in its "search" phase) sits above
+ * it, so the morphing glyph is there from the very first moment.
+ */
 function ThinkingBubble({ agent }: { agent: boolean }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3" aria-busy="true">
@@ -851,6 +875,8 @@ function ThinkingBubble({ agent }: { agent: boolean }) {
       >
         <Bot size={15} />
       </div>
+      <div className="flex flex-col items-start">
+      {agent && <AgentStepIndicator phase="search" />}
       <div className="flex items-center gap-1.5 rounded-2xl px-4 py-4" style={{ background: "rgba(255,255,255,0.045)" }}>
         {/* Three dots with staggered CSS animation delays (globals.css). */}
         <span className="typing-dot h-1.5 w-1.5 rounded-full" style={{ background: "var(--accent-hover)" }} />
@@ -858,11 +884,8 @@ function ThinkingBubble({ agent }: { agent: boolean }) {
         <span className="typing-dot h-1.5 w-1.5 rounded-full" style={{ background: "var(--accent-hover)" }} />
         {/* Deep research can take much longer; saying so stops the wait
             reading as a hang. */}
-        {agent && (
-          <span className="ml-2 text-xs" style={{ color: "var(--text-muted)" }}>
-            Researching your documents...
-          </span>
-        )}
+        {agent && <ResearchingLabel />}
+      </div>
       </div>
     </motion.div>
   );

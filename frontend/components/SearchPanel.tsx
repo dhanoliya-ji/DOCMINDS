@@ -3,6 +3,12 @@
  * ===============
  * Semantic search with no AI answer — just the matching passages, ranked.
  *
+ * THE EMBEDDING MAP (F17)
+ * -----------------------
+ * Below the results, "Show embedding map" opens a 3D cloud of every chunk in
+ * the project (EmbeddingCloud.tsx), with this search's hits lit up -- the
+ * same retrieval, seen as geometry.
+ *
  * WHY THIS EXISTS ALONGSIDE CHAT
  * ------------------------------
  * It shows you exactly what the retrieval step found, which is valuable twice
@@ -21,9 +27,10 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { ExternalLink, FileText, Loader2, Search, SearchX } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import DocumentFilter from "@/components/DocumentFilter";
+import EmbeddingCloud from "@/components/EmbeddingCloud";
 import SourceViewer, { SourceRef } from "@/components/SourceViewer";
 import { DocumentItem, SearchResultItem, api, getErrorMessage } from "@/lib/api";
 
@@ -56,6 +63,8 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
 
   const [tookSeconds, setTookSeconds] = useState<number | null>(null);
   const [searched, setSearched] = useState(false);
+  // Memoised so the 3D map re-highlights only when the results change.
+  const hitIds = useMemo(() => results.map((r) => r.chunk_id), [results]);
 
   async function runSearch() {
     const trimmed = query.trim();
@@ -268,6 +277,7 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
           </motion.div>
         )}
       </div>
+      <EmbeddingCloud projectId={projectId} hitIds={hitIds} />
       {viewing && <SourceViewer source={viewing} onClose={() => setViewing(null)} />}
     </div>
   );

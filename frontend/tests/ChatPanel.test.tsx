@@ -838,3 +838,78 @@ describe("answer mode", () => {
     expect(deep).toHaveFocus();
   });
 });
+
+// ======================================================================
+// F10: the live step indicator during deep research
+// ======================================================================
+
+const agentStep = (tool: string, summary: string) => ({ tool, summary, args: {} });
+
+describe("live step indicator", () => {
+  it("morphs search -> read -> search -> summarise as the stream moves on", async () => {
+    const stream = controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole("radio", { name: /deep research/i }));
+    await ask(user, "Compare the policies");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+
+    const indicator = () => screen.getByTestId("agent-step-indicator");
+    // Before any step: searching, announced politely.
+    expect(indicator()).toHaveAttribute("data-phase", "search");
+    expect(indicator()).toHaveAttribute("role", "status");
+    expect(indicator()).toHaveTextContent("Searching your documents");
+
+    act(() => stream.handlers.onStep?.(agentStep("read_document_section", "Read section 3")));
+    await waitFor(() => expect(indicator()).toHaveAttribute("data-phase", "read"));
+    expect(indicator()).toHaveTextContent("Reading the relevant sections");
+
+    act(() => stream.handlers.onStep?.(agentStep("search_documents", "Found 5 excerpts")));
+    await waitFor(() => expect(indicator()).toHaveAttribute("data-phase", "search"));
+
+    act(() => stream.handlers.onToken?.("The answer"));
+    await waitFor(() => expect(indicator()).toHaveAttribute("data-phase", "summarise"));
+
+    await act(async () => stream.finish(answer("The answer", [], { mode: "agent" })));
+    await waitFor(() => expect(screen.queryByTestId("agent-step-indicator")).not.toBeInTheDocument());
+  });
+
+  it("never appears for a quick answer", async () => {
+    controlledStream();
+    const user = userEvent.setup();
+    await renderPanel();
+    await ask(user, "Quick one");
+    await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
+    expect(screen.queryByTestId("agent-step-indicator")).not.toBeInTheDocument();
+  });
+
+  it("is static under prefers-reduced-motion", async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("reduce"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+    try {
+      controlledStream();
+      const user = userEvent.setup();
+      await renderPanel();
+      await user.click(screen.getByRole("radio", { name: /deep research/i }));
+      await ask(user, "Compare");
+      expect(await screen.findByTestId("agent-step-indicator")).toHaveAttribute("data-reduced-motion", "true");
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+});
+
+describe("agentPhase", () => {
+  it("reads the phase off the steps and the text", async () => {
+    const { agentPhase } = await import("@/components/AgentStepIndicator");
+    expect(agentPhase([], "")).toBe("search");
+    expect(agentPhase([agentStep("list_documents", "x")], "")).toBe("read");
+    expect(agentPhase([agentStep("search_documents", "x")], "")).toBe("search");
+    expect(agentPhase([agentStep("read_document_section", "x")], "words")).toBe("summarise");
+  });
+});

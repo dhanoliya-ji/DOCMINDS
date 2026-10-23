@@ -19,6 +19,10 @@
  * tab, so a screen reader announces "Members, tab, 1 of 4, selected". Left
  * and right arrow keys move between tabs, as the pattern expects.
  *
+ * The Webhooks tab appears only when the deployment has webhooks switched
+ * on: GET /webhooks is probed once for an admin, and a 404 (the feature is
+ * off) leaves the tab out entirely rather than showing a dead screen.
+ *
  * Wrapped in <AppShell>, which provides navigation and sign-out; destructive
  * actions in the panels use <HoldToConfirm> rather than window.confirm().
  */
@@ -36,6 +40,7 @@ import AuditLogPanel from "@/components/settings/AuditLogPanel";
 import FeedbackPanel from "@/components/settings/FeedbackPanel";
 import MembersPanel from "@/components/settings/MembersPanel";
 import UsagePanel from "@/components/settings/UsagePanel";
+import WebhooksPanel, { webhooksAvailable } from "@/components/settings/WebhooksPanel";
 import VerifyBanner from "@/components/VerifyBanner";
 import { getToken } from "@/lib/api";
 import { isAdmin, roleLabel } from "@/lib/roles";
@@ -47,6 +52,7 @@ const TABS = [
   { id: "audit", label: "Audit log" },
   { id: "usage", label: "Usage" },
   { id: "feedback", label: "Feedback" },
+  { id: "webhooks", label: "Webhooks" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -56,6 +62,21 @@ export default function SettingsPage() {
   const { user, loading, error } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("members");
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // Whether the Webhooks tab exists: unknown (false) until the probe answers.
+  const [webhooksOn, setWebhooksOn] = useState(false);
+  const admin = !!user && isAdmin(user.role);
+  const tabs = TABS.filter((t) => t.id !== "webhooks" || webhooksOn);
+
+  useEffect(() => {
+    if (!admin) return;
+    let cancelled = false;
+    webhooksAvailable().then((on) => {
+      if (!cancelled) setWebhooksOn(on);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [admin]);
 
   // Same guard as the other signed-in pages.
   useEffect(() => {
@@ -64,9 +85,9 @@ export default function SettingsPage() {
 
   function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const index = TABS.findIndex((t) => t.id === tab);
+    const index = tabs.findIndex((t) => t.id === tab);
     const step = event.key === "ArrowRight" ? 1 : -1;
-    const next = TABS[(index + step + TABS.length) % TABS.length].id;
+    const next = tabs[(index + step + tabs.length) % tabs.length].id;
     setTab(next);
     tabRefs.current[next]?.focus();
   }
@@ -99,7 +120,7 @@ export default function SettingsPage() {
           {isAdmin(user.role) && (
             <>
               <div role="tablist" aria-label="Settings sections" className="mb-6 flex flex-wrap gap-2">
-                {TABS.map((t) => (
+                {tabs.map((t) => (
                   <button
                     key={t.id}
                     ref={(el) => {
@@ -129,6 +150,7 @@ export default function SettingsPage() {
                 {tab === "audit" && <AuditLogPanel />}
                 {tab === "usage" && <UsagePanel />}
                 {tab === "feedback" && <FeedbackPanel />}
+                {tab === "webhooks" && webhooksOn && <WebhooksPanel />}
               </div>
             </>
           )}

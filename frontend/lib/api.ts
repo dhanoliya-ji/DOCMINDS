@@ -30,6 +30,8 @@
  * to revoke both tokens, so a copied token stops working too.
  */
 
+import type { components } from "@/lib/api-types";
+
 // ----------------------------------------------------------------------
 // WHERE THE BACKEND LIVES
 // ----------------------------------------------------------------------
@@ -338,14 +340,20 @@ export interface DocumentMeta {
 // These mirror the Pydantic schemas in backend/app/schemas/. Keeping them in
 // step means TypeScript catches a mismatch at build time rather than the user
 // discovering it as `undefined` on screen.
+//
+// GENERATED TYPES
+// Where the backend's schema says exactly what the screens rely on, the type
+// is taken straight from lib/api-types.ts -- generated from openapi.json by
+// `npm run gen:api` (see docs/DEVELOPMENT.md) -- so a backend change shows up
+// here as a compile error rather than a surprise. The hand-written ones below
+// stay where they are STRICTER than the schema says (a role as a union of
+// three names rather than any string, say) or describe something the schema
+// cannot (the SSE stream, the progressive meta_data).
 
-export interface Project {
-  id: string;
-  name: string;
-  org_id: string;
-  created_at: string;
-  updated_at: string;
-}
+/** A schema from the generated OpenAPI types, by its backend name. */
+export type Schema<Name extends keyof components["schemas"]> = components["schemas"][Name];
+
+export type Project = Schema<"ProjectOut">;
 
 export interface DocumentItem {
   id: string;
@@ -418,14 +426,7 @@ export interface ChatMessageItem {
   created_at: string;
 }
 
-export interface ChatSessionItem {
-  id: string;
-  title: string;
-  project_id: string;
-  user_id: string;
-  created_at: string;
-  updated_at: string;
-}
+export type ChatSessionItem = Schema<"ChatSessionOut">;
 
 /**
  * HOW THE BACKEND SHOULD ANSWER A QUESTION
@@ -610,18 +611,10 @@ export interface ChatResponse {
 // ----------------------------------------------------------------------
 
 /** GET /projects/{id} -- one project plus how much is in it. */
-export interface ProjectDetail extends Project {
-  document_count: number;
-  ready_count: number;
-}
+export type ProjectDetail = Schema<"ProjectDetail">;
 
 /** One chunk of a document's text, for the citation viewer. */
-export interface ChunkContext {
-  id: string;
-  chunk_index: number;
-  page_number: number | null;
-  content: string;
-}
+export type ChunkContext = Schema<"ChunkContextOut">;
 
 /** New chunking options for a re-index; anything left out is kept. */
 export interface ReindexOptions {
@@ -631,11 +624,18 @@ export interface ReindexOptions {
 }
 
 /** Up and down votes for one slice of answers (a mode, or a model). */
-export interface FeedbackBreakdown {
-  key: string;
-  up: number;
-  down: number;
-}
+export type FeedbackBreakdown = Schema<"FeedbackBreakdown">;
+
+// ---- The 3D embedding map (GET /projects/{id}/embedding-map) ----------
+export type EmbeddingMap = Schema<"EmbeddingMap">;
+export type EmbeddingPoint = Schema<"EmbeddingPoint">;
+
+// ---- Webhooks (admin; the routes 404 when WEBHOOKS_ENABLED is off) ----
+export type Webhook = Schema<"WebhookOut">;
+/** Create and rotate responses only: the signing secret, shown once. */
+export type WebhookCreated = Schema<"WebhookCreated">;
+export type WebhookDelivery = Schema<"WebhookDeliveryOut">;
+export type WebhookEventType = Schema<"WebhookEventType">;
 
 /** GET /org/feedback (backend/app/schemas/rag.py FeedbackSummary). */
 export interface FeedbackSummary {
@@ -1270,6 +1270,45 @@ export const api = {
       if (done) break;
     }
     throw new Error("The answer was interrupted. Please try again.");
+  },
+
+  // ---- The 3D embedding map (search page) ------------------------------
+
+  /** Every chunk of a project as a point in 3D (PCA, computed server-side). */
+  getEmbeddingMap(projectId: string) {
+    return apiFetch<EmbeddingMap>(`/projects/${projectId}/embedding-map`);
+  },
+
+  // ---- Webhooks (Admin) -------------------------------------------------
+  // Every route answers 404 while the deployment has webhooks switched off,
+  // so the settings screen treats a 404 from listWebhooks as "hide me".
+
+  listWebhooks() {
+    return apiFetch<Webhook[]>("/webhooks");
+  },
+
+  listWebhookEvents() {
+    return apiFetch<WebhookEventType[]>("/webhooks/events");
+  },
+
+  createWebhook(url: string, eventTypes: string[], description?: string) {
+    return apiFetch<WebhookCreated>("/webhooks", {
+      method: "POST",
+      body: JSON.stringify({ url, event_types: eventTypes, description: description || null }),
+    });
+  },
+
+  deleteWebhook(webhookId: string) {
+    return apiFetch<void>(`/webhooks/${webhookId}`, { method: "DELETE" });
+  },
+
+  /** Queue a "ping" delivery to one endpoint. */
+  testWebhook(webhookId: string) {
+    return apiFetch<WebhookDelivery>(`/webhooks/${webhookId}/test`, { method: "POST" });
+  },
+
+  listWebhookDeliveries(webhookId: string, limit = 20) {
+    return apiFetch<WebhookDelivery[]>(`/webhooks/${webhookId}/deliveries?limit=${limit}`);
   },
 
   // ---- Answer quality (Admin) -------------------------------------------

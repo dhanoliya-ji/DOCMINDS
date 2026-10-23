@@ -26,7 +26,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import UploadZone, { runPool, uploadErrorMessage } from "@/components/UploadZone";
+import UploadZone, { runPool, uploadErrorMessage, zonePhase } from "@/components/UploadZone";
+import { setLocale } from "@/lib/i18n";
 import { ApiError } from "@/lib/api";
 
 // Hoisted so the tests can assert on the calls.
@@ -410,5 +411,79 @@ describe("the file input", () => {
     await user.upload(input, makeFile());
 
     await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1));
+  });
+});
+
+// ----------------------------------------------------------------------
+// F11: the zone's animated states
+// ----------------------------------------------------------------------
+
+describe("zone states", () => {
+  const row = (status: "queued" | "uploading" | "done" | "error", progress = 0) => ({
+    key: Math.random().toString(),
+    name: "a.pdf",
+    size: 1,
+    status,
+    progress,
+  });
+
+  it("derives idle, drag-over, uploading, processing, done and error", () => {
+    expect(zonePhase(false, [])).toBe("idle");
+    expect(zonePhase(true, [row("uploading", 0.5)])).toBe("drag-over");
+    expect(zonePhase(false, [row("queued")])).toBe("uploading");
+    expect(zonePhase(false, [row("uploading", 0.5)])).toBe("uploading");
+    // Every byte sent, no reply yet: the server is processing it.
+    expect(zonePhase(false, [row("uploading", 1), row("done", 1)])).toBe("processing");
+    expect(zonePhase(false, [row("done", 1)])).toBe("done");
+    expect(zonePhase(false, [row("done", 1), row("error")])).toBe("error");
+  });
+
+  it("walks the zone through drag-over, uploading, processing and done", async () => {
+    let report: (fraction: number) => void = () => {};
+    let finish: () => void = () => {};
+    uploadFile.mockImplementation(
+      (_project: string, _file: File, onProgress: (fraction: number) => void) => {
+        report = onProgress;
+        return new Promise<void>((resolve) => (finish = resolve));
+      }
+    );
+    const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+    const target = screen.getByTestId("upload-zone");
+    expect(target).toHaveAttribute("data-phase", "idle");
+
+    fireEvent.dragOver(zone(container));
+    expect(target).toHaveAttribute("data-phase", "drag-over");
+    expect(screen.getByText("Drop to upload")).toBeInTheDocument();
+
+    fireEvent.drop(zone(container), dropEvent([makeFile("big.pdf")]));
+    await waitFor(() => expect(target).toHaveAttribute("data-phase", "uploading"));
+    act(() => report(1));
+    expect(target).toHaveAttribute("data-phase", "processing");
+    expect(screen.getByText("processing")).toBeInTheDocument();
+
+    await act(async () => finish());
+    await waitFor(() => expect(target).toHaveAttribute("data-phase", "done"));
+  });
+
+  it("shows the error state when a file is refused", async () => {
+    uploadFile.mockRejectedValue(new ApiError("nope", 415));
+    const { container } = render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+    fireEvent.drop(zone(container), dropEvent([makeFile("bad.exe")]));
+    await waitFor(() => expect(screen.getByTestId("upload-zone")).toHaveAttribute("data-phase", "error"));
+    expect(screen.getByTestId("upload-zone-icon")).toHaveAttribute("data-phase", "error");
+  });
+
+  it("opens the picker from the keyboard", () => {
+    render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+    const click = vi.spyOn(screen.getByTestId("file-input"), "click");
+    fireEvent.keyDown(screen.getByRole("button", { name: "Upload files" }), { key: "Enter" });
+    expect(click).toHaveBeenCalled();
+  });
+
+  it("speaks Hindi when chosen", () => {
+    act(() => setLocale("hi"));
+    render(<UploadZone projectId="p1" onUploaded={vi.fn()} />);
+    expect(screen.getByText(/फ़ाइलें यहाँ खींचें/)).toBeInTheDocument();
+    act(() => setLocale("en"));
   });
 });

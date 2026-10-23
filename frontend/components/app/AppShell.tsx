@@ -21,6 +21,11 @@
  * every navigation between dashboard, project and settings feels continuous.
  * Short on purpose (<300ms): a transition the user waits on is a delay.
  * Under prefers-reduced-motion it is skipped entirely.
+ *
+ * LANGUAGE
+ * --------
+ * Every label comes from lib/i18n (English or Hindi), and the language
+ * switcher sits beside the theme toggle in the sidebar and the drawer.
  */
 
 "use client";
@@ -31,13 +36,16 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 
+import LanguageSwitcher from "@/components/app/LanguageSwitcher";
 import ThemeToggle from "@/components/app/ThemeToggle";
 import { usePrefersReducedMotion } from "@/components/landing/hooks";
 import { api } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 const NAV = [
-  { href: "/dashboard", label: "Projects", icon: FolderOpen },
-  { href: "/settings", label: "Settings", icon: Settings },
+  // `label` is an i18n key, translated at render.
+  { href: "/dashboard", label: "shell.nav.projects", icon: FolderOpen },
+  { href: "/settings", label: "shell.nav.settings", icon: Settings },
 ] as const;
 
 export default function AppShell({ children }: { children: ReactNode }) {
@@ -45,6 +53,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "";
   const reduced = usePrefersReducedMotion();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { t } = useT();
 
   // Escape closes the drawer, as it would any overlay.
   useEffect(() => {
@@ -80,7 +89,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               }}
             >
               <Icon size={16} aria-hidden="true" />
-              {label}
+              {t(label)}
             </Link>
           </li>
         );
@@ -108,7 +117,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:px-3 focus:py-2"
         style={{ background: "var(--bg-elevated)" }}
       >
-        Skip to content
+        {t("shell.skip")}
       </a>
 
       {/* ---- Desktop sidebar ---- */}
@@ -117,14 +126,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
         style={{ borderColor: "var(--border-subtle)", background: "var(--bg-card)" }}
       >
         <div className="mb-8 px-2">{brand}</div>
-        <nav aria-label="Main" className="flex-1">
+        <nav aria-label={t("shell.nav.main")} className="flex-1">
           {navList}
         </nav>
+        <LanguageSwitcher className="mb-2" />
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <button type="button" onClick={handleLogout} className="btn-ghost flex-1" aria-label="Sign out">
+          <button type="button" onClick={handleLogout} className="btn-ghost flex-1" aria-label={t("shell.signOut")}>
             <LogOut size={16} aria-hidden="true" />
-            <span>Sign out</span>
+            <span>{t("shell.signOut")}</span>
           </button>
         </div>
       </aside>
@@ -138,7 +148,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <button
             type="button"
             className="btn-ghost px-2.5"
-            aria-label="Open menu"
+            aria-label={t("shell.openMenu")}
             aria-expanded={drawerOpen}
             aria-controls="app-drawer"
             onClick={() => setDrawerOpen(true)}
@@ -162,7 +172,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               id="app-drawer"
               role="dialog"
               aria-modal="true"
-              aria-label="Menu"
+              aria-label={t("shell.menu")}
               className="absolute inset-y-0 left-0 flex w-64 max-w-[80vw] flex-col p-4"
               style={{ background: "var(--bg-elevated)" }}
             >
@@ -171,7 +181,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <button
                   type="button"
                   className="btn-ghost px-2.5"
-                  aria-label="Close menu"
+                  aria-label={t("shell.closeMenu")}
                   onClick={() => setDrawerOpen(false)}
                   // Move focus into the drawer when it opens.
                   autoFocus
@@ -179,12 +189,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   <X size={18} aria-hidden="true" />
                 </button>
               </div>
-              <nav aria-label="Main" className="flex-1">
+              <nav aria-label={t("shell.nav.main")} className="flex-1">
                 {navList}
               </nav>
-              <button type="button" onClick={handleLogout} className="btn-ghost" aria-label="Sign out">
+              <LanguageSwitcher className="mb-2" />
+              <button type="button" onClick={handleLogout} className="btn-ghost" aria-label={t("shell.signOut")}>
                 <LogOut size={16} aria-hidden="true" />
-                <span>Sign out</span>
+                <span>{t("shell.signOut")}</span>
               </button>
             </div>
           </div>

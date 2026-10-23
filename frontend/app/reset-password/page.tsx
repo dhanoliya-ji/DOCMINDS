@@ -24,6 +24,7 @@ import { FormEvent, Suspense, useState } from "react";
 
 import { AuthCard, Notice, PasswordHints } from "@/components/AuthCard";
 import { api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { PASSWORD_MIN_LENGTH, passwordProblems } from "@/lib/password";
 
 // Suspense: required around anything that reads `useSearchParams` (see
@@ -37,6 +38,7 @@ export default function ResetPasswordPage() {
 }
 
 function ResetPasswordForm() {
+  const { t } = useT();
   const token = useSearchParams().get("token") || "";
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -56,7 +58,7 @@ function ResetPasswordForm() {
       return;
     }
     if (password !== confirm) {
-      setError("The two passwords do not match.");
+      setError(t("auth.mismatch"));
       return;
     }
     setLoading(true);
@@ -72,7 +74,7 @@ function ResetPasswordForm() {
 
   if (!token) {
     return (
-      <AuthCard title="Reset your password">
+      <AuthCard title={t("auth.resetTitle")}>
         <Notice tone="error">
           This link is missing its reset token. Open the link from the email again, or{" "}
           <Link href="/forgot-password" className="underline">
@@ -85,12 +87,12 @@ function ResetPasswordForm() {
   }
 
   return (
-    <AuthCard title="Choose a new password" subtitle="This also signs you out on every other device.">
+    <AuthCard title={t("auth.chooseNew")} subtitle={t("auth.chooseNewSubtitle")}>
       {done ? (
         <div className="space-y-4">
           <Notice tone="success">{done}</Notice>
           <Link href="/login" className="btn-primary w-full py-3">
-            Sign in
+            {t("auth.signIn")}
           </Link>
         </div>
       ) : (
@@ -105,11 +107,11 @@ function ResetPasswordForm() {
               />
               <input
                 type="password"
-                aria-label="New password"
+                aria-label={t("auth.newPassword")}
                 autoComplete="new-password"
                 aria-describedby="password-hints"
                 className="input pl-11"
-                placeholder="New password"
+                placeholder={t("auth.newPassword")}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -128,10 +130,10 @@ function ResetPasswordForm() {
             />
             <input
               type="password"
-              aria-label="Confirm new password"
+              aria-label={t("auth.confirmPassword")}
               autoComplete="new-password"
               className="input pl-11"
-              placeholder="Confirm new password"
+              placeholder={t("auth.confirmPassword")}
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               required
@@ -142,14 +144,14 @@ function ResetPasswordForm() {
               {error}{" "}
               {/expired|invalid/i.test(error) && (
                 <Link href="/forgot-password" className="underline">
-                  Request a new link.
+                  {t("auth.requestNewLink")}
                 </Link>
               )}
             </Notice>
           )}
           <button type="submit" disabled={loading} className="btn-primary w-full py-3">
             {loading && <Loader2 size={16} className="animate-spin" aria-hidden="true" />}
-            {loading ? "Saving..." : "Set new password"}
+            {loading ? t("auth.saving") : t("auth.setPassword")}
           </button>
         </form>
       )}

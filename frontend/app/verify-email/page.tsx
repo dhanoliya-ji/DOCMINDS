@@ -29,6 +29,7 @@ import { Suspense, useEffect, useState } from "react";
 
 import { AuthCard, Notice } from "@/components/AuthCard";
 import { api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 const requests = new Map<string, Promise<{ detail: string }>>();
 
@@ -41,6 +42,7 @@ export default function VerifyEmailPage() {
 }
 
 function VerifyEmail() {
+  const { t } = useT();
   const token = useSearchParams().get("token") || "";
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
@@ -68,13 +70,13 @@ function VerifyEmail() {
 
 
   return (
-    <AuthCard title="Confirm your email">
+    <AuthCard title={t("auth.confirmEmail")}>
       <div className="space-y-4">
         {!token ? (
           <Notice tone="error">This link is missing its verification token. Open the link from the email again.</Notice>
         ) : result === null ? (
           <p role="status" className="flex items-center justify-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-            <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Confirming your address...
+            <Loader2 size={16} className="animate-spin" aria-hidden="true" /> {t("auth.confirming")}
           </p>
         ) : (
           <Notice tone={result.ok ? "success" : "error"}>
@@ -86,7 +88,7 @@ function VerifyEmail() {
             serves both cases -- and reading the token during render would
             differ between the server and the browser (a hydration mismatch). */}
         <Link href="/dashboard" className="btn-primary w-full py-3">
-          Continue
+          {t("auth.continue")}
         </Link>
       </div>
     </AuthCard>
