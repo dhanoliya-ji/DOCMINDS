@@ -61,6 +61,31 @@ export const STAGES = [
 /** Distance between stages along the virtual Z axis, in px. */
 const GAP = 600;
 
+/**
+ * Keep a scroll-linked input range inside 0..1 and in non-decreasing order.
+ *
+ * The first and last stages naturally reach past the ends of the scroll
+ * (-0.33, 1.33). framer-motion hands scroll-linked opacity and transforms to
+ * the browser's own animation engine as keyframe offsets, and Chrome throws
+ * "Offsets must be monotonically non-decreasing" for anything outside 0..1
+ * or out of order -- which crashed the whole landing page in production.
+ * Each point is nudged a hair past the previous one so ranges stay distinct.
+ */
+export function scrollRange(points: number[]): number[] {
+  const out: number[] = [];
+  for (const point of points) {
+    const clamped = Math.min(1, Math.max(0, point));
+    const previous = out.length ? out[out.length - 1] : -Infinity;
+    out.push(Math.max(clamped, previous === -Infinity ? clamped : previous + 1e-4));
+  }
+  // The nudge can push the tail past 1; walk back so everything fits.
+  for (let i = out.length - 1; i >= 0; i--) {
+    const limit = i === out.length - 1 ? 1 : out[i + 1] - 1e-4;
+    out[i] = Math.min(out[i], limit);
+  }
+  return out;
+}
+
 function Stage({
   index,
   progress,
@@ -77,15 +102,15 @@ function Stage({
 
   // The camera moves forward through Z: each stage starts far away, arrives
   // at the screen plane when the scroll reaches it, then passes the viewer.
-  const z = useTransform(progress, [centre - span, centre, centre + span], [-GAP, 0, GAP * 0.6]);
+  const z = useTransform(progress, scrollRange([centre - span, centre, centre + span]), [-GAP, 0, GAP * 0.6]);
   const opacity = useTransform(
     progress,
-    [centre - span, centre - span * 0.35, centre + span * 0.35, centre + span * 0.8],
+    scrollRange([centre - span, centre - span * 0.35, centre + span * 0.35, centre + span * 0.8]),
     [0, 1, 1, 0]
   );
   // The callout trails its stage slightly, so reveals read in sequence.
-  const calloutOpacity = useTransform(progress, [centre - span * 0.2, centre], [0, 1]);
-  const calloutY = useTransform(progress, [centre - span * 0.2, centre], [16, 0]);
+  const calloutOpacity = useTransform(progress, scrollRange([centre - span * 0.2, centre]), [0, 1]);
+  const calloutY = useTransform(progress, scrollRange([centre - span * 0.2, centre]), [16, 0]);
 
   return (
     <motion.div
