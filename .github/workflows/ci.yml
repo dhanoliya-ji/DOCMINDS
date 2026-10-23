@@ -213,6 +213,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check generated API types
+        # lib/api-types.ts must match the committed openapi.json
+        # (npm run gen:api). Needs neither the backend nor the network.
+        run: npm run check:api
+
       - name: Test
         run: npm run test:run -- --coverage --coverage.reporter=lcov --coverage.reporter=text-summary
 

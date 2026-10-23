@@ -10,6 +10,9 @@ search boundaries.
     POST   /projects/       create one  (editor or above: Manager or Admin)
     GET    /projects/{id}   one project, with document counts
     PATCH  /projects/{id}   rename it   (editor+, audited)
+    GET    /projects/{id}/embedding-map
+                            a 3D PCA projection of its chunk embeddings,
+                            for the search page's point cloud (viewer+)
     DELETE /projects/{id}   delete it, its documents, their chunks, their
                             stored files and every conversation about it
                             (editor+, audited)
@@ -40,11 +43,20 @@ from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
+from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.project import ProjectCreate, ProjectDetail, ProjectOut, ProjectUpdate
-from app.services import audit
+from app.schemas.project import (
+    EmbeddingMap,
+    EmbeddingPoint,
+    ProjectCreate,
+    ProjectDetail,
+    ProjectOut,
+    ProjectUpdate,
+)
+from app.services import audit, embedding_map
+from app.services.embedding import EmbeddingService
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -152,6 +164,62 @@ async def get_project(
     ).one()
     return ProjectDetail.model_validate(project).model_copy(
         update={"document_count": int(total or 0), "ready_count": int(ready or 0)}
+    )
+
+
+@router.get("/{project_id}/embedding-map", response_model=EmbeddingMap)
+async def get_embedding_map(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(deps.get_db),
+    current_user: User = Depends(deps.require_viewer),
+):
+    """
+    Every chunk of the project as a point in 3D, for the search page's cloud.
+
+    The projection (PCA, services/embedding_map.py) runs HERE rather than in
+    the browser: shipping 2000 x 1536 floats to the client would be ~25 MB of
+    JSON, three coordinates per chunk is ~200 KB.
+
+    Org-scoped through get_org_project, so another tenant's id is a 404.
+    Capped at MAX_POINTS chunks, taken in document then chunk order, so the
+    same project always draws the same picture.
+    """
+    project = await get_org_project(db, project_id, current_user)
+    # Only the current model's vectors, like retrieval: after a model change
+    # a chunk can hold two, and vectors of different models share no space.
+    model_name = EmbeddingService.current_model_name()
+    in_project = (
+        select(ChunkEmbedding.id)
+        .join(Chunk, Chunk.id == ChunkEmbedding.chunk_id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(Document.project_id == project.id, ChunkEmbedding.model_name == model_name)
+    )
+    total = (await db.execute(select(func.count()).select_from(in_project.subquery()))).scalar_one()
+
+    rows = (
+        await db.execute(
+            select(Chunk.id, Chunk.document_id, Document.filename, Chunk.content, ChunkEmbedding.embedding)
+            .join(Chunk, Chunk.id == ChunkEmbedding.chunk_id)
+            .join(Document, Document.id == Chunk.document_id)
+            .where(Document.project_id == project.id, ChunkEmbedding.model_name == model_name)
+            .order_by(Document.created_at, Document.id, Chunk.chunk_index, ChunkEmbedding.id)
+            .limit(embedding_map.MAX_POINTS)
+        )
+    ).all()
+
+    # The SVD is CPU-bound: off the event loop, so other requests keep moving.
+    coords, explained = await asyncio.to_thread(embedding_map.project_3d, [row[4] for row in rows])
+    points = [
+        EmbeddingPoint(
+            chunk_id=row[0], document_id=row[1], filename=row[2],
+            snippet=" ".join((row[3] or "").split())[:160],
+            x=round(float(xyz[0]), 4), y=round(float(xyz[1]), 4), z=round(float(xyz[2]), 4),
+        )
+        for row, xyz in zip(rows, coords, strict=True)
+    ]
+    return EmbeddingMap(
+        points=points, total=int(total or 0), truncated=int(total or 0) > len(points),
+        explained_variance=explained,
     )
 
 

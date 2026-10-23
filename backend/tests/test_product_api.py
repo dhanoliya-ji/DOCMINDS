@@ -16,6 +16,8 @@ The batch-2 product endpoints over real HTTP requests:
                 answer it saves carries mode, model and the agent's steps;
                 the document filter reaching retrieval
     feedback    the admin summary, and that it is admin-only
+    embedding map  GET /projects/{id}/embedding-map: points with document ids,
+                the current model only, the cap, viewer+, tenant-isolated
 
 HOW IT RUNS
 -----------
@@ -30,6 +32,7 @@ import hashlib
 import json
 import uuid
 
+import numpy as np
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -42,11 +45,13 @@ from app.core.config import settings
 from app.main import app
 from app.models.audit import AuditLog
 from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.chunk import Chunk
+from app.models.chunk import Chunk, ChunkEmbedding
 from app.models.document import Document
 from app.models.organization import Organization
 from app.models.user import User
+from app.services import embedding_map
 from app.services import storage as storage_module
+from app.services.embedding import EmbeddingService
 from app.services.retrieval import RetrievalService
 from app.tasks import ingestion
 from tests.conftest import database_available
@@ -670,3 +675,61 @@ class TestFeedbackSummary:
         await env.demote(env.headers, "Manager")
         response = await env.client.get(f"{API}/org/feedback", headers=env.headers)
         assert response.status_code == 403
+
+
+# ======================================================================
+# The 3D embedding map
+# ======================================================================
+
+
+async def _embed_chunks(env, chunk_ids, model=None):
+    rng = np.random.default_rng(2)
+    async with env.factory() as session:
+        for chunk_id in chunk_ids:
+            session.add(ChunkEmbedding(
+                chunk_id=uuid.UUID(chunk_id),
+                embedding=rng.normal(size=settings.EMBEDDING_DIMENSION).tolist(),
+                model_name=model or EmbeddingService.current_model_name(),
+            ))
+        await session.commit()
+
+
+class TestEmbeddingMap:
+    async def test_points_with_document_ids(self, env):
+        document = await env.upload()
+        chunks = await env.add_chunks(document["id"], 5)
+        await _embed_chunks(env, chunks)
+        await _embed_chunks(env, chunks[:2], model="some-old-model")  # ignored
+
+        response = await env.client.get(f"{API}/projects/{env.project_id}/embedding-map", headers=env.headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] == 5 and body["truncated"] is False
+        assert {p["chunk_id"] for p in body["points"]} == set(chunks)
+        point = body["points"][0]
+        assert point["document_id"] == document["id"]
+        assert point["filename"] == "policy.txt"
+        assert point["snippet"].startswith("Chunk number")
+        assert all(-1 <= p[axis] <= 1 for p in body["points"] for axis in "xyz")
+
+    async def test_the_cap(self, env, monkeypatch):
+        monkeypatch.setattr(embedding_map, "MAX_POINTS", 3)
+        document = await env.upload()
+        await _embed_chunks(env, await env.add_chunks(document["id"], 5))
+        body = (await env.client.get(f"{API}/projects/{env.project_id}/embedding-map", headers=env.headers)).json()
+        assert len(body["points"]) == 3 and body["total"] == 5 and body["truncated"] is True
+
+    async def test_viewers_may_look(self, env):
+        await env.demote(env.headers)
+        response = await env.client.get(f"{API}/projects/{env.project_id}/embedding-map", headers=env.headers)
+        assert response.status_code == 200
+        assert response.json()["points"] == []
+
+    async def test_another_organizations_project_is_not_found(self, env):
+        other = await env.sign_up()
+        response = await env.client.get(f"{API}/projects/{env.project_id}/embedding-map", headers=other)
+        assert response.status_code == 404
+
+    async def test_needs_a_login(self, env):
+        response = await env.client.get(f"{API}/projects/{env.project_id}/embedding-map")
+        assert response.status_code == 401

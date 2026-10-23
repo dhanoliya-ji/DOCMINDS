@@ -947,6 +947,7 @@ Interactive OpenAPI docs are served at `/docs`. Everything except signup, login,
 | `GET` | `/api/v1/users/me` | The current user |
 | `GET` / `POST` | `/api/v1/projects/` | List projects / create one (editor or admin; audited) |
 | `GET` | `/api/v1/projects/{id}` | One project with `document_count` and `ready_count` |
+| `GET` | `/api/v1/projects/{id}/embedding-map` | 3D PCA projection (numpy, server-side) of up to 2000 chunk embeddings, with document ids and snippets, for the search page's point cloud (viewer+) |
 | `PATCH` / `DELETE` | `/api/v1/projects/{id}` | Rename (`name`) / delete with its documents, chunks, stored files and conversations (editor or admin; audited) |
 | `GET` | `/api/v1/org/members` | Members of the organisation (admin) |
 | `PATCH` / `DELETE` | `/api/v1/org/members/{id}` | Change `role` / `is_active`, or remove a member (admin; not yourself, never the last admin) |

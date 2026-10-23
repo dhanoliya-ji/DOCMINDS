@@ -81,3 +81,27 @@ class ProjectDetail(ProjectOut):
 
     document_count: int = 0
     ready_count: int = 0
+
+
+class EmbeddingPoint(BaseModel):
+    """One chunk in the 3D embedding map: where it sits and what it is."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    filename: str
+    # The first ~160 characters, for the hover label.
+    snippet: str
+    x: float
+    y: float
+    z: float
+
+
+class EmbeddingMap(BaseModel):
+    """GET /projects/{id}/embedding-map -- a 3D PCA projection of the chunks."""
+
+    points: list[EmbeddingPoint]
+    # Chunks with an embedding in the project; above `points` when capped.
+    total: int
+    truncated: bool
+    # Share of the variance each of the three axes keeps (0..1).
+    explained_variance: list[float]

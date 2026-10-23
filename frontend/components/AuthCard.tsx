@@ -21,6 +21,9 @@ import { motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Info } from "lucide-react";
 import type { ReactNode } from "react";
 
+import LanguageSwitcher from "@/components/app/LanguageSwitcher";
+import { useT } from "@/lib/i18n";
+
 export function AuthCard({
   title,
   subtitle,
@@ -31,7 +34,9 @@ export function AuthCard({
   children: ReactNode;
 }) {
   return (
-    <main className="flex min-h-screen items-center justify-center px-6 py-12">
+    <main className="relative flex min-h-screen items-center justify-center px-6 py-12">
+      {/* Signed-out visitors can pick a language too. */}
+      <LanguageSwitcher className="absolute right-4 top-4" />
       <motion.div
         initial={{ opacity: 0, y: 24, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -81,14 +86,15 @@ export function Notice({ tone, children }: { tone: Tone; children: ReactNode }) 
  * so a screen reader reads the rules when the field gains focus.
  */
 export function PasswordHints({ id, problems, minLength }: { id: string; problems: string[]; minLength: number }) {
+  const { t } = useT();
   return (
     <ul id={id} className="space-y-0.5 pl-1 text-xs" style={{ color: "var(--text-muted)" }}>
       {problems.length === 0 ? (
-        <li style={{ color: "var(--success)" }}>Password looks good.</li>
+        <li style={{ color: "var(--success)" }}>{t("auth.passwordGood")}</li>
       ) : (
         problems.map((p) => <li key={p}>{p}</li>)
       )}
-      <li>Use at least {minLength} characters -- a short phrase works well.</li>
+      <li>{t("auth.passwordLength", { min: minLength })}</li>
     </ul>
   );
 }
