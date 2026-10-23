@@ -55,12 +55,15 @@ import json
 import logging
 import math
 import random
+import re
 import threading
 import time
 from collections import OrderedDict
-from typing import List, Optional, Tuple
+from contextvars import ContextVar
+from typing import Callable, List, Optional, Tuple
 
 from app.core.config import settings
+from app.services.pacing import RatePacer
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,79 @@ _local_model = None
 # loading the model, wasting memory and time. The lock ensures only the first
 # one loads while the second waits and then reuses the result.
 _local_model_lock = threading.Lock()
+
+
+# ----------------------------------------------------------------------
+# RATE LIMITS: the shared pacer, the "please pause" exception, the listener
+# ----------------------------------------------------------------------
+# ONE pacer per process for the Gemini key, shared by every thread: uploads
+# being embedded and questions being asked all draw on the same quota.
+# (Several Celery workers each keep their own count; lower the
+# GEMINI_EMBED_* limits accordingly if you run more than one.)
+gemini_pacer = RatePacer()
+
+
+class EmbeddingRateLimited(Exception):
+    """
+    The provider is still refusing us after the whole retry budget.
+
+    NOT a failure of the document: the ingestion pipeline catches this,
+    keeps every chunk embedded so far, and PAUSES the document until
+    `retry_after` seconds from now. The class name contains "RateLimit", so
+    anything that classifies errors by name (tasks/ingestion.is_transient)
+    also sees it as transient.
+    """
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+# Set by the ingestion pipeline around one embedding call: told
+# (seconds, reason) whenever that call is about to wait, so the document's
+# status can say "waiting for rate limit" instead of looking frozen.
+# A ContextVar rather than an argument, so every provider keeps the simple
+# get_embeddings(texts) signature (and tests can still replace it).
+wait_listener: "ContextVar[Optional[Callable[[float, str], None]]]" = ContextVar(
+    "embedding_wait_listener", default=None
+)
+
+
+def _now() -> float:
+    """The retry loop's clock. A function, so tests can swap in a fake one."""
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    """The retry loop's sleep (see `_now`)."""
+    time.sleep(seconds)
+
+
+def gemini_retry_hint(response) -> Optional[float]:
+    """
+    How long Google asked us to wait, in seconds -- or None if it did not say.
+
+    Two places it may say it:
+        Retry-After: 37                                    (an HTTP header)
+        {"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                "retryDelay": "37s"}]}}    (the JSON body)
+    """
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass  # an HTTP-date; rare enough to fall back to backoff
+    try:
+        details = (response.json().get("error") or {}).get("details") or []
+    except Exception:
+        return None
+    for detail in details:
+        if isinstance(detail, dict) and str(detail.get("@type", "")).endswith("RetryInfo"):
+            match = re.fullmatch(r"\s*([\d.]+)s\s*", str(detail.get("retryDelay", "")))
+            if match:
+                return float(match.group(1))
+    return None
 
 
 class EmbeddingService:
@@ -313,8 +389,54 @@ class EmbeddingService:
 
     # batchEmbedContents takes at most 100 texts per call.
     _GEMINI_BATCH = 100
+    # Gemini reads at most this many tokens of one text and ignores the rest,
+    # so a longer chunk never costs more quota than this.
+    _GEMINI_MAX_INPUT_TOKENS = 2048
+    # Our token counter (cl100k, see chunker.py) is not Gemini's tokenizer.
+    # Counting 15% high keeps the estimate on the safe side of the quota.
+    _TOKEN_SAFETY = 1.15
     # Tests swap in an httpx.MockTransport here; None means the real network.
     _gemini_transport = None
+
+    @classmethod
+    def _estimate_tokens(cls, text: str) -> int:
+        """Roughly how many tokens of Gemini's quota this text will use."""
+        from app.services.chunker import ChunkerService
+
+        counted = min(ChunkerService.count_tokens(text), cls._GEMINI_MAX_INPUT_TOKENS)
+        return max(1, int(counted * cls._TOKEN_SAFETY))
+
+    @classmethod
+    def _gemini_batches(cls, texts: List[str]) -> List[Tuple[int, int, int]]:
+        """
+        Split `texts` into (start, end, tokens) batches that each fit the quota.
+
+        The old code always sent 100 texts per call. With 500-token chunks
+        that is ~50,000 tokens in ONE request -- more than the free tier's
+        whole per-minute token quota, so that request could never succeed no
+        matter how long it waited. Each batch now holds at most half a
+        minute's token budget and at most a minute's request budget, so the
+        pacer can always fit it.
+        """
+        rpm = settings.GEMINI_EMBED_REQUESTS_PER_MINUTE
+        max_texts = max(1, min(cls._GEMINI_BATCH, rpm if rpm > 0 else cls._GEMINI_BATCH))
+        tpm = settings.GEMINI_EMBED_TOKENS_PER_MINUTE
+        max_tokens = max(1, tpm // 2) if tpm > 0 else None
+
+        batches: List[Tuple[int, int, int]] = []
+        start, tokens = 0, 0
+        for index, text in enumerate(texts):
+            cost = cls._estimate_tokens(text)
+            full = index - start >= max_texts or (
+                max_tokens is not None and tokens + cost > max_tokens and index > start
+            )
+            if full:
+                batches.append((start, index, tokens))
+                start, tokens = index, 0
+            tokens += cost
+        if start < len(texts):
+            batches.append((start, len(texts), tokens))
+        return batches
 
     @classmethod
     def _get_gemini_embeddings(cls, texts: List[str], *, for_query: bool = False) -> List[List[float]]:
@@ -327,7 +449,9 @@ class EmbeddingService:
         Unlike the other providers, a failure here RAISES instead of falling
         back to mock vectors. Mock vectors would be stored as if they were
         real, and search would quietly return nothing; a raised error marks
-        the document "failed" and says why.
+        the document "failed" and says why. Running out of RATE-LIMIT patience
+        raises EmbeddingRateLimited instead, which the ingestion pipeline
+        turns into a PAUSE: nothing embedded so far is lost.
         """
         import httpx
 
@@ -345,11 +469,16 @@ class EmbeddingService:
         # Questions and passages are embedded differently on purpose: the
         # model places a question near the passages that ANSWER it.
         task_type = "RETRIEVAL_QUERY" if for_query else "RETRIEVAL_DOCUMENT"
+        # A document can afford to wait minutes; a person asking a question
+        # cannot.
+        budget = (
+            settings.GEMINI_QUERY_RETRY_BUDGET_SECONDS if for_query else settings.GEMINI_RETRY_BUDGET_SECONDS
+        )
 
         vectors: List[List[float]] = []
         with httpx.Client(timeout=60, transport=cls._gemini_transport) as client:
-            for start in range(0, len(texts), cls._GEMINI_BATCH):
-                batch = texts[start:start + cls._GEMINI_BATCH]
+            for start, end, tokens in cls._gemini_batches(texts):
+                batch = texts[start:end]
                 body = {
                     "requests": [
                         {
@@ -361,7 +490,10 @@ class EmbeddingService:
                         for text in batch
                     ]
                 }
-                data = cls._post_gemini(client, url, body)
+                data = cls._post_gemini(
+                    client, url, body, texts=len(batch), tokens=tokens,
+                    budget_seconds=budget, for_query=for_query,
+                )
                 embeddings = data.get("embeddings", [])
                 if len(embeddings) != len(batch):
                     raise RuntimeError(
@@ -374,26 +506,109 @@ class EmbeddingService:
         return vectors
 
     @classmethod
-    def _post_gemini(cls, client, url: str, body: dict) -> dict:
-        """POST, retrying the free tier's rate limits (429) and blips (5xx)."""
-        delay = 2.0
-        for attempt in range(5):
-            response = client.post(
-                url, json=body, headers={"x-goog-api-key": settings.GEMINI_API_KEY}
+    def _post_gemini(
+        cls,
+        client,
+        url: str,
+        body: dict,
+        *,
+        texts: int = 1,
+        tokens: int = 1,
+        budget_seconds: Optional[float] = None,
+        for_query: bool = False,
+    ) -> dict:
+        """
+        POST one batch: paced, and patient with rate limits (429) and blips.
+
+        HOW LONG TO WAIT AFTER A 429, in order of preference:
+            1. what Google SAYS -- the Retry-After header, or the RetryInfo
+               "retryDelay": "37s" in the JSON error body;
+            2. otherwise exponential backoff WITH JITTER: 2, 4, 8 ... seconds,
+               each randomised between half and all of that, so several
+               waiting callers do not all retry in the same instant.
+        No single wait exceeds GEMINI_RETRY_MAX_DELAY_SECONDS (90 s by
+        default -- a per-minute quota has always reset by then), and all the
+        waits together stay within the call's budget (GEMINI_RETRY_BUDGET_
+        SECONDS, several minutes). When the budget is spent, or Google asks
+        for a wait longer than the per-wait cap (a DAILY quota is exhausted),
+        EmbeddingRateLimited is raised with the suggested delay attached.
+
+        The old version waited 2+4+8+16 = 30 seconds in total against a quota
+        that resets once a MINUTE -- it gave up just before it would have
+        worked.
+
+        A 400/401/403 is a bad key or request and fails at once: no amount of
+        waiting fixes it. Network errors get the same patience as a 429.
+        """
+        import httpx
+
+        if budget_seconds is None:
+            budget_seconds = settings.GEMINI_RETRY_BUDGET_SECONDS
+        cap = float(settings.GEMINI_RETRY_MAX_DELAY_SECONDS)
+        started = _now()
+        listener = wait_listener.get()
+        attempt = 0
+
+        def notify(seconds: float, reason: str) -> None:
+            if listener is not None:
+                try:
+                    listener(seconds, reason)
+                except Exception:  # pragma: no cover - status updates are best effort
+                    logger.debug("embedding wait listener failed", exc_info=True)
+
+        while True:
+            # PACING. A question records its cost but never queues behind a
+            # document; a document waits for room in the per-minute budget.
+            gemini_pacer.acquire(
+                texts,
+                tokens,
+                settings.GEMINI_EMBED_REQUESTS_PER_MINUTE,
+                settings.GEMINI_EMBED_TOKENS_PER_MINUTE,
+                block=not for_query,
+                on_wait=lambda seconds: notify(seconds, "pacing"),
             )
-            if response.status_code < 400:
-                return response.json()
-            if response.status_code != 429 and response.status_code < 500:
-                # 400/401/403: a bad key or request. Retrying cannot fix it.
-                raise RuntimeError(
-                    f"Gemini embeddings failed (HTTP {response.status_code}): {response.text[:300]}"
+            hint: Optional[float] = None
+            try:
+                response = client.post(
+                    url, json=body, headers={"x-goog-api-key": settings.GEMINI_API_KEY}
                 )
-            if attempt < 4:
-                time.sleep(float(response.headers.get("retry-after", delay)))
-                delay *= 2
-        raise RuntimeError(
-            f"Gemini embeddings still failing after retries (HTTP {response.status_code})."
-        )
+            except httpx.TransportError as exc:
+                # Connection reset, DNS hiccup, timeout: the same patience.
+                what = f"network error: {exc.__class__.__name__}"
+                status_code = None
+            else:
+                status_code = response.status_code
+                if status_code < 400:
+                    return response.json()
+                if status_code != 429 and status_code < 500:
+                    raise RuntimeError(
+                        f"Gemini embeddings failed (HTTP {status_code}): {response.text[:300]}"
+                    )
+                hint = gemini_retry_hint(response)
+                what = f"HTTP {status_code}"
+
+            if hint is not None and hint > cap:
+                # Google wants longer than any per-minute reset: most likely
+                # the DAILY quota. Waiting here would only hold the worker.
+                raise EmbeddingRateLimited(
+                    f"Gemini quota exhausted ({what}); Google asks to retry in {int(hint)}s.",
+                    retry_after=hint,
+                )
+            backoff = min(cap, 2.0 * 2**attempt) * random.uniform(0.5, 1.0)
+            delay = min(cap, max(hint or 0.0, backoff))
+            spent = _now() - started
+            if spent + delay > budget_seconds:
+                raise EmbeddingRateLimited(
+                    f"Gemini embeddings still rate limited after {int(spent)}s of retries ({what}).",
+                    retry_after=delay,
+                )
+            if status_code == 429:
+                # Everyone sharing this key waits it out, not just this call.
+                gemini_pacer.cool_down(delay)
+            logger.info("Gemini %s; retrying in %.1fs (attempt %d)", what, delay, attempt + 1)
+            notify(delay, "rate_limit" if status_code == 429 else "retry")
+            _sleep(delay)
+            attempt += 1
 
     @staticmethod
     def _unit(values: List[float]) -> List[float]:

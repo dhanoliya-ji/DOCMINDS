@@ -298,6 +298,37 @@ class Settings(BaseSettings):
     # Higher = more accurate but slower and more memory-hungry. 150 DPI is the
     # usual sweet spot for printed documents.
     OCR_DPI: int = 150
+    # A huge page (an A0 poster, a 300 DPI scan of a broadsheet) rasterised
+    # at OCR_DPI can be hundreds of megabytes of pixels. The resolution is
+    # lowered for that one page until it fits in this many pixels (~12 MP,
+    # about 36 MB as RGB), so one page can never exhaust a 512 MB host.
+    OCR_MAX_PIXELS: int = 12_000_000
+
+    # ------------------------------------------------------------------
+    # IMAGE UNDERSTANDING (optional) -- services/vision.py
+    # ------------------------------------------------------------------
+    # OCR reads the WORDS in an image. A chart, a diagram or a photo has
+    # meaning beyond its words, and a vision model can describe it. With this
+    # on, uploaded images and image-heavy PDF pages get a short caption that
+    # is indexed next to their OCR text, so "the org chart" or "the revenue
+    # graph" becomes searchable.
+    #   off    -> the default; no extra calls, no extra quota
+    #   groq   -> a Groq vision model, using GROQ_API_KEY
+    #   gemini -> a Gemini model, using GEMINI_API_KEY
+    VISION_PROVIDER: Literal["off", "groq", "gemini"] = "off"
+    # Empty means the provider's default model (see services/vision.py).
+    VISION_MODEL: str = ""
+    # Empty means reuse GROQ_API_KEY or GEMINI_API_KEY. Set it only to keep
+    # vision on a separate key (and so a separate quota):
+    #     VISION_API_KEY=your-key-here
+    VISION_API_KEY: str = ""
+    # Captions cost a model call each, so they are capped per document...
+    VISION_MAX_IMAGES_PER_DOCUMENT: int = 20
+    # ...paced like the embeddings...
+    VISION_REQUESTS_PER_MINUTE: int = 10
+    # ...and only spent on PDF pages where pictures cover at least this
+    # fraction of the page (0.3 = 30%). A logo in a letterhead is not worth one.
+    VISION_MIN_IMAGE_COVERAGE: float = 0.3
 
     # ==================================================================
     # 7. EMBEDDINGS -- turning text into numbers for semantic search
@@ -356,6 +387,66 @@ class Settings(BaseSettings):
     # How many chunks to hand the embedding model in one call. Batching is far
     # faster than one-at-a-time, but too large a batch exhausts memory.
     EMBEDDING_BATCH_SIZE: int = 32
+
+    # ------------------------------------------------------------------
+    # GEMINI FREE-TIER PACING (services/pacing.py, services/embedding.py)
+    # ------------------------------------------------------------------
+    # Google's free tier enforces PER-MINUTE quotas. Sending requests as fast
+    # as possible and retrying on HTTP 429 wastes the quota on rejections and,
+    # with a large document, ran out of retries long before the minute reset.
+    # So requests are PACED on our side instead: never more than this many
+    # texts or (estimated) tokens in any rolling 60 seconds. The defaults sit a
+    # little under the free tier's published limits, leaving room for the
+    # questions users ask while a document is being embedded.
+    #
+    # REQUESTS are counted per TEXT, not per HTTP call: a batchEmbedContents
+    # call with 25 texts counts as 25. That is the conservative reading of how
+    # the free tier bills a batch -- pacing slightly too slowly costs seconds,
+    # pacing too fast costs a 429.
+    GEMINI_EMBED_REQUESTS_PER_MINUTE: int = 90
+    GEMINI_EMBED_TOKENS_PER_MINUTE: int = 25_000
+    # When a 429 arrives anyway: wait as long as Google asks (Retry-After or
+    # the RetryInfo retryDelay in the error body), else exponential backoff
+    # with jitter -- but never longer than this per wait...
+    GEMINI_RETRY_MAX_DELAY_SECONDS: int = 90
+    # ...and never longer than this in total for one call. When the budget
+    # runs out the DOCUMENT is paused (not failed) and resumes later from the
+    # chunk it reached. A user's QUESTION gets the much shorter budget below:
+    # nobody waits minutes for a search.
+    GEMINI_RETRY_BUDGET_SECONDS: int = 300
+    GEMINI_QUERY_RETRY_BUDGET_SECONDS: int = 20
+
+    # ------------------------------------------------------------------
+    # LARGE DOCUMENTS (tasks/ingestion.py)
+    # ------------------------------------------------------------------
+    # Chunks are embedded, saved and COMMITTED this many at a time. A crash, a
+    # restart or a rate limit loses at most one batch; the next run skips
+    # every chunk that already has a vector for the current model.
+    INGESTION_EMBED_BATCH_SIZE: int = 50
+    # Hard caps per document, with a clear message when exceeded. The chunk cap
+    # is what keeps one enormous upload from occupying a free embedding quota
+    # for a day: at the default pacing, 3,000 chunks of ~500 tokens take about
+    # an hour to embed.
+    INGESTION_MAX_PAGES: int = 2000
+    INGESTION_MAX_CHUNKS: int = 3000
+    # Spreadsheets and CSVs are read this many rows at a time, so a 200,000-row
+    # sheet never sits in memory as one string.
+    INGESTION_ROWS_PER_SEGMENT: int = 200
+    # A paused document (rate-limit budget exhausted) is resumed after this
+    # long, doubling each time a resume makes no progress, up to the maximum.
+    # After INGESTION_MAX_IDLE_PAUSES resumes in a row with no progress at all
+    # it is failed -- with the Re-index button still able to resume it.
+    INGESTION_PAUSE_SECONDS: int = 120
+    INGESTION_PAUSE_MAX_SECONDS: int = 3600
+    INGESTION_MAX_IDLE_PAUSES: int = 24
+    # INGESTION_MODE=inline only: how many documents the API processes at the
+    # same time. 1 is right for a 512 MB host -- a second large PDF in
+    # parallel would double the peak memory for no gain, because both would
+    # share the same embedding quota anyway.
+    INGESTION_INLINE_CONCURRENCY: int = 1
+    # INGESTION_MODE=inline only: how often the API itself looks for paused
+    # documents that are due to resume (there is no Celery beat to do it).
+    INGESTION_INLINE_SWEEP_SECONDS: int = 60
 
     # ==================================================================
     # 8. LLM -- the AI that writes the final answer (the "G" in RAG)
@@ -516,11 +607,13 @@ class Settings(BaseSettings):
     # ==================================================================
     # 11. FILE UPLOAD LIMITS
     # ==================================================================
-    # 50 MB, written as a multiplication so the number stays human-readable.
-    # Enforced PER FILE while the upload is read in chunks (services/uploads.py),
+    # 100 MB, written as a multiplication so the number stays human-readable.
+    # Large files are fine on a small host: the upload is streamed to a
+    # temporary file, and ingestion reads it a page (or a batch of rows) at a
+    # time -- see tasks/ingestion.py. Enforced PER FILE while the upload is read in chunks (services/uploads.py),
     # so an oversized file is refused with 413 as soon as it crosses the line,
     # not after the whole thing has been read into memory.
-    MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024
+    MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024
 
     # How many files one upload request may carry. Together with the per-file
     # limit this sets a ceiling on the WHOLE request body, which middleware in
