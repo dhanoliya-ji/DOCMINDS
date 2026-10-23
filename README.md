@@ -28,6 +28,8 @@ DocMinds is a multi-tenant retrieval-augmented generation (RAG) platform for que
 - **Limits and metering:** per-IP limits on sign-in, sign-up and password reset, per-user limits on chat, search and upload (Redis-backed, in-memory fallback), and per-organisation monthly token, document and storage quotas with usage and estimated cost reported to admins.
 - **Robust model calls:** Groq is called asynchronously with retries, backoff and an optional fallback model; document text is fenced as untrusted data against prompt injection.
 - **Observable:** structured JSON logs carrying a request id, user and organisation; optional Sentry; liveness and readiness health checks; security headers on every response.
+- **For developers:** a public API guide at `/developers` (API keys, rate limits, endpoints, curl / Python / TypeScript examples) and two small SDKs in `sdk/`, typed from the same OpenAPI schema.
+- **Accessible and bilingual:** every screen in English and Hindi, WCAG AA contrast checked in CI for both themes, and installable as a PWA with an offline page.
 - **Runs offline:** deterministic mock providers for OCR, embeddings and the LLM allow development and testing without API keys.
 
 ## Architecture
@@ -187,6 +189,7 @@ DOCMINDS/
 ├── backend/            FastAPI app, Celery tasks, Alembic migrations, tests, Dockerfile, docker-compose.yml
 │   └── app/            core/, db/, models/, schemas/, api/, services/, tasks/
 ├── frontend/           Next.js app: app/ (routes), components/, lib/api.ts, tests/, tests-e2e/
+├── sdk/                TypeScript and Python API clients
 ├── docs/               Architecture, development and deployment guides; screenshots
 ├── .github/            CI, security scanning and repository automation workflows
 └── render.yaml         Render blueprint for the API

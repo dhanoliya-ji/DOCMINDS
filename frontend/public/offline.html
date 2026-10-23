@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DocMinds — offline</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+         font-family: system-ui, sans-serif; background: #070b18; color: #eef2ff; text-align: center; }
+  @media (prefers-color-scheme: light) { body { background: #f5f7fc; color: #0f172a; } p { color: #334155; } }
+  p { color: #9aa8c7; max-width: 28rem; line-height: 1.5; }
+  button { font: inherit; padding: 10px 18px; border: 0; border-radius: 12px; background: #5b5ff0; color: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>You are offline</h1>
+    <p>DocMinds needs a connection to search and answer questions. Pages you opened recently still work; this one will load once you are back online.</p>
+    <p lang="hi">आप ऑफ़लाइन हैं। कनेक्शन लौटते ही यह पेज खुल जाएगा।</p>
+    <button type="button" onclick="location.reload()">Try again</button>
+  </main>
+</body>
+</html>

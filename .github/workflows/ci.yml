@@ -165,6 +165,12 @@ jobs:
             exit 1
           fi
 
+      - name: Python SDK tests
+        # sdk/python against a fake API (httpx.MockTransport); httpx and
+        # pytest are already installed from backend/requirements.txt.
+        working-directory: sdk/python
+        run: python -m pytest -q
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
@@ -214,8 +220,9 @@ jobs:
         run: npm run lint
 
       - name: Check generated API types
-        # lib/api-types.ts must match the committed openapi.json
-        # (npm run gen:api). Needs neither the backend nor the network.
+        # lib/api-types.ts and sdk/typescript/src/schema.ts must match the
+        # committed openapi.json (npm run gen:api). Needs neither the backend
+        # nor the network.
         run: npm run check:api
 
       - name: Test

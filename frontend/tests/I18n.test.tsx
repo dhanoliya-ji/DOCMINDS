@@ -5,7 +5,10 @@
  *
  *   * translate: placeholders, the English fallback for a key Hindi lacks,
  *     the key itself for a key nobody has
- *   * the dictionaries: every Hindi key also exists in English (no orphans)
+ *   * the dictionaries: every Hindi key also exists in English (no orphans),
+ *     every English key has a Hindi translation (no gaps), and both sides
+ *     use the same {placeholders}
+ *   * rich(): elements in {slots}
  *   * the switcher: picking Hindi re-renders the shell and the auth pages,
  *     sets <html lang>, and is remembered
  */
@@ -17,7 +20,7 @@ import { describe, expect, it, vi } from "vitest";
 import AppShell from "@/components/app/AppShell";
 import LanguageSwitcher from "@/components/app/LanguageSwitcher";
 import ForgotPasswordPage from "@/app/forgot-password/page";
-import { LOCALE_STORAGE_KEY, messageKeys, readLocale, setLocale, translate } from "@/lib/i18n";
+import { LOCALE_STORAGE_KEY, messageKeys, readLocale, rich, setLocale, translate } from "@/lib/i18n";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -39,6 +42,25 @@ describe("translate", () => {
   it("has no Hindi key without an English original", () => {
     const english = new Set(messageKeys("en"));
     expect(messageKeys("hi").filter((k) => !english.has(k))).toEqual([]);
+  });
+
+  it("translates every English key into Hindi", () => {
+    const hindi = new Set(messageKeys("hi"));
+    expect(messageKeys("en").filter((k) => !hindi.has(k))).toEqual([]);
+  });
+
+  it("uses the same placeholders in both languages", () => {
+    const slots = (s: string) => (s.match(/\{\w+\}/g) ?? []).sort().join(",");
+    const mismatched = messageKeys("en").filter(
+      (k) => slots(translate("en", k)) !== slots(translate("hi", k))
+    );
+    expect(mismatched).toEqual([]);
+  });
+
+  it("rich() puts elements in slots and keeps the text around them", () => {
+    render(<p>{rich("Sent to {email}. Done", { email: <strong>ada@example.com</strong> })}</p>);
+    expect(screen.getByText("ada@example.com").tagName).toBe("STRONG");
+    expect(screen.getByText(/Sent to/)).toHaveTextContent("Sent to ada@example.com. Done");
   });
 
   it("ignores an unknown stored locale", () => {

@@ -33,6 +33,7 @@ import DocumentFilter from "@/components/DocumentFilter";
 import EmbeddingCloud from "@/components/EmbeddingCloud";
 import SourceViewer, { SourceRef } from "@/components/SourceViewer";
 import { DocumentItem, SearchResultItem, api, getErrorMessage } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 interface Props {
   projectId: string;
@@ -40,14 +41,12 @@ interface Props {
   documents?: DocumentItem[];
 }
 
-/** What the badge says about which half of hybrid search found a result. */
-const MATCH_LABELS: Record<string, string> = {
-  both: "meaning + words",
-  vector: "meaning",
-  keyword: "exact words",
-};
+/** What the badge says about which half of hybrid search found a result
+    (i18n keys: search.match.both / vector / keyword). */
+const MATCH_TYPES = new Set(["both", "vector", "keyword"]);
 
 export default function SearchPanel({ projectId, documents = [] }: Props) {
+  const { t } = useT();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResultItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -85,7 +84,7 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
       setTookSeconds(response.took_seconds);
       setSearched(true);
     } catch (err) {
-      setError(getErrorMessage(err, "Search failed."));
+      setError(getErrorMessage(err, t("search.failed")));
     } finally {
       setLoading(false);
     }
@@ -114,7 +113,7 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
           />
           <input
             className="input pl-11"
-            placeholder="Search by meaning, e.g. “how much time off do I get?”"
+            placeholder={t("search.placeholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && runSearch()}
@@ -130,14 +129,13 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
           ) : (
             <Search size={16} />
           )}
-          Search
+          {t("search.button")}
         </button>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          This matches meaning AND exact words — a paraphrase finds the passage,
-          and so does a policy number or a name.
+          {t("search.hint")}
         </p>
         <DocumentFilter documents={documents} selected={documentIds} onChange={setDocumentIds} />
       </div>
@@ -163,10 +161,10 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
           style={{ color: "var(--text-muted)" }}
         >
           <span>
-            {results.length} result{results.length === 1 ? "" : "s"}
+            {t(results.length === 1 ? "search.results.one" : "search.results.other", { count: results.length })}
           </span>
           {tookSeconds !== null && (
-            <span>· found in {(tookSeconds * 1000).toFixed(0)}ms</span>
+            <span>{t("search.took", { ms: (tookSeconds * 1000).toFixed(0) })}</span>
           )}
         </div>
       )}
@@ -192,13 +190,13 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
                       className="text-xs"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      page {result.page_number}
+                      {t("search.page", { page: result.page_number })}
                     </span>
                   )}
                 </div>
                 <span className="flex shrink-0 items-center gap-2">
                   <span className={scoreClass(result.score)}>
-                    {Math.round(result.score * 100)}% match
+                    {t("search.match", { percent: Math.round(result.score * 100) })}
                   </span>
                   <button
                     type="button"
@@ -213,9 +211,9 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
                         snippet: result.content,
                       })
                     }
-                    aria-label={`View ${result.filename} in context`}
+                    aria-label={t("search.viewLabel", { filename: result.filename })}
                   >
-                    <ExternalLink size={12} /> View
+                    <ExternalLink size={12} /> {t("search.view")}
                   </button>
                 </span>
               </div>
@@ -236,14 +234,18 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
                 className="mt-2 flex gap-3 text-xs"
                 style={{ color: "var(--text-muted)" }}
               >
-                <span>chunk #{result.chunk_index}</span>
+                <span>{t("search.chunk", { index: result.chunk_index })}</span>
                 {result.match_type && (
-                  <span title="Which half of hybrid search found this passage">
-                    found by {MATCH_LABELS[result.match_type] ?? result.match_type}
+                  <span title={t("search.foundByTitle")}>
+                    {t("search.foundBy", {
+                      how: MATCH_TYPES.has(result.match_type)
+                        ? t(`search.match.${result.match_type}`)
+                        : result.match_type,
+                    })}
                   </span>
                 )}
                 {result.meta_data?.token_count && (
-                  <span>{result.meta_data.token_count} tokens</span>
+                  <span>{t("search.tokens", { count: result.meta_data.token_count })}</span>
                 )}
               </div>
             </motion.div>
@@ -264,15 +266,12 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
               style={{ color: "var(--text-muted)" }}
               className="mb-3"
             />
-            <h3 className="font-semibold">Nothing matched closely enough</h3>
+            <h3 className="font-semibold">{t("search.empty.title")}</h3>
             <p
               className="mt-2 max-w-sm text-sm"
               style={{ color: "var(--text-secondary)" }}
             >
-              Every passage scored below the similarity threshold, so nothing is
-              shown rather than presenting a weak match as an answer. Try
-              rephrasing, or check that documents in this project have finished
-              processing.
+              {t("search.empty.body")}
             </p>
           </motion.div>
         )}

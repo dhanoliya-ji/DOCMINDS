@@ -21,15 +21,18 @@
 "use client";
 
 import { KeyRound, Loader2 } from "lucide-react";
+import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import HoldToConfirm from "@/components/app/HoldToConfirm";
 import { Notice } from "@/components/AuthCard";
 import { CopyButton } from "@/components/settings/MembersPanel";
 import { ApiKey, ApiKeyCreated, RoleInput, api, getErrorMessage } from "@/lib/api";
+import { rich, useT } from "@/lib/i18n";
 import { ROLE_OPTIONS, roleLabel } from "@/lib/roles";
 
 export default function ApiKeysPanel() {
+  const { t } = useT();
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [error, setError] = useState("");
   const [name, setName] = useState("");
@@ -42,8 +45,10 @@ export default function ApiKeysPanel() {
     try {
       setKeys(await api.listApiKeys());
     } catch (err) {
-      setError(getErrorMessage(err, "Could not load API keys."));
+      setError(getErrorMessage(err, t("apiKeys.loadError")));
     }
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -62,7 +67,7 @@ export default function ApiKeysPanel() {
       setDays("");
       await load();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not create the key."));
+      setError(getErrorMessage(err, t("apiKeys.createError")));
     } finally {
       setCreating(false);
     }
@@ -75,7 +80,7 @@ export default function ApiKeysPanel() {
       await api.revokeApiKey(key.id);
       await load();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not revoke the key."));
+      setError(getErrorMessage(err, t("apiKeys.revokeError")));
     }
   }
 
@@ -84,11 +89,11 @@ export default function ApiKeysPanel() {
       <form onSubmit={create} className="glass flex flex-wrap items-end gap-3 p-5">
         <label className="min-w-[12rem] flex-1 text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-            Key name
+            {t("apiKeys.name")}
           </span>
           <input
             className="input"
-            placeholder="e.g. Nightly report script"
+            placeholder={t("apiKeys.namePlaceholder")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
@@ -97,7 +102,7 @@ export default function ApiKeysPanel() {
         </label>
         <label className="text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-            Role
+            {t("settings.common.role")}
           </span>
           <select className="input" value={role} onChange={(e) => setRole(e.target.value as RoleInput)}>
             {ROLE_OPTIONS.map((o) => (
@@ -109,30 +114,43 @@ export default function ApiKeysPanel() {
         </label>
         <label className="w-36 text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-            Expires in (days)
+            {t("apiKeys.expires")}
           </span>
           <input
             type="number"
             min={1}
             className="input"
-            placeholder="Never"
+            placeholder={t("settings.common.never")}
             value={days}
             onChange={(e) => setDays(e.target.value)}
           />
         </label>
         <button type="submit" className="btn-primary" disabled={creating || !name.trim()}>
           {creating ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <KeyRound size={15} aria-hidden="true" />}
-          Create key
+          {t("apiKeys.create")}
         </button>
+        <p className="w-full text-xs" style={{ color: "var(--text-muted)" }}>
+          {rich(t("apiKeys.docs"), {
+            link: (
+              <Link href="/developers" className="underline" style={{ color: "var(--accent-hover)" }}>
+                {t("apiKeys.docsLink")}
+              </Link>
+            ),
+          })}
+        </p>
       </form>
 
       {created && (
         <Notice tone="success">
-          Your new key for “{created.name}”. Copy it now — it will not be shown again:{" "}
-          <code className="break-all" data-testid="new-api-key">
-            {created.key}
-          </code>{" "}
-          <CopyButton text={created.key} label="Copy key" />
+          {rich(t("apiKeys.created"), {
+            name: created.name,
+            key: (
+              <code className="break-all" data-testid="new-api-key">
+                {created.key}
+              </code>
+            ),
+            copy: <CopyButton text={created.key} label={t("apiKeys.copy")} />,
+          })}
         </Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
@@ -141,18 +159,18 @@ export default function ApiKeysPanel() {
         <div className="glass shimmer h-24" aria-busy="true" />
       ) : keys.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          No API keys yet.
+          {t("apiKeys.empty")}
         </p>
       ) : (
         <table className="w-full text-left text-sm">
           <thead style={{ color: "var(--text-muted)" }}>
             <tr>
-              <th className="py-2 font-medium">Name</th>
-              <th className="py-2 font-medium">Key</th>
-              <th className="py-2 font-medium">Role</th>
-              <th className="py-2 font-medium">Last used</th>
+              <th className="py-2 font-medium">{t("apiKeys.colName")}</th>
+              <th className="py-2 font-medium">{t("apiKeys.colKey")}</th>
+              <th className="py-2 font-medium">{t("settings.common.role")}</th>
+              <th className="py-2 font-medium">{t("apiKeys.colLastUsed")}</th>
               <th className="py-2 font-medium">
-                <span className="sr-only">Actions</span>
+                <span className="sr-only">{t("settings.common.actions")}</span>
               </th>
             </tr>
           </thead>
@@ -167,14 +185,14 @@ export default function ApiKeysPanel() {
                   </td>
                   <td className="py-2">{roleLabel(k.role)}</td>
                   <td className="py-2" style={{ color: "var(--text-secondary)" }}>
-                    {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "Never"}
+                    {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : t("settings.common.never")}
                   </td>
                   <td className="py-2 text-right">
                     {revoked ? (
-                      <span style={{ color: "var(--text-muted)" }}>Revoked</span>
+                      <span style={{ color: "var(--text-muted)" }}>{t("apiKeys.revoked")}</span>
                     ) : (
-                      <HoldToConfirm onConfirm={() => revoke(k)} aria-label={`Revoke ${k.name}`}>
-                        Hold to revoke
+                      <HoldToConfirm onConfirm={() => revoke(k)} aria-label={t("apiKeys.revoke", { name: k.name })}>
+                        {t("settings.common.holdRevoke")}
                       </HoldToConfirm>
                     )}
                   </td>

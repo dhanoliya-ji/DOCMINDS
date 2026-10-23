@@ -46,6 +46,7 @@ import {
 import Link from "next/link";
 import { useSyncExternalStore } from "react";
 
+import LanguageSwitcher from "@/components/app/LanguageSwitcher";
 import Flashlight from "@/components/landing/Flashlight";
 import { usePrefersReducedMotion } from "@/components/landing/hooks";
 import MeshGradient from "@/components/landing/MeshGradient";
@@ -56,6 +57,7 @@ import PipelineScroll from "@/components/landing/PipelineScroll";
 import SmoothScroll from "@/components/landing/SmoothScroll";
 import StackingCards, { type StackItem } from "@/components/landing/StackingCards";
 import { getToken } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 /**
  * ANIMATION PRESETS
@@ -144,12 +146,12 @@ const GUARANTEES: StackItem[] = [
 /** The headline, split into the lines both the <h1> and the canvas render. */
 const HEADLINE = ["Ask your documents", "anything."];
 
-/** Numbers shown in the hero strip. */
+/** Numbers shown in the hero strip; `label` is an i18n key. */
 const STATS = [
-  { value: "19", label: "file extensions" },
-  { value: "384", label: "vector dimensions" },
-  { value: "3", label: "chunking strategies" },
-  { value: "<50ms", label: "typical search" },
+  { value: "19", label: "landing.stat.extensions" },
+  { value: "384", label: "landing.stat.dimensions" },
+  { value: "3", label: "landing.stat.strategies" },
+  { value: "<50ms", label: "landing.stat.search" },
 ];
 
 /**
@@ -183,6 +185,9 @@ export default function LandingPage() {
     () => false
   );
 
+  // Calls to action and headings follow the language switcher (lib/i18n).
+  const { t } = useT();
+
   // With reduced motion, entrance animations start already "visible".
   const reduced = usePrefersReducedMotion();
   const initial = reduced ? "visible" : "hidden";
@@ -197,7 +202,7 @@ export default function LandingPage() {
           HERO
           ============================================================ */}
       <section
-        aria-label="Introduction"
+        aria-label={t("landing.intro")}
         className="relative isolate mx-auto grid max-w-6xl items-center gap-10 px-4 pt-20 pb-16 sm:px-6 md:grid-cols-[1.2fr_1fr] md:pt-28"
       >
         <MeshGradient />
@@ -211,7 +216,7 @@ export default function LandingPage() {
           <motion.div variants={fadeUp} className="mb-6 flex justify-center md:justify-start">
             <span className="pill-info gap-2">
               <Sparkles size={13} aria-hidden="true" />
-              Retrieval-Augmented Generation over your own documents
+              {t("landing.pill")}
             </span>
           </motion.div>
 
@@ -227,10 +232,7 @@ export default function LandingPage() {
             className="mx-auto mt-6 max-w-xl text-lg leading-relaxed md:mx-0"
             style={{ color: "var(--text-secondary)" }}
           >
-            Upload contracts, handbooks, decks and scanned reports. Every page is
-            read, split into meaning-aware chunks and indexed as vectors — so you
-            can ask a question in plain English and get an answer that cites the
-            exact page it came from.
+            {t("landing.lede")}
           </motion.p>
 
           {/* Call to action */}
@@ -242,7 +244,7 @@ export default function LandingPage() {
               href={signedIn ? "/dashboard" : "/login"}
               className="btn-primary px-6 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2"
             >
-              {signedIn ? "Open dashboard" : "Get started free"}
+              {signedIn ? t("landing.cta.dashboard") : t("landing.cta.start")}
               <ArrowRight size={17} aria-hidden="true" />
             </Link>
             <a
@@ -254,8 +256,14 @@ export default function LandingPage() {
               rel="noopener noreferrer"
               className="btn-ghost px-6 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2"
             >
-              View source
+              {t("landing.cta.source")}
             </a>
+            <Link
+              href="/developers"
+              className="btn-ghost px-6 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2"
+            >
+              {t("landing.cta.developers")}
+            </Link>
           </motion.div>
         </motion.div>
 
@@ -269,7 +277,7 @@ export default function LandingPage() {
                 {stat.value}
               </div>
               <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
-                {stat.label}
+                {t(stat.label)}
               </div>
             </li>
           ))}
@@ -281,7 +289,7 @@ export default function LandingPage() {
           ============================================================ */}
       <section aria-labelledby="features-heading" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <h2 id="features-heading" className="mb-10 text-center text-3xl font-bold md:text-4xl">
-          Built for real document piles
+          {t("landing.features")}
         </h2>
         <ParallaxCards features={FEATURES} />
       </section>
@@ -296,10 +304,10 @@ export default function LandingPage() {
           ============================================================ */}
       <section aria-labelledby="cite-heading" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <h2 id="cite-heading" className="mb-3 text-center text-3xl font-bold md:text-4xl">
-          See exactly where the answer came from
+          {t("landing.cite.title")}
         </h2>
         <p className="mx-auto mb-10 max-w-xl text-center" style={{ color: "var(--text-secondary)" }}>
-          Move your cursor over the page to find the passage the answer cites.
+          {t("landing.cite.body")}
         </p>
         <Flashlight />
       </section>
@@ -309,7 +317,7 @@ export default function LandingPage() {
           ============================================================ */}
       <section aria-labelledby="trust-heading" className="px-4 py-16 sm:px-6">
         <h2 id="trust-heading" className="mb-10 text-center text-3xl font-bold md:text-4xl">
-          Answers you can check
+          {t("landing.trust")}
         </h2>
         <StackingCards items={GUARANTEES} />
         <div className="mt-12 flex justify-center">
@@ -317,7 +325,7 @@ export default function LandingPage() {
             href={signedIn ? "/dashboard" : "/login"}
             className="btn-primary px-6 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2"
           >
-            {signedIn ? "Open dashboard" : "Start asking questions"}
+            {signedIn ? t("landing.cta.dashboard") : t("landing.cta.ask")}
             <ArrowRight size={17} aria-hidden="true" />
           </Link>
         </div>
@@ -335,6 +343,12 @@ export default function LandingPage() {
       >
         Built with FastAPI · PostgreSQL + pgvector · Celery · Next.js ·
         sentence-transformers · GPT-OSS 120B on Groq
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-4">
+          <LanguageSwitcher />
+          <Link href="/developers" className="underline" style={{ color: "var(--accent-hover)" }}>
+            {t("landing.footer.developers")}
+          </Link>
+        </div>
       </footer>
     </main>
   );

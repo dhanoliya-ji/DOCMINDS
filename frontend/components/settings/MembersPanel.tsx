@@ -32,9 +32,11 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import HoldToConfirm from "@/components/app/HoldToConfirm";
 import { Notice } from "@/components/AuthCard";
 import { Invite, InviteCreated, Member, RoleInput, api, getErrorMessage } from "@/lib/api";
+import { rich, useT } from "@/lib/i18n";
 import { ROLE_OPTIONS, roleAlias, roleLabel } from "@/lib/roles";
 
 export default function MembersPanel({ currentUserId }: { currentUserId: string }) {
+  const { t } = useT();
   const [members, setMembers] = useState<Member[] | null>(null);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [error, setError] = useState("");
@@ -50,8 +52,10 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       setMembers(m);
       setInvites(i);
     } catch (err) {
-      setError(getErrorMessage(err, "Could not load members."));
+      setError(getErrorMessage(err, t("members.loadError")));
     }
+    // `t` only words the fallback error; a language switch must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -70,7 +74,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       setEmail("");
       await load();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not send the invite."));
+      setError(getErrorMessage(err, t("members.inviteError")));
     } finally {
       setInviting(false);
     }
@@ -95,7 +99,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       <form onSubmit={invite} className="glass flex flex-wrap items-end gap-3 p-5">
         <label className="min-w-[14rem] flex-1 text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-            Invite by email
+            {t("members.inviteLabel")}
           </span>
           <input
             type="email"
@@ -108,7 +112,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
         </label>
         <label className="text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
-            Role
+            {t("settings.common.role")}
           </span>
           <select className="input" value={role} onChange={(e) => setRole(e.target.value as RoleInput)}>
             {ROLE_OPTIONS.map((o) => (
@@ -120,15 +124,17 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
         </label>
         <button type="submit" className="btn-primary" disabled={inviting || !email.trim()}>
           {inviting ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <UserPlus size={15} aria-hidden="true" />}
-          Send invite
+          {t("members.send")}
         </button>
       </form>
 
       {created && (
         <Notice tone="success">
-          Invite sent to {created.email}. You can also share this link (it works once, for that
-          address only): <code className="break-all">{created.invite_url}</code>{" "}
-          <CopyButton text={created.invite_url} label="Copy invite link" />
+          {rich(t("members.sent"), {
+            email: created.email,
+            link: <code className="break-all">{created.invite_url}</code>,
+            copy: <CopyButton text={created.invite_url} label={t("members.copyLink")} />,
+          })}
         </Notice>
       )}
       {error && <Notice tone="error">{error}</Notice>}
@@ -136,7 +142,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       {/* ---- Members ---- */}
       <section aria-labelledby="members-heading">
         <h2 id="members-heading" className="mb-3 text-lg font-semibold">
-          Members
+          {t("members.heading")}
         </h2>
         {members === null ? (
           <div className="glass shimmer h-24" aria-busy="true" />
@@ -144,11 +150,11 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
           <table className="w-full text-left text-sm">
             <thead style={{ color: "var(--text-muted)" }}>
               <tr>
-                <th className="py-2 font-medium">Email</th>
-                <th className="py-2 font-medium">Role</th>
-                <th className="py-2 font-medium">Status</th>
+                <th className="py-2 font-medium">{t("members.email")}</th>
+                <th className="py-2 font-medium">{t("settings.common.role")}</th>
+                <th className="py-2 font-medium">{t("members.status")}</th>
                 <th className="py-2 font-medium">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{t("settings.common.actions")}</span>
                 </th>
               </tr>
             </thead>
@@ -159,7 +165,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                   <tr key={m.id} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
                     <td className="py-2">
                       {m.email}
-                      {isSelf && <span style={{ color: "var(--text-muted)" }}> (you)</span>}
+                      {isSelf && <span style={{ color: "var(--text-muted)" }}>{t("members.you")}</span>}
                     </td>
                     <td className="py-2">
                       {isSelf ? (
@@ -167,12 +173,12 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                       ) : (
                         <select
                           className="input py-1"
-                          aria-label={`Role for ${m.email}`}
+                          aria-label={t("members.roleFor", { email: m.email })}
                           value={roleAlias(m.role)}
                           onChange={(e) =>
                             act(
                               () => api.updateMember(m.id, { role: e.target.value as RoleInput }),
-                              "Could not change the role."
+                              t("members.roleError")
                             )
                           }
                         >
@@ -185,14 +191,18 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                       )}
                     </td>
                     <td className="py-2" style={{ color: "var(--text-secondary)" }}>
-                      {!m.is_active ? "Deactivated" : m.is_verified ? "Active" : "Email not confirmed"}
+                      {!m.is_active
+                        ? t("members.deactivated")
+                        : m.is_verified
+                          ? t("members.active")
+                          : t("members.unconfirmed")}
                     </td>
                     <td className="py-2 text-right">
                       {!isSelf && (
                         // Hold to confirm: removing someone is not undoable here.
                         <HoldToConfirm
-                          aria-label={`Remove ${m.email}`}
-                          onConfirm={() => act(() => api.removeMember(m.id), "Could not remove the member.")}
+                          aria-label={t("members.remove", { email: m.email })}
+                          onConfirm={() => act(() => api.removeMember(m.id), t("members.removeError"))}
                         >
                           <Trash2 size={15} aria-hidden="true" />
                         </HoldToConfirm>
@@ -210,19 +220,23 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       {pending.length > 0 && (
         <section aria-labelledby="invites-heading">
           <h2 id="invites-heading" className="mb-3 text-lg font-semibold">
-            Pending invites
+            {t("members.pending")}
           </h2>
           <ul className="space-y-2">
             {pending.map((i) => (
               <li key={i.id} className="glass flex items-center justify-between px-4 py-2 text-sm">
                 <span>
-                  {i.email} · {roleLabel(i.role)} · expires {new Date(i.expires_at).toLocaleDateString()}
+                  {t("members.expires", {
+                    email: i.email,
+                    role: roleLabel(i.role),
+                    date: new Date(i.expires_at).toLocaleDateString(),
+                  })}
                 </span>
                 <HoldToConfirm
-                  aria-label={`Revoke invite for ${i.email}`}
-                  onConfirm={() => act(() => api.revokeInvite(i.id), "Could not revoke the invite.")}
+                  aria-label={t("members.revokeInvite", { email: i.email })}
+                  onConfirm={() => act(() => api.revokeInvite(i.id), t("members.revokeError"))}
                 >
-                  Hold to revoke
+                  {t("settings.common.holdRevoke")}
                 </HoldToConfirm>
               </li>
             ))}
@@ -236,6 +250,7 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
 /** Copy to the clipboard, confirming in place. Clipboard may be unavailable (http, old browsers). */
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useT();
   return (
     <button
       type="button"
@@ -251,7 +266,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       }}
     >
       <Copy size={13} aria-hidden="true" />
-      {copied ? "Copied" : label}
+      {copied ? t("settings.common.copied") : label}
     </button>
   );
 }

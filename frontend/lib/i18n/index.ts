@@ -2,7 +2,8 @@
  * i18n/index.ts
  * =============
  * A deliberately small translation layer: English (the default) and Hindi
- * for the app shell, the auth pages, chat and upload.
+ * for every screen -- the app shell, auth, dashboard, project workspace,
+ * search, settings, chat, upload, the landing page and /developers.
  *
  * WHY NOT next-intl
  * -----------------
@@ -25,7 +26,11 @@
  *   3. if English lacks it too, the key itself, so a typo is visible
  *      rather than an empty button.
  *
- * `{name}` placeholders are filled from the second argument.
+ * `{name}` placeholders are filled from the second argument. When a slot
+ * must hold markup (a link, <code>, <strong>), use `rich()` instead, which
+ * returns React children with elements in the slots:
+ *
+ *     rich(t("verify.body"), { email: <strong>{email}</strong> })
  *
  * WHERE THE CHOICE LIVES
  * ----------------------
@@ -36,13 +41,21 @@
  * screen readers use to choose a pronunciation.
  *
  * ADDING A STRING: add the key to the area's file (auth.ts, chat.ts...) in
- * `en`, and in `hi` when the translation is known. Missing Hindi is fine.
+ * both `en` and `hi`. The English fallback keeps a missing translation from
+ * breaking a screen, but tests/I18n.test.tsx fails on any English key
+ * without a Hindi one, so the gap is caught before it ships.
  */
 
-import { useCallback, useSyncExternalStore } from "react";
+import { Fragment, type ReactNode, createElement, useCallback, useSyncExternalStore } from "react";
 
 import auth from "./auth";
 import chat from "./chat";
+import dashboard from "./dashboard";
+import developers from "./developers";
+import landing from "./landing";
+import project from "./project";
+import search from "./search";
+import settings from "./settings";
 import shell from "./shell";
 import upload from "./upload";
 
@@ -59,7 +72,7 @@ export type AreaMessages = { en: Dictionary; hi: Partial<Dictionary> };
 
 /** Every area's strings, merged per language. */
 const MESSAGES: Record<Locale, Dictionary> = { en: {}, hi: {} };
-for (const area of [auth, chat, shell, upload] as AreaMessages[]) {
+for (const area of [auth, chat, dashboard, developers, landing, project, search, settings, shell, upload] as AreaMessages[]) {
   Object.assign(MESSAGES.en, area.en);
   Object.assign(MESSAGES.hi, area.hi);
 }
@@ -73,6 +86,22 @@ export function translate(locale: Locale, key: string, vars?: Vars): string {
   return template.replace(/\{(\w+)\}/g, (match, name: string) =>
     name in vars ? String(vars[name]) : match
   );
+}
+
+/**
+ * Fill `{name}` slots in an already-translated string with React nodes.
+ * Unknown slots are left as written. Each piece is keyed, so the result can
+ * be rendered directly as children.
+ */
+export function rich(template: string, parts: Record<string, ReactNode>): ReactNode[] {
+  return template
+    .split(/(\{\w+\})/g)
+    .filter((piece) => piece !== "")
+    .map((piece, index) => {
+      const slot = /^\{(\w+)\}$/.exec(piece);
+      const node = slot && slot[1] in parts ? parts[slot[1]] : piece;
+      return createElement(Fragment, { key: index }, node);
+    });
 }
 
 function isLocale(value: unknown): value is Locale {

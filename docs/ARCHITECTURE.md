@@ -134,6 +134,9 @@ Conventions worth knowing when changing the backend:
 | `app/verify-email/page.tsx` | `/verify-email?token=`: confirms the address on load, sending the single-use token once |
 | `app/dashboard/page.tsx` | `/dashboard`: list and create projects (editor and above); email-confirmation banner with "Resend link"; provider status from `/api/v1/health` |
 | `app/project/[id]/page.tsx` | `/project/:id`: Documents, Search and Chat tabs; polls document status; editors and above get the upload zone, project rename / delete, and per-document rename, re-index and delete (`DocumentActions`) |
+| `app/developers/page.tsx` | `/developers`: public API guide (no sign-in): creating an API key, the `X-API-Key` header, default rate limits, the main endpoints, curl / Python / TypeScript examples with copy buttons, the SDKs and the error format |
+| `app/manifest.ts`, `components/PwaSupport.tsx`, `public/sw.js`, `public/offline.html` | Installable PWA: web manifest, service-worker registration (production only) and the "Install app" card; the worker caches pages network-first with an offline fallback and hashed static assets cache-first, and never the API |
+| `lib/i18n/` | English and Hindi dictionaries, one file per area, `useT()` / `t()` and `rich()` for strings with markup in their slots |
 | `app/settings/page.tsx` | `/settings`: your account; for admins, Members (invite, change role, remove), API keys (shown once on creation), Audit log (paginated, filterable), Usage (token, document and storage quotas) and Feedback (answer ratings) |
 | `app/layout.tsx`, `app/globals.css` | Shared shell, fonts, metadata, Tailwind theme |
 | `components/UploadZone.tsx` | Drag-and-drop bulk upload: one request per file, three at a time, a progress bar and an error per file |

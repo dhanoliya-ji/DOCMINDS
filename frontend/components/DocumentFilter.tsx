@@ -15,6 +15,7 @@ import { Check, ChevronDown, Filter } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { DocumentItem } from "@/lib/api";
+import { translate, useT, type Vars } from "@/lib/i18n";
 
 interface Props {
   documents: DocumentItem[];
@@ -24,16 +25,22 @@ interface Props {
 }
 
 /** The button's label: "All documents", "handbook.pdf" or "3 documents". */
-export function filterLabel(documents: DocumentItem[], selected: string[]): string {
+export function filterLabel(
+  documents: DocumentItem[],
+  selected: string[],
+  // English unless the caller passes the current language's `t`.
+  t: (key: string, vars?: Vars) => string = (key, vars) => translate("en", key, vars)
+): string {
   const chosen = documents.filter((d) => selected.includes(d.id));
-  if (chosen.length === 0) return "All documents";
+  if (chosen.length === 0) return t("filter.all");
   if (chosen.length === 1) return chosen[0].filename;
-  return `${chosen.length} documents`;
+  return t("filter.many", { count: chosen.length });
 }
 
 export default function DocumentFilter({ documents, selected, onChange, disabled }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const { t } = useT();
 
   // A click anywhere else closes the list, like a native <select>.
   useEffect(() => {
@@ -67,10 +74,10 @@ export default function DocumentFilter({ documents, selected, onChange, disabled
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Limit to selected documents"
+        title={t("filter.title")}
       >
         <Filter size={13} aria-hidden="true" />
-        <span className="max-w-[12rem] truncate">{filterLabel(documents, selected)}</span>
+        <span className="max-w-[12rem] truncate">{filterLabel(documents, selected, t)}</span>
         <ChevronDown size={12} aria-hidden="true" />
       </button>
       {open && (
@@ -78,7 +85,7 @@ export default function DocumentFilter({ documents, selected, onChange, disabled
           className="glass absolute z-30 mt-1 max-h-72 w-72 overflow-y-auto p-1"
           style={{ background: "var(--bg-elevated)" }}
         >
-          <ul role="listbox" aria-multiselectable="true" aria-label="Documents to search">
+          <ul role="listbox" aria-multiselectable="true" aria-label={t("filter.listLabel")}>
             <li>
               <button
                 type="button"
@@ -88,7 +95,7 @@ export default function DocumentFilter({ documents, selected, onChange, disabled
                 onClick={() => onChange([])}
               >
                 <Check size={12} style={{ opacity: selected.length === 0 ? 1 : 0 }} aria-hidden="true" />
-                All documents
+                {t("filter.all")}
               </button>
             </li>
             {documents.map((doc) => {
