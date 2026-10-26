@@ -61,7 +61,7 @@ bcrypt==4.3.0
 #               An OIDC provider signs its ID tokens with RS256/ES256, and
 #               PyJWT needs this package to verify those. Pinned explicitly
 #               rather than relied on as some other package's dependency.
-cryptography==49.0.0
+cryptography==50.0.2
 
 # ---- BACKGROUND JOBS -------------------------------------------------
 # celery : runs slow work (document processing) outside the web request, so the
