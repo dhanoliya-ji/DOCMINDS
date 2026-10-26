@@ -137,7 +137,7 @@ groq==1.7.0
 #
 #            Optional at runtime: if it is missing, the app still starts and
 #            agent mode falls back to its keyless demo answer.
-pydantic-ai-slim[groq]==1.107.9
+pydantic-ai-slim[groq]==2.60.0
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
