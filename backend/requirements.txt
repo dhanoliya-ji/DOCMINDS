@@ -13,7 +13,7 @@
 # fastapi  : the framework itself -- routing, validation, auto-generated docs.
 # uvicorn  : the ASGI server that actually listens on a port and runs FastAPI.
 #            FastAPI defines WHAT happens; uvicorn is what runs it.
-fastapi==0.143.3
+fastapi==0.161.1
 uvicorn[standard]==0.54.0
 
 # `python-multipart` is required for file uploads. Without it, FastAPI cannot
@@ -29,7 +29,7 @@ pydantic==2.14.1
 # EmailStr (app/schemas/user.py) needs this. FastAPI 0.111 happened to install
 # it; from 0.112 it does not, so it has to be listed directly.
 email-validator==2.3.0
-pydantic-settings==2.16.0
+pydantic-settings==2.16.1
 python-dotenv==1.2.4
 
 # ---- DATABASE --------------------------------------------------------
@@ -38,10 +38,10 @@ python-dotenv==1.2.4
 # psycopg2-binary : the SYNC Postgres driver, needed by Alembic migrations.
 # alembic         : applies versioned schema changes to the database.
 # pgvector        : adds the `Vector` column type and distance operators.
-sqlalchemy[asyncio]==2.1.4
+sqlalchemy[asyncio]==2.1.6
 asyncpg==0.32.0
 psycopg2-binary==2.9.13
-alembic==1.20.0
+alembic==1.20.1
 pgvector==0.5.1
 
 # ---- AUTHENTICATION AND SECURITY -------------------------------------
@@ -108,13 +108,13 @@ tiktoken==0.14.0
 #            the hosted-embeddings image (EMBEDDING_PROVIDER=gemini) leaves
 #            sentence-transformers out, and without this line the API crashed
 #            on start-up with "No module named 'numpy'".
-numpy==2.3.2
+numpy==2.5.4
 
 # sentence-transformers : runs the embedding model LOCALLY on this server.
 #            This is our default provider: free, no API key, works offline, and
 #            document text never leaves the machine.
 #            It pulls in PyTorch, which is why installation is a large download.
-sentence-transformers==6.1.0
+sentence-transformers==6.2.0
 
 # groq : client for Groq's API, which serves open models such as
 #            openai/gpt-oss-120b (our default, see GROQ_MODEL) and writes the
@@ -141,7 +141,7 @@ pydantic-ai-slim[groq]==1.107.9
 
 # openai : OPTIONAL. Only needed if you set EMBEDDING_PROVIDER=openai to use
 #            paid OpenAI embeddings instead of the free local model.
-openai==3.31.0
+openai==3.37.0
 
 # boto3 : OPTIONAL. Only used when STORAGE_BACKEND=s3, to keep uploaded files
 #            in an S3-compatible object store (AWS S3, Cloudflare R2, MinIO,
@@ -151,14 +151,14 @@ openai==3.31.0
 #            STORAGE_BACKEND=local it is never loaded, and the app still starts
 #            if it is missing. (The optional ClamAV scan needs no package at
 #            all: services/malware.py speaks clamd's protocol over a socket.)
-boto3==1.43.92
+boto3==1.43.118
 
 # sentry-sdk : OPTIONAL. Error reporting to Sentry for the API and the Celery
 #            worker (core/observability.py). Off unless SENTRY_DSN is set; it
 #            is only imported then, so without a DSN it is never loaded, and
 #            if the package is missing the app logs a warning and runs on.
 #            The [fastapi] and [celery] integrations ship inside the package.
-sentry-sdk==2.71.0
+sentry-sdk==2.73.0
 
 # ---- TESTING ---------------------------------------------------------
 # Needed only to RUN the test suite, never by the application itself.
@@ -188,4 +188,4 @@ httpx==0.28.1
 #            also run against an in-memory SQLite database. That keeps the
 #            whole auth system covered by `SKIP_DB_TESTS=1 pytest` on a
 #            machine with no Docker; CI runs the same tests on Postgres too.
-aiosqlite==0.21.0
+aiosqlite==0.22.1
