@@ -1,17 +1,3 @@
-"""
-test_embedding_map.py
-=====================
-WHAT THIS FILE TESTS
---------------------
-The 3D embedding map behind the search page's point cloud:
-
-    project_3d      PCA by hand -- three coordinates in [-1, 1], neighbours
-                    stay neighbours, tiny inputs do not crash
-
-The endpoint itself (GET /projects/{id}/embedding-map) is tested in
-test_product_api.py, which owns the HTTP harness.
-"""
-
 import numpy as np
 import pytest
 
@@ -25,11 +11,9 @@ class TestProject3d:
         assert coords.shape == (50, 3)
         assert np.abs(coords).max() == pytest.approx(1.0)
         assert len(explained) == 3 and 0 < sum(explained) <= 1.0001
-        # Strongest axis first.
         assert explained[0] >= explained[1] >= explained[2]
 
     def test_neighbours_stay_close(self):
-        # Two tight clusters far apart must stay apart after projection.
         rng = np.random.default_rng(1)
         a = rng.normal(0, 0.01, size=(10, 32)) + 5
         b = rng.normal(0, 0.01, size=(10, 32)) - 5

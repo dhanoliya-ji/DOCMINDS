@@ -1,32 +1,3 @@
-"""
-test_product_api.py
-===================
-WHAT THIS FILE TESTS
---------------------
-The batch-2 product endpoints over real HTTP requests:
-
-    projects    get one (with counts), rename, delete -- editor+, audited,
-                tenant-isolated, and a delete that takes the documents, their
-                chunks, the conversations AND the stored files with it
-    documents   get one, rename (extension kept), delete (chunks and file
-                gone), re-index (back to pending, queued, 409 while busy,
-                410 when quarantined), the text around a cited chunk
-    chat        rename / list-by-project / export a conversation; the
-                streaming endpoint's events in both modes, and that the
-                answer it saves carries mode, model and the agent's steps;
-                the document filter reaching retrieval
-    feedback    the admin summary, and that it is admin-only
-    embedding map  GET /projects/{id}/embedding-map: points with document ids,
-                the current model only, the cap, viewer+, tenant-isolated
-
-HOW IT RUNS
------------
-Like test_upload_hardening.py: every test runs on in-memory SQLite always,
-and on Postgres too when one is reachable (CI). Retrieval is faked -- its
-pgvector query is test_retrieval_db.py's job -- and the model is the mock
-provider, so answers are deterministic.
-"""
-
 import datetime
 import hashlib
 import json
@@ -139,7 +110,6 @@ async def env(request, monkeypatch, store_dir, queued, use_mock_providers):
         from app.db.session import SessionLocal as factory  # noqa: N813
 
     monkeypatch.setattr(ingestion, "SessionLocal", factory)
-    # The streaming endpoint opens its own session, through this name.
     monkeypatch.setattr(chat_module, "SessionLocal", factory)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -252,11 +222,6 @@ class Env:
         return events
 
 
-# ======================================================================
-# Projects
-# ======================================================================
-
-
 class TestProjects:
     async def test_get_one_with_counts(self, env):
         first = await env.upload("a.txt")
@@ -299,7 +264,6 @@ class TestProjects:
                                        json={"name": "x"})).status_code == 403
         assert (await env.client.delete(f"{API}/projects/{env.project_id}",
                                         headers=env.headers)).status_code == 403
-        # ...but can still read it.
         assert (await env.client.get(f"{API}/projects/{env.project_id}",
                                      headers=env.headers)).status_code == 200
 
@@ -317,11 +281,6 @@ class TestProjects:
         assert await env.count(ChatSession) == 0
         assert not any(store_dir.rglob("*.txt")), "the stored file must be removed too"
         assert "project.delete" in await env.audit_actions()
-
-
-# ======================================================================
-# Documents
-# ======================================================================
 
 
 class TestDocuments:
@@ -435,11 +394,6 @@ class TestDocuments:
         assert response.status_code == 404
 
 
-# ======================================================================
-# Chat history
-# ======================================================================
-
-
 def _chunk_result(document_id: str, number: int = 1) -> dict:
     return {
         "chunk_id": uuid.uuid4(),
@@ -541,11 +495,6 @@ class TestChatHistory:
         assert "1. policy.txt, page 2" in response.text
 
 
-# ======================================================================
-# Streaming
-# ======================================================================
-
-
 class TestStreaming:
     async def test_rag_streams_citations_then_tokens_then_done(self, env, searches):
         document = await env.upload()
@@ -563,7 +512,6 @@ class TestStreaming:
         assert done["assistant_message"]["content"] == streamed.strip()
         assert done["mode"] == "rag" and done["model"] == "mock"
 
-        # Persisted at the end, exactly like the JSON endpoint.
         assert await env.count(ChatMessage) == 2
 
     async def test_agent_streams_steps_live_and_saves_them(self, env, monkeypatch):
@@ -625,19 +573,11 @@ class TestStreaming:
         assert response.status_code == 404
 
 
-# ======================================================================
-# Feedback summary
-# ======================================================================
-
-
 class TestFeedbackSummary:
     async def test_the_summary(self, env, searches):
         session_id = await env.new_session()
         url = f"{API}/chat/sessions/{session_id}/messages"
         first = (await env.client.post(url, headers=env.headers, json={"message": "Q one?"})).json()
-        # SQLite keeps whole seconds, so two quick exchanges would share a
-        # timestamp; age the first one so "the question before this answer"
-        # is unambiguous (Postgres has microseconds and needs no help).
         async with env.factory() as session:
             for message in (await session.execute(select(ChatMessage))).scalars():
                 message.created_at = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
@@ -675,11 +615,6 @@ class TestFeedbackSummary:
         await env.demote(env.headers, "Manager")
         response = await env.client.get(f"{API}/org/feedback", headers=env.headers)
         assert response.status_code == 403
-
-
-# ======================================================================
-# The 3D embedding map
-# ======================================================================
 
 
 async def _embed_chunks(env, chunk_ids, model=None):

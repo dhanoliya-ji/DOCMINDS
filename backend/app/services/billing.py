@@ -1,57 +1,4 @@
-"""
-billing.py  (service)
-=====================
-WHAT THIS FILE DOES
--------------------
-Plans and payment: which plan an organization is on, what that plan allows,
-and the conversations with the payment provider that change it. Two
-providers sit behind one small interface (BillingProvider below):
-
-    stripe     Stripe Checkout + the Stripe Customer Portal
-    razorpay   Razorpay Subscriptions (India): a hosted subscription link
-               (short_url) and a cancel-at-cycle-end endpoint
-
-BILLING_PROVIDER picks the provider NEW subscriptions go through. An
-organization that already subscribed through the other one keeps being
-managed there (organizations.billing_provider), and either provider's
-signed webhooks are accepted while its webhook secret is set.
-
-    plan_limits("pro")              what a plan allows (tokens, documents, bytes)
-    apply_plan(org, "pro")          write those limits onto the organization
-    create_checkout(...)            the provider's page to subscribe
-    create_portal(...)              Stripe's Customer Portal (Stripe only)
-    cancel_subscription(...)        cancel at the end of the paid period
-    webhook_provider(headers)       which provider signed this webhook
-    provider.parse_webhook(...)     verify + translate it into a BillingUpdate
-    apply_update(db, update)        apply one update, exactly once
-
-PLANS ARE QUOTAS
-----------------
-There is no separate "entitlements" system. A plan is a set of values for the
-three quotas services/usage.py already enforces:
-
-    free   the QUOTA_* settings -- the override columns are cleared to NULL,
-           so the organization behaves exactly as it did before billing
-    pro    BILLING_PLAN_LIMITS["pro"]   written into the override columns
-    team   BILLING_PLAN_LIMITS["team"]
-
-WHERE THE TRUTH LIVES
----------------------
-The provider. Our endpoints never set a plan from what the browser says --
-not even on the Checkout "success" redirect, which anyone can type into the
-address bar. A plan changes ONLY when a webhook arrives whose HMAC signature
-verifies (STRIPE_WEBHOOK_SECRET / RAZORPAY_WEBHOOK_SECRET) and whose event
-id has not been applied before (models/billing.py). Both providers' events
-are translated into the same BillingUpdate, so the plan -> quota mapping,
-the dedupe and the billing.plan_change audit entry are shared.
-
-NO PAYMENT SDKs
----------------
-A handful of REST calls and one HMAC check per provider do not justify a
-dependency: they go through httpx (already pinned) to the fixed hosts
-api.stripe.com and api.razorpay.com.
-"""
-
+"""Plans and payment: which plan an organization is on, what that plan allows, and the conversations with the..."""
 import dataclasses
 import datetime
 import hashlib
@@ -78,20 +25,11 @@ STRIPE_API = "https://api.stripe.com/v1"
 RAZORPAY_API = "https://api.razorpay.com/v1"
 PLANS = ("free", "pro", "team")
 PAID_PLANS = ("pro", "team")
-# Our own status once a cancel-at-period-end was accepted: the plan stays
-# until the provider's "ended" webhook arrives at the end of the period.
 CANCELLING = "cancelling"
-# Subscription states that keep the paid plan. past_due (Stripe) and pending
-# (Razorpay) keep it while the provider retries the card; the plan drops
-# only once the provider gives up (canceled / unpaid / halted).
 KEEPS_PLAN = ("active", "trialing", "past_due", "pending", CANCELLING)
-# A subscription in one of these states never comes back: a late or
-# re-sent "activated" for it must not put the organization back on a plan.
 ENDED = ("canceled", "cancelled", "completed", "expired")
-# Provider ids go into a URL path; anything else is refused.
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_]{1,255}$")
 
-# Tests swap in an httpx.MockTransport here; None means the real network.
 _transport: Optional[httpx.AsyncBaseTransport] = None
 
 
@@ -108,17 +46,7 @@ class SignatureError(Exception):
 
 @dataclasses.dataclass
 class BillingUpdate:
-    """
-    One verified webhook event, in provider-neutral terms.
-
-    action
-        "sync"    the subscription is in `status` on `plan`: keep the paid
-                  plan while the status allows it, otherwise drop to free
-        "link"    only remember the customer / subscription ids
-        "status"  only record `status` (a failed payment, say)
-        "end"     the subscription is over: back to free
-        "ignore"  an event type we do not act on
-    """
+    """One verified webhook event, in provider-neutral terms."""
 
     provider: str
     event_id: str
@@ -130,11 +58,6 @@ class BillingUpdate:
     plan: Optional[str] = None
     status: Optional[str] = None
     period_end: Optional[datetime.datetime] = None
-
-
-# ======================================================================
-# PLANS
-# ======================================================================
 
 
 def plan_limits(plan: str) -> Dict[str, int]:
@@ -190,11 +113,6 @@ def apply_plan(org: Organization, plan: str) -> None:
         org.max_storage_bytes = None
 
 
-# ======================================================================
-# PROVIDERS
-# ======================================================================
-
-
 async def _request(
     host_name: str, url: str, *, auth: httpx.Auth,
     data: Optional[Dict[str, str]] = None, json_body: Optional[Dict[str, Any]] = None,
@@ -213,8 +131,6 @@ async def _request(
     if not isinstance(body, dict):
         body = {}
     if response.status_code >= 400:
-        # The provider's message names the problem ("No such price"); log it
-        # in full, show the admin a version without internals.
         error = body.get("error") if isinstance(body.get("error"), dict) else {}
         logger.error(f"{host_name} request failed", extra={
             "path": httpx.URL(url).path, "status": response.status_code,
@@ -241,16 +157,7 @@ def _holder(org: Organization) -> Optional[str]:
 
 
 class BillingProvider:
-    """
-    The interface every provider fills in:
-
-        configured()                 are its API keys set?
-        plan_ref(plan)               its id for our plan (price / plan id)
-        checkout(db, org, plan, ..)  -> the URL the admin is sent to
-        portal(org)                  -> a self-service URL (Stripe only)
-        cancel(org)                  cancel at the end of the paid period
-        parse_webhook(body, headers) verify, then -> BillingUpdate
-    """
+    """The interface every provider fills in:"""
 
     name = ""
     title = ""
@@ -289,9 +196,6 @@ class BillingProvider:
         if not self.can_cancel(org) or not _SAFE_ID.match(sub):
             raise BillingError("This organization has no active subscription to cancel.", 409)
         return sub
-
-
-# ---------------------------------------------------------------- Stripe
 
 
 class StripeProvider(BillingProvider):
@@ -373,10 +277,7 @@ class StripeProvider(BillingProvider):
 
 
 def verify_signature(payload: bytes, header: str, secret: str, *, tolerance: int, now: Optional[float] = None) -> None:
-    """
-    Stripe's scheme: header "t=<unix time>,v1=<hex>[,v1=...]", where v1 is
-    HMAC-SHA256(secret, "<t>.<raw body>"). Raises SignatureError.
-    """
+    """Stripe's scheme: header "t=<unix time>,v1=<hex>[,v1=...]", where v1 is"""
     if not secret:
         raise SignatureError("STRIPE_WEBHOOK_SECRET is not set.")
     timestamp: Optional[int] = None
@@ -416,7 +317,6 @@ def parse_event(payload: bytes) -> Dict[str, Any]:
 def _stripe_period_end(sub: Dict[str, Any]) -> Optional[datetime.datetime]:
     end = sub.get("current_period_end")
     if end is None:
-        # Newer API versions moved it onto each subscription item.
         items = ((sub.get("items") or {}).get("data") or [{}])
         end = items[0].get("current_period_end") if items else None
     return _epoch(end)
@@ -461,9 +361,6 @@ def stripe_update(event: Dict[str, Any]) -> BillingUpdate:
     return update
 
 
-# -------------------------------------------------------------- Razorpay
-
-
 class RazorpayProvider(BillingProvider):
     name = "razorpay"
     title = "Razorpay"
@@ -490,8 +387,6 @@ class RazorpayProvider(BillingProvider):
         if not plan_id:
             raise BillingError(f"The {plan} plan has no Razorpay plan configured.", 503)
         if self.can_cancel(org):
-            # Razorpay cannot swap the plan of a UPI mandate in place, and a
-            # second subscription would charge twice.
             raise BillingError(
                 "This organization already has an active subscription. Cancel it first, then choose the new plan.",
                 409,
@@ -503,7 +398,6 @@ class RazorpayProvider(BillingProvider):
                 "total_count": settings.RAZORPAY_TOTAL_COUNT,
                 "quantity": 1,
                 "customer_notify": 1,
-                # Comes back on every webhook: how the event finds the org.
                 "notes": {"org_id": str(org.id), "plan": plan},
             },
         )
@@ -515,8 +409,6 @@ class RazorpayProvider(BillingProvider):
 
     async def cancel(self, org: Organization) -> None:
         sub = self._subscription_to_cancel(org)
-        # At the end of the paid cycle: the customer keeps what they paid
-        # for, and Razorpay sends subscription.cancelled when it ends.
         await self._call(f"/subscriptions/{sub}/cancel", {"cancel_at_cycle_end": 1})
 
     def parse_webhook(self, payload: bytes, headers: Mapping[str, str]) -> BillingUpdate:
@@ -525,12 +417,7 @@ class RazorpayProvider(BillingProvider):
 
 
 def verify_razorpay_signature(payload: bytes, signature: str, secret: str) -> None:
-    """
-    Razorpay's scheme: X-Razorpay-Signature is the hex HMAC-SHA256 of the
-    RAW body, keyed with the webhook secret; compared in constant time.
-    There is no timestamp to check: replays are stopped by the event id
-    (apply_update), which Razorpay keeps the same across its retries.
-    """
+    """Razorpay's scheme: X-Razorpay-Signature is the hex HMAC-SHA256 of the"""
     if not secret:
         raise SignatureError("RAZORPAY_WEBHOOK_SECRET is not set.")
     candidate = (signature or "").strip()
@@ -546,7 +433,6 @@ def razorpay_sign(payload: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 
-# Razorpay event -> what it means for the plan.
 _RAZORPAY_ACTIONS = {
     "subscription.activated": "sync",
     "subscription.charged": "sync",
@@ -565,10 +451,7 @@ def razorpay_update(event: Dict[str, Any], payload: bytes, event_id_header: str 
     sub = (container or {}).get("entity") if isinstance(container, dict) else None
     if not isinstance(sub, dict):
         sub = {}
-    # Razorpay sends an empty `notes` as a list.
     notes = sub.get("notes") if isinstance(sub.get("notes"), dict) else {}
-    # x-razorpay-event-id stays the same across retries. Without it, the
-    # body itself (identical on a retry) is the id.
     raw_id = (event_id_header or "").strip()[:200] or "sha256-" + hashlib.sha256(payload).hexdigest()
     status = sub.get("status")
     action = _RAZORPAY_ACTIONS.get(event_type, "ignore")
@@ -576,7 +459,6 @@ def razorpay_update(event: Dict[str, Any], payload: bytes, event_id_header: str 
         status = "completed" if event_type == "subscription.completed" else "cancelled"
     return BillingUpdate(
         provider="razorpay",
-        # Namespaced: Razorpay's "evt_..." ids share a table with Stripe's.
         event_id=f"razorpay:{raw_id}",
         event_type=event_type,
         action=action if sub.get("id") else "ignore",
@@ -610,11 +492,6 @@ def webhook_provider(headers: Mapping[str, str]) -> BillingProvider:
     return active_provider()  # unsigned: its own check refuses it
 
 
-# ======================================================================
-# WHAT THE ENDPOINTS CALL
-# ======================================================================
-
-
 def plans_view() -> list:
     provider = active_provider()
     return [
@@ -640,10 +517,8 @@ def status_view(org: Organization) -> Dict[str, Any]:
         "subscription_status": org.subscription_status,
         "renews_at": renews,
         "has_customer": bool(org.stripe_customer_id or (org.billing_provider and org.stripe_subscription_id)),
-        # Stripe: its Customer Portal. Razorpay: our own Cancel button.
         "can_manage": holder.has_portal and _holder(org) == holder.name and bool(org.stripe_customer_id),
         "can_cancel": (not holder.has_portal) and holder.can_cancel(org),
-        # What is ENFORCED right now (an operator's manual override included).
         "limits": {
             "monthly_tokens": org.monthly_token_quota if org.monthly_token_quota is not None else settings.QUOTA_MONTHLY_TOKENS,
             "max_documents": org.max_documents if org.max_documents is not None else settings.QUOTA_MAX_DOCUMENTS,
@@ -662,18 +537,10 @@ async def create_portal(org: Organization) -> str:
 
 
 async def cancel_subscription(db: AsyncSession, org: Organization) -> None:
-    """
-    Cancel at the end of the paid period. The plan stays until the
-    provider's signed "ended" webhook arrives; only the status changes now.
-    """
+    """Cancel at the end of the paid period. The plan stays until the"""
     await provider_for(org).cancel(org)
     org.subscription_status = CANCELLING
     await db.commit()
-
-
-# ======================================================================
-# APPLYING A WEBHOOK
-# ======================================================================
 
 
 async def _find_org(db: AsyncSession, update: BillingUpdate) -> Optional[Organization]:
@@ -700,10 +567,7 @@ async def _find_org(db: AsyncSession, update: BillingUpdate) -> Optional[Organiz
 
 
 async def apply_update(db: AsyncSession, update: BillingUpdate) -> str:
-    """
-    Apply one verified update. Returns "applied", "duplicate" or "ignored".
-    Commits. The event id is recorded in the SAME transaction as the change.
-    """
+    """Apply one verified update. Returns "applied", "duplicate" or "ignored"."""
     event_id = update.event_id[:255]
     if not event_id:
         return "ignored"
@@ -714,8 +578,6 @@ async def apply_update(db: AsyncSession, update: BillingUpdate) -> str:
     outcome = "ignored"
     if org is not None and update.action != "ignore":
         before = org.plan or "free"
-        # A late or re-sent event for a subscription that has already ended
-        # must not bring it back.
         stale = bool(
             update.subscription_id and org.stripe_subscription_id == update.subscription_id
             and (org.subscription_status or "") in ENDED
@@ -735,8 +597,6 @@ async def apply_update(db: AsyncSession, update: BillingUpdate) -> str:
         elif update.action == "status" and not stale:
             org.subscription_status = update.status
         elif update.action == "end":
-            # Only the subscription we know about can end the plan: a stale
-            # event for an older, replaced subscription must not.
             if not org.stripe_subscription_id or org.stripe_subscription_id == update.subscription_id:
                 apply_plan(org, "free")
                 org.subscription_status = update.status

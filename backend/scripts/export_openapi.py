@@ -1,4 +1,3 @@
-"""Write the API's OpenAPI schema to frontend/openapi.json (input for `npm run gen:api`)."""
 import json
 import sys
 from pathlib import Path

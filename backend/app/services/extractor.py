@@ -1,59 +1,4 @@
-"""
-extractor.py
-============
-WHAT THIS FILE DOES
--------------------
-It turns ANY supported file into plain text.
-
-    employee_handbook.pdf   ->  "SECTION 1: ANNUAL LEAVE ENTITLEMENT All..."
-    q3_budget.xlsx          ->  "Sheet 'Q3 Budget': Department | Budget | ..."
-    a_scanned_contract.pdf  ->  (no text layer -> OCR) -> "AGREEMENT made..."
-
-This is stage one of the pipeline. Nothing downstream -- not chunking, not
-embedding, not search -- can happen until the text exists.
-
-THE CENTRAL IDEA: ONE PARSER PER FORMAT
----------------------------------------
-There is no universal "read any document" library that does a good job. A PDF
-stores glyphs at x/y coordinates; a DOCX is a zip of XML; an XLSX is a grid of
-typed cells; an email is a MIME tree. Each needs its own tool:
-
-    PDF        -> PyMuPDF        text per page, plus document metadata
-    DOCX       -> python-docx     paragraphs AND tables
-    PPTX       -> python-pptx     every shape on every slide
-    XLSX/XLS   -> openpyxl        every sheet, row by row
-    HTML       -> BeautifulSoup   tags stripped, readable text kept
-    EML        -> stdlib email    walks the MIME tree for the plain-text body
-    CSV/TXT/MD -> stdlib          read directly
-    ZIP        -> stdlib zipfile  unpacked, then each file sent back through
-                                  this same dispatcher, recursively
-    images     -> Tesseract OCR   there is no text to extract, only pixels
-
-`extract()` at the top is the dispatcher that routes a file to the right one.
-
-THE SCANNED-PDF PROBLEM
------------------------
-Some PDFs contain no text at all -- they are photographs of pages. Ask PyMuPDF
-for their text and it politely returns nothing.
-
-So after extracting, we MEASURE. A real text page holds 1,500-3,000 characters;
-a scan yields close to zero. If a PDF averages fewer than
-`OCR_CHAR_THRESHOLD_PER_PAGE` characters per page, we conclude there is no text
-layer, rasterise each page into an image, and run OCR instead.
-
-That single heuristic is what lets a scanned contract become just as searchable
-as a digital one.
-
-ARCHIVES ARE UNTRUSTED
-----------------------
-Two kinds of upload are really zip archives: .zip itself, and the Office
-formats (.docx, .pptx and .xlsx are zips of XML parts). A "zip bomb" -- a few
-kilobytes that expand to gigabytes -- works through either. The ZIP_* settings
-cap what an archive may expand to; see `extract_zip` and
-`_check_office_container` below. A violation raises UnsafeArchiveError, which
-fails the document instead of being indexed as text.
-"""
-
+"""It turns ANY supported file into plain text."""
 import csv
 import logging
 import os
@@ -76,9 +21,6 @@ from app.services.ocr import OCRService
 
 logger = logging.getLogger(__name__)
 
-# Every extension `DocumentExtractor.extract` can dispatch. The upload endpoint
-# accepts exactly these (services/uploads.py), so a format is allowed if and
-# only if there is a parser for it -- the two lists cannot drift apart.
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "tiff", "bmp", "gif"})
 SUPPORTED_EXTENSIONS = frozenset(
     {
@@ -88,31 +30,15 @@ SUPPORTED_EXTENSIONS = frozenset(
     | IMAGE_EXTENSIONS
 )
 
-# The Office formats that are zip archives underneath. (.xls is not: it is the
-# older OLE2 "compound file" format.)
 OFFICE_ZIP_EXTENSIONS = frozenset({"docx", "pptx", "xlsx"})
 
 
 class UnsafeArchiveError(ValueError):
-    """
-    A zip archive broke one of the ZIP_* safety limits.
-
-    A subclass of ValueError, so the ingestion task treats it as PERMANENT
-    (retrying a zip bomb would only detonate it again) and marks the document
-    failed with this message. Unlike ordinary extraction problems it is raised
-    rather than folded into the text -- a bomb must stop the pipeline, not be
-    indexed as "ZIP extraction failed: ...".
-    """
+    """A zip archive broke one of the ZIP_* safety limits."""
 
 
 class _ZipBudget:
-    """
-    The remaining allowance for one upload, shared by nested archives.
-
-    Shared on purpose: if each nested zip had its own budget, a zip of ten
-    zips would get ten times the limit -- exactly the multiplication trick
-    nested bombs rely on.
-    """
+    """The remaining allowance for one upload, shared by nested archives."""
 
     def __init__(self):
         self.entries_left = settings.ZIP_MAX_ENTRIES
@@ -135,29 +61,11 @@ class _ZipBudget:
 
 
 class DocumentTooLarge(ValueError):
-    """
-    The document is over a per-document cap (INGESTION_MAX_PAGES or
-    INGESTION_MAX_CHUNKS). A ValueError, so it is PERMANENT: the message says
-    which limit, and how to get under it.
-    """
+    """The document is over a per-document cap (INGESTION_MAX_PAGES or"""
 
 
 class Segment:
-    """
-    One piece of a document, produced while the file is still being read.
-
-    The streaming counterpart of ExtractionResult (see `iter_segments`): a
-    page of a PDF, a few hundred rows of a spreadsheet, a slice of a long
-    text file. The pipeline chunks and stores each one, then lets it go --
-    so the whole document's text is never in memory at once.
-
-    page_number -- the real page for PDFs; 1 for formats without pages (as
-                   before). None means "this is a whole document's text, which
-                   may contain its own page markers" (DOCX, PPTX, ZIP...): the
-                   chunker then splits on those markers itself.
-    meta        -- facts about where in the file it came from, copied onto its
-                   chunks: {"sheet": "Q3", "rows": "201-400"}.
-    """
+    """One piece of a document, produced while the file is still being read."""
 
     __slots__ = ("page_number", "text", "ocr", "meta")
 
@@ -169,18 +77,7 @@ class Segment:
 
 
 class ExtractionResult:
-    """
-    The uniform result every extractor returns, whatever the input format.
-
-    Having ONE shape means the ingestion task does not need to know or care
-    which parser ran -- it just reads `.text`, `.metadata`, `.language`.
-
-    Attributes:
-        text      -- the extracted plain text.
-        metadata  -- format-specific facts (page count, sheet names, author...).
-        language  -- detected two-letter language code, e.g. "en".
-        needs_ocr -- True if OCR was used, so the UI can flag it.
-    """
+    """The uniform result every extractor returns, whatever the input format."""
 
     def __init__(
         self,
@@ -198,48 +95,23 @@ class ExtractionResult:
 class DocumentExtractor:
     """Routes each file type to its dedicated parser."""
 
-    # ==================================================================
-    # LANGUAGE DETECTION
-    # ==================================================================
 
     @staticmethod
     def detect_language(text: str) -> str:
-        """
-        Work out which human language the text is written in.
-
-        Stored as metadata. Useful for filtering, for reporting, and as
-        groundwork for language-specific OCR or embedding models later.
-        """
-        # Too little text to judge. langdetect is unreliable on short strings
-        # and would essentially guess at random.
+        """Work out which human language the text is written in."""
         if not text or len(text.strip()) < 10:
             return "en"
         try:
             return detect(text)
         except Exception:
-            # langdetect raises on input with no detectable words at all --
-            # pure punctuation or numbers. English is a safe default here.
             return "en"
 
-    # ==================================================================
-    # THE DISPATCHER
-    # ==================================================================
 
     @classmethod
     def extract(cls, file_path: str, file_type: str) -> ExtractionResult:
-        """
-        Send the file to whichever parser handles its extension.
-
-        `file_type` is the extension without the dot, e.g. "pdf", already
-        lowercased by the upload endpoint -- but we lowercase again here
-        because ZIP extraction also calls this method with raw extensions.
-        """
+        """Send the file to whichever parser handles its extension."""
         file_type = file_type.lower()
 
-        # An Office file is checked BEFORE its parser opens it, because the
-        # parsers decompress into memory -- a bomb has done its damage by the
-        # time they return. Outside their try/except on purpose, so the
-        # rejection fails the document rather than becoming its "text".
         if file_type in OFFICE_ZIP_EXTENSIONS:
             cls._check_office_container(file_path)
 
@@ -264,42 +136,14 @@ class DocumentExtractor:
         elif file_type == "zip":
             return cls.extract_zip(file_path)
         else:
-            # Raised rather than returned, so the ingestion task marks the
-            # document "failed" with a message the user can actually act on.
             raise ValueError(f"Unsupported file type: {file_type}")
 
-    # ==================================================================
-    # STREAMING -- a piece at a time, for documents of any size
-    # ==================================================================
-    # `extract()` above returns the WHOLE text in one string. For a 900-page
-    # PDF that string, plus the list of pages it was joined from, plus OCR
-    # images, plus every chunk and vector made from it, all lived in memory at
-    # the same moment -- more than a 512 MB host has. The ingestion pipeline
-    # therefore reads through `iter_segments()` instead: a GENERATOR that
-    # yields one Segment at a time and keeps nothing once it has moved on.
-    #
-    # Formats whose libraries can read incrementally are streamed for real:
-    #     PDF           one page at a time (OCR'd one page at a time)
-    #     CSV / XLSX    INGESTION_ROWS_PER_SEGMENT rows at a time
-    #     TXT / MD      ~256 KB at a time, split at line breaks
-    #     images        one segment (one image)
-    # The rest (DOCX, PPTX, HTML, EML, ZIP) are parsed whole by `extract()`,
-    # as before, and yielded as one segment: their parsers build the whole
-    # document in memory anyway, and the upload size cap bounds them.
 
-    # Bytes of a text file per segment.
     _TEXT_SEGMENT_BYTES = 256 * 1024
 
     @classmethod
     def iter_segments(cls, file_path: str, file_type: str, info: Dict[str, Any]) -> Iterator[Segment]:
-        """
-        Yield the document a Segment at a time.
-
-        `info` is filled in as reading goes: page_count, title, author,
-        ocr_applied, ocr_pages, vision_captions... The pipeline merges it into
-        the document's meta_data at the end, just as it does
-        ExtractionResult.metadata.
-        """
+        """Yield the document a Segment at a time."""
         file_type = file_type.lower()
         if file_type in OFFICE_ZIP_EXTENSIONS:
             cls._check_office_container(file_path)
@@ -315,14 +159,12 @@ class DocumentExtractor:
         elif file_type in ("txt", "md", "markdown"):
             yield from cls._iter_text(file_path, info)
         else:
-            # DOCX, PPTX, XLS, HTML, EML, ZIP: whole, through the dispatcher.
             result = cls.extract(file_path, file_type)
             info.update(result.metadata)
             if result.needs_ocr:
                 info["needs_ocr"] = True
             yield Segment(None, result.text, ocr=result.needs_ocr)
 
-    # ---- PDF, a page at a time ------------------------------------------
 
     @staticmethod
     def _image_coverage(page) -> float:
@@ -339,21 +181,7 @@ class DocumentExtractor:
 
     @classmethod
     def _iter_pdf(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
-        """
-        Yield each page's text, OCR'ing the pages that need it.
-
-        THE SCANNED-PAGE DECISION IS NOW PER PAGE. `extract_pdf` judges the
-        whole file by its AVERAGE characters per page, which needs every page
-        read first. Here each page is judged alone: under
-        OCR_CHAR_THRESHOLD_PER_PAGE characters AND something drawn on it (a
-        picture, or vector shapes -- a truly blank page is skipped) means it
-        is a scan, and only that page is rasterised. That also gets mixed
-        documents right: a typed report with three scanned appendix pages
-        has exactly those three pages OCR'd.
-
-        Memory: one page object, at most one page's pixels, released before
-        the next page. MuPDF's internal cache is trimmed every 25 pages.
-        """
+        """Yield each page's text, OCR'ing the pages that need it."""
         from app.services import vision
 
         document = fitz.open(file_path)
@@ -394,7 +222,6 @@ class DocumentExtractor:
                         text += vision.caption_block(caption)
                         captions += 1
                     captions_left -= 1
-                # Let go of the page before reading the next one.
                 del page
                 if index % 25 == 24:
                     fitz.TOOLS.store_shrink(100)
@@ -407,11 +234,9 @@ class DocumentExtractor:
             if captions:
                 info["vision_captions"] = captions
         finally:
-            # Release the file handle (Windows keeps an open file locked).
             document.close()
             fitz.TOOLS.store_shrink(100)
 
-    # ---- one image --------------------------------------------------------
 
     @classmethod
     def _iter_image(cls, file_path: str, file_type: str, info: Dict[str, Any]) -> Iterator[Segment]:
@@ -430,15 +255,10 @@ class DocumentExtractor:
                 info["vision_captions"] = 1
         yield Segment(1, text, ocr=True)
 
-    # ---- rows, a batch at a time ----------------------------------------
 
     @staticmethod
     def _row_segment(title: str, header: Optional[str], rows: list, first_row: int, meta: dict) -> Segment:
-        """
-        A batch of rows as one segment. The column header is repeated at the
-        top of every batch after the first, so a chunk from row 40,000 still
-        says which column is "Budget" and which is "Actual".
-        """
+        """A batch of rows as one segment. The column header is repeated at the"""
         last_row = first_row + len(rows) - 1
         lines = [f"{title} (rows {first_row}-{last_row}):"] if title else []
         if header is not None and first_row > 1:
@@ -475,14 +295,7 @@ class DocumentExtractor:
 
     @classmethod
     def _iter_xlsx(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
-        """
-        A workbook, sheet by sheet, INGESTION_ROWS_PER_SEGMENT rows at a time.
-
-        `read_only=True` makes openpyxl STREAM the sheet XML instead of
-        building every cell object up front -- the difference between a few
-        megabytes and a few gigabytes for a large sheet. `data_only=True` gives
-        each formula's calculated value, as in extract_xlsx.
-        """
+        """A workbook, sheet by sheet, INGESTION_ROWS_PER_SEGMENT rows at a time."""
         per_segment = max(1, settings.INGESTION_ROWS_PER_SEGMENT)
         try:
             workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
@@ -512,7 +325,6 @@ class DocumentExtractor:
         finally:
             workbook.close()
 
-    # ---- long text, a slice at a time -------------------------------------
 
     @classmethod
     def _iter_text(cls, file_path: str, info: Dict[str, Any]) -> Iterator[Segment]:
@@ -532,19 +344,10 @@ class DocumentExtractor:
         except Exception as exc:
             yield Segment(1, f"Text extraction failed: {exc}")
 
-    # ==================================================================
-    # PDF  -- the most important format, and the only one needing OCR logic
-    # ==================================================================
 
     @classmethod
     def extract_pdf(cls, file_path: str) -> ExtractionResult:
-        """
-        Extract text from a PDF, falling back to OCR when it is a scan.
-
-        Pages are joined with an explicit "--- PAGE BREAK ---" marker. That
-        marker is not decoration: chunker.py splits on it so every chunk knows
-        which page it came from, which is what makes citations say "page 12".
-        """
+        """Extract text from a PDF, falling back to OCR when it is a scan."""
         text = ""
         metadata: Dict[str, Any] = {}
         needs_ocr = False
@@ -552,7 +355,6 @@ class DocumentExtractor:
         try:
             document = fitz.open(file_path)
 
-            # Document-level properties, useful for display and debugging.
             metadata = {
                 "title": document.metadata.get("title", ""),
                 "author": document.metadata.get("author", ""),
@@ -563,9 +365,6 @@ class DocumentExtractor:
             pages_text = [page.get_text() for page in document]
             text = "\n--- PAGE BREAK ---\n".join(pages_text)
 
-            # ---- THE SCANNED-DOCUMENT HEURISTIC ----
-            # Compare total characters against a per-page budget. A normal text
-            # page yields well over the threshold; a scan yields nearly zero.
             page_count = len(document)
             threshold = settings.OCR_CHAR_THRESHOLD_PER_PAGE * page_count
 
@@ -581,14 +380,9 @@ class DocumentExtractor:
                 metadata["ocr_applied"] = True
                 metadata["ocr_provider"] = settings.OCR_PROVIDER
 
-            # Release the file handle. Without this the file stays locked on
-            # Windows and cannot be deleted or re-processed.
             document.close()
 
         except Exception as exc:
-            # The PDF is malformed or encrypted in a way PyMuPDF cannot parse.
-            # OCR works on the rendered pixels and often succeeds anyway, so it
-            # is worth attempting before giving up.
             logger.warning(f"PDF parsing failed: {exc}. Attempting OCR...")
             try:
                 ocr_text, _ = OCRService.ocr_pdf(file_path)
@@ -609,21 +403,11 @@ class DocumentExtractor:
             needs_ocr=needs_ocr,
         )
 
-    # ==================================================================
-    # IMAGES  -- pure OCR, there is no text to extract
-    # ==================================================================
 
     @classmethod
     def extract_image(cls, file_path: str, file_type: str) -> ExtractionResult:
-        """
-        Read the text out of a photograph or screenshot.
-
-        Unlike the PDF path there is no heuristic here: an image never has a
-        text layer, so OCR is the only option.
-        """
+        """Read the text out of a photograph or screenshot."""
         try:
-            # Read as bytes, because OCRService accepts raw bytes regardless of
-            # whether they came from a file or from a rasterised PDF page.
             with open(file_path, "rb") as handle:
                 image_bytes = handle.read()
 
@@ -644,20 +428,10 @@ class DocumentExtractor:
             needs_ocr=True,
         )
 
-    # ==================================================================
-    # WORD
-    # ==================================================================
 
     @classmethod
     def extract_docx(cls, file_path: str) -> ExtractionResult:
-        """
-        Extract a Word document's paragraphs AND its tables.
-
-        Tables matter and are easy to miss: `doc.paragraphs` does NOT include
-        text inside table cells. A policy document whose entire retention
-        schedule lives in a table would otherwise be extracted as if that
-        schedule did not exist.
-        """
+        """Extract a Word document's paragraphs AND its tables."""
         text = ""
         metadata: Dict[str, Any] = {}
 
@@ -666,9 +440,6 @@ class DocumentExtractor:
 
             paragraphs = [p.text for p in document.paragraphs]
 
-            # Flatten each table into pipe-separated rows. Simple, but it keeps
-            # cells on the same row together, which preserves the association
-            # between a label and its value.
             table_rows = []
             for table in document.tables:
                 for row in table.rows:
@@ -691,20 +462,10 @@ class DocumentExtractor:
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # POWERPOINT
-    # ==================================================================
 
     @classmethod
     def extract_pptx(cls, file_path: str) -> ExtractionResult:
-        """
-        Pull text from every shape on every slide.
-
-        A slide is a canvas of independent shapes, not a flowing document, so
-        we walk the shapes and keep only those that carry text. Labelling each
-        group "Slide N" gives the model positional context it would otherwise
-        lose completely.
-        """
+        """Pull text from every shape on every slide."""
         text = ""
         metadata: Dict[str, Any] = {}
 
@@ -715,8 +476,6 @@ class DocumentExtractor:
             for index, slide in enumerate(presentation.slides, 1):
                 shape_texts = []
                 for shape in slide.shapes:
-                    # Not every shape has text -- pictures, lines and charts do
-                    # not -- so check before reading, and skip empty ones.
                     if hasattr(shape, "text") and shape.text.strip():
                         shape_texts.append(shape.text.strip())
 
@@ -732,20 +491,10 @@ class DocumentExtractor:
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # EXCEL
-    # ==================================================================
 
     @classmethod
     def extract_xlsx(cls, file_path: str) -> ExtractionResult:
-        """
-        Read every sheet of a workbook, row by row.
-
-        `data_only=True` is the key argument: it returns the CALCULATED result
-        of a formula rather than the formula text. Without it a total cell
-        extracts as "=SUM(B2:B10)", which is useless for answering a question
-        about the total.
-        """
+        """Read every sheet of a workbook, row by row."""
         text = ""
         metadata: Dict[str, Any] = {}
 
@@ -757,11 +506,7 @@ class DocumentExtractor:
                 sheet = workbook[sheet_name]
 
                 rows_text = []
-                # `values_only=True` yields plain tuples of cell values instead
-                # of Cell objects, which is both faster and simpler here.
                 for row in sheet.iter_rows(values_only=True):
-                    # `any(row)` skips entirely blank rows, which spreadsheets
-                    # are full of and which add nothing but noise.
                     if any(row):
                         cells = [
                             str(value) if value is not None else "" for value in row
@@ -780,32 +525,18 @@ class DocumentExtractor:
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # HTML
-    # ==================================================================
 
     @classmethod
     def extract_html(cls, file_path: str) -> ExtractionResult:
-        """
-        Strip the tags and keep the readable text.
-
-        `get_text(separator="\\n")` inserts a newline between elements, which
-        stops adjacent block elements running together into one unreadable
-        line -- "Contact usAbout usPricing" rather than three separate items.
-        """
+        """Strip the tags and keep the readable text."""
         text = ""
         metadata: Dict[str, Any] = {}
 
         try:
-            # `errors="ignore"` because scraped HTML frequently contains bytes
-            # that do not decode as UTF-8. Losing a stray character is far
-            # better than failing the whole document.
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
                 soup = BeautifulSoup(handle.read(), "html.parser")
 
             raw_text = soup.get_text(separator="\n")
-            # Drop blank lines and trim each remaining one, since HTML is full
-            # of indentation whitespace that carries no meaning.
             text = "\n".join(
                 line.strip() for line in raw_text.splitlines() if line.strip()
             )
@@ -818,21 +549,10 @@ class DocumentExtractor:
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # EMAIL
-    # ==================================================================
 
     @classmethod
     def extract_eml(cls, file_path: str) -> ExtractionResult:
-        """
-        Extract an email's headers and its plain-text body.
-
-        An email is a TREE, not a flat file: a typical message carries both a
-        text/plain and a text/html version of the same content, plus any
-        attachments. We walk that tree and take only the plain-text parts,
-        skipping attachments -- which would otherwise dump base64 gibberish
-        straight into the search index.
-        """
+        """Extract an email's headers and its plain-text body."""
         text = ""
         metadata: Dict[str, Any] = {}
 
@@ -844,7 +564,6 @@ class DocumentExtractor:
 
             body = ""
             if message.is_multipart():
-                # `.walk()` visits every part of the MIME tree recursively.
                 for part in message.walk():
                     content_type = part.get_content_type()
                     disposition = str(part.get_params())
@@ -852,7 +571,6 @@ class DocumentExtractor:
                     if content_type == "text/plain" and "attachment" not in disposition:
                         body += part.get_payload(decode=True).decode(errors="ignore")
             else:
-                # A simple single-part message.
                 body = message.get_payload(decode=True).decode(errors="ignore")
 
             metadata = {
@@ -862,8 +580,6 @@ class DocumentExtractor:
                 "date": message.get("Date", ""),
             }
 
-            # Headers are prepended to the body so that a question like "who
-            # sent this?" can be answered from the chunk text itself.
             text = (
                 f"From: {metadata['from']}\n"
                 f"To: {metadata['to']}\n"
@@ -879,16 +595,10 @@ class DocumentExtractor:
             text=text, metadata=metadata, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # PLAIN TEXT AND MARKDOWN
-    # ==================================================================
 
     @classmethod
     def extract_txt_or_md(cls, file_path: str) -> ExtractionResult:
-        """
-        Read the file as-is. Markdown is deliberately left unrendered so the
-        `#` headers survive for the markdown chunking strategy to split on.
-        """
+        """Read the file as-is. Markdown is deliberately left unrendered so the"""
         text = ""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
@@ -900,19 +610,10 @@ class DocumentExtractor:
             text=text, metadata={}, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # CSV
-    # ==================================================================
 
     @classmethod
     def extract_csv(cls, file_path: str) -> ExtractionResult:
-        """
-        Flatten a CSV into readable lines, one per row.
-
-        We use the `csv` module rather than splitting on commas, because it
-        correctly handles quoted fields that themselves contain commas -- a
-        naive split would mangle every such row.
-        """
+        """Flatten a CSV into readable lines, one per row."""
         text = ""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
@@ -926,70 +627,23 @@ class DocumentExtractor:
             text=text, metadata={}, language=cls.detect_language(text)
         )
 
-    # ==================================================================
-    # ZIP  -- the recursive one
-    # ==================================================================
 
     @classmethod
     def extract_zip(
         cls, file_path: str, _depth: int = 1, _budget: "_ZipBudget | None" = None
     ) -> ExtractionResult:
-        """
-        Unpack an archive and extract every supported file inside it.
-
-        This is the only RECURSIVE extractor: for each file it finds, it calls
-        `cls.extract(...)` again, which routes that file to its own parser. So
-        a zip containing a PDF, a spreadsheet and a Word document is handled
-        correctly with no special-casing at all.
-
-        Uploading one archive of a whole folder is far more practical than
-        uploading forty files individually.
-
-        WHY IT NO LONGER CALLS `extractall()`
-        -------------------------------------
-        An archive is a description written by whoever made it, and every
-        part of that description can lie. `extractall()` trusts all of it.
-        Instead each member is checked, then copied out by hand:
-
-            too many members                  -> whole archive rejected
-            declared or ACTUAL expansion over
-              ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES -> whole archive rejected
-            compression ratio over the limit  -> whole archive rejected
-            an absolute path or ".." in it    -> member skipped
-            encrypted, or a symlink           -> member skipped
-            a zip deeper than the max depth   -> member skipped
-
-        Bytes are COUNTED while being copied, not just read from the header,
-        because the header's size field is the easiest thing in the archive
-        to forge. Members are written under random names, so even a member
-        that slipped past the path checks could not land outside the temp dir.
-
-        That temp dir is in the SYSTEM temp directory, never next to the
-        archive. With local storage the archive itself sits in the uploads
-        folder, and a worker killed half way through unpacking -- precisely
-        what a bomb is trying to cause -- would otherwise leave its debris
-        there for good. The operating system cleans its own temp directory.
-
-        `_depth` and `_budget` are internal: 1 is the uploaded archive itself,
-        and the budget is shared with any archive nested inside it.
-        """
+        """Unpack an archive and extract every supported file inside it."""
         texts = []
         metadata: Dict[str, Any] = {"files_extracted": [], "skipped_entries": []}
         budget = _budget or _ZipBudget()
         temp_dir = None
 
         try:
-            # `mkdtemp` creates a brand-new directory with a unique name, so
-            # two archives unpacked at the same moment by two workers cannot
-            # overwrite each other's files. Readable by this user only.
             temp_dir = tempfile.mkdtemp(prefix="docminds-zip-")
 
             with zipfile.ZipFile(file_path, "r") as archive:
                 members = [info for info in archive.infolist() if not info.is_dir()]
 
-                # Cheap checks on what the archive CLAIMS, before unpacking a
-                # single byte. A bomb that is honest about its size is turned
-                # away here; one that lies is caught by the counting below.
                 if len(members) > budget.entries_left:
                     raise UnsafeArchiveError(
                         f"Archive rejected: more than {settings.ZIP_MAX_ENTRIES} files."
@@ -1008,7 +662,6 @@ class DocumentExtractor:
                     reason = cls._unsafe_member_reason(info)
 
                     if reason is None and extension not in SUPPORTED_EXTENSIONS:
-                        # Executables, videos, fonts... skipped silently.
                         continue
                     if (
                         reason is None
@@ -1024,23 +677,18 @@ class DocumentExtractor:
                     try:
                         cls._copy_member(archive, info, inner_path, budget)
                         if extension == "zip":
-                            # One level deeper, same shared budget.
                             result = cls.extract_zip(inner_path, _depth + 1, budget)
                         else:
-                            # THE RECURSIVE CALL. Each inner file goes back
-                            # through the dispatcher to its own parser.
                             result = cls.extract(inner_path, extension)
                         texts.append(f"--- File: {display_name} ---\n{result.text}")
                         metadata["files_extracted"].append(display_name)
                     except UnsafeArchiveError:
                         raise
                     except Exception as inner_error:
-                        # One unreadable file must not fail the whole archive.
                         texts.append(
                             f"--- File: {display_name} (extraction failed: {inner_error}) ---"
                         )
                     finally:
-                        # Delete as we go, so disk use never exceeds one member.
                         try:
                             os.remove(inner_path)
                         except OSError:
@@ -1050,15 +698,12 @@ class DocumentExtractor:
             metadata["file_count"] = len(metadata["files_extracted"])
 
         except UnsafeArchiveError:
-            # Not swallowed: the pipeline must stop and say why.
             raise
         except Exception as exc:
             text = f"ZIP extraction failed: {exc}"
             metadata["error"] = str(exc)
 
         finally:
-            # `finally` runs whether we succeeded or failed, so extracted files
-            # are always cleaned up and never accumulate on disk.
             if temp_dir and os.path.isdir(temp_dir):
                 cls._remove_tree(temp_dir)
 
@@ -1068,35 +713,11 @@ class DocumentExtractor:
 
     @staticmethod
     def _check_office_container(file_path: str) -> None:
-        """
-        Refuse a .docx, .pptx or .xlsx that would expand into a memory bomb.
-
-        These formats are zip archives of XML parts, and python-docx,
-        python-pptx and openpyxl decompress the parts they read INTO MEMORY.
-        So a zip bomb works through them just as well: a 10 MB "report.docx"
-        whose document.xml expands to 10 GB takes the worker down with it.
-
-        Only the TOTAL expansion is limited, against the same
-        ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES as uploaded archives. The other two
-        archive limits would turn away real documents: a 400-slide deck holds
-        about 1,600 parts, and a document full of identical table cells
-        compresses well past 100:1 (both measured). The total is what a bomb
-        cannot disguise -- being enormous once expanded is its whole purpose.
-
-        The DECLARED sizes are enough here, unlike in `extract_zip`: Python's
-        zipfile, which all three libraries read through, stops a part at its
-        declared size and then fails its checksum. A part that lies about its
-        size therefore cannot yield more than it declared.
-
-        A file that is not a readable zip at all is let through, so its parser
-        can report what is wrong with it in its own words.
-        """
+        """Refuse a .docx, .pptx or .xlsx that would expand into a memory bomb."""
         try:
             with zipfile.ZipFile(file_path) as archive:
                 declared = sum(info.file_size for info in archive.infolist())
         except Exception:
-            # Not a readable zip (BadZipFile, a truncated directory, ...).
-            # Nothing was decompressed, so there is nothing to defend here.
             return
 
         limit = settings.ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES
@@ -1109,32 +730,15 @@ class DocumentExtractor:
 
     @staticmethod
     def _unsafe_member_reason(info: zipfile.ZipInfo) -> "str | None":
-        """
-        Why this member must not be extracted, or None if it is fine.
-
-        "Zip slip": a member named "../../app/main.py" or "/etc/cron.d/x"
-        would, with a naive extractor, be written OUTSIDE the target folder.
-        We never use member names as paths anyway, but such a name is never
-        legitimate in a document bundle, so it is skipped and recorded.
-
-        A compression ratio over the limit is not skipped but RAISED: that is
-        not a strange file, it is an attack, and the whole archive goes.
-        """
+        """Why this member must not be extracted, or None if it is fine."""
         name = info.filename.replace("\\", "/")
         parts = name.split("/")
         if name.startswith("/") or (len(name) > 1 and name[1] == ":") or ".." in parts:
             return "unsafe path"
-        # Bit 0 of the flags marks an encrypted member. We have no password,
-        # and zipfile would raise half-way through anyway.
         if info.flag_bits & 0x1:
             return "encrypted"
-        # Unix file mode lives in the top 16 bits of external_attr. 0o120000
-        # is a symbolic link -- which could point anywhere on the worker.
         if (info.external_attr >> 16) & 0o170000 == 0o120000:
             return "symbolic link"
-        # The ratio is only judged above 1 MB. A small file of repeated text
-        # can legitimately compress 200:1 and is harmless at any ratio; a
-        # bomb is dangerous precisely because it is LARGE once expanded.
         ratio = info.file_size / max(info.compress_size, 1)
         if info.file_size > 1024 * 1024 and ratio > settings.ZIP_MAX_COMPRESSION_RATIO:
             raise UnsafeArchiveError(
@@ -1148,13 +752,7 @@ class DocumentExtractor:
     def _copy_member(
         archive: zipfile.ZipFile, info: zipfile.ZipInfo, destination: str, budget: "_ZipBudget"
     ) -> None:
-        """
-        Copy one member out, counting every byte against the budget.
-
-        Also enforces the member's OWN declared size: a member that produces
-        more bytes than its header claimed is lying, and the ratio check above
-        was computed from that lie.
-        """
+        """Copy one member out, counting every byte against the budget."""
         written = 0
         with archive.open(info) as source, open(destination, "wb") as target:
             while chunk := source.read(1024 * 1024):
@@ -1169,13 +767,7 @@ class DocumentExtractor:
 
     @staticmethod
     def _remove_tree(directory: str) -> None:
-        """
-        Delete a directory and everything inside it.
-
-        `topdown=False` makes os.walk yield the DEEPEST directories first,
-        which is required: a directory can only be removed once it is empty,
-        so children must go before their parents.
-        """
+        """Delete a directory and everything inside it."""
         try:
             for root, dirs, files in os.walk(directory, topdown=False):
                 for name in files:
@@ -1190,6 +782,4 @@ class DocumentExtractor:
                         pass
             os.rmdir(directory)
         except OSError:
-            # Cleanup is best-effort. A leftover temp folder is untidy but is
-            # not worth failing an otherwise successful extraction over.
             pass

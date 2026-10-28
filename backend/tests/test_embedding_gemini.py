@@ -1,20 +1,3 @@
-"""
-test_embedding_gemini.py
-========================
-WHAT THIS FILE TESTS
---------------------
-The Gemini provider in `services/embedding.py` -- the one the free live demo
-uses instead of the local PyTorch model.
-
-Most tests replace the network with an `httpx.MockTransport`, so they check
-exactly what is SENT (model, task type, size, key header) and how replies and
-failures are HANDLED (order, unit length, batching, retries) without a key.
-
-One test calls the real API. It runs only when GEMINI_API_KEY is set -- CI
-passes the repository's key -- and skips everywhere else.
-
-TIER 1: no database.
-"""
 import json
 import math
 import os
@@ -35,13 +18,10 @@ def gemini(monkeypatch):
     """Point the provider at a fake Gemini; returns the list of requests seen."""
     monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-key")
-    # Fake time: sleeping just moves the clock, so waits are instant and
-    # exact. A fresh pacer per test, on the same fake clock.
     clock = FakeClock()
     monkeypatch.setattr(embedding_module, "_now", clock.now)
     monkeypatch.setattr(embedding_module, "_sleep", clock.sleep)
     monkeypatch.setattr(embedding_module, "gemini_pacer", RatePacer(clock=clock.now, sleep=clock.sleep))
-    # Jitter pinned to its upper bound, so backoff is predictable.
     monkeypatch.setattr(embedding_module.random, "uniform", lambda _a, b: b)
     seen = []
 
@@ -107,7 +87,6 @@ def test_vectors_come_back_in_order_and_unit_length(gemini):
     assert all(len(v) == DIMENSION for v in vectors)
     for v in vectors:
         assert math.isclose(math.sqrt(sum(x * x for x in v)), 1.0, rel_tol=1e-9)
-    # The first component encodes the reply index, so order survives normalising.
     assert vectors[0][0] < vectors[1][0] < vectors[2][0]
 
 
@@ -152,11 +131,6 @@ def test_the_stored_model_name_includes_the_size(gemini):
     assert EmbeddingService.current_model_name() == f"{settings.GEMINI_EMBEDDING_MODEL}@{DIMENSION}"
 
 
-# ----------------------------------------------------------------------
-# PACING: stay under the per-minute quota instead of hitting it
-# ----------------------------------------------------------------------
-
-
 def test_a_batch_never_holds_more_than_a_minutes_requests(gemini, monkeypatch):
     monkeypatch.setattr(settings, "GEMINI_EMBED_REQUESTS_PER_MINUTE", 30)
     seen = gemini(_echo)
@@ -166,8 +140,6 @@ def test_a_batch_never_holds_more_than_a_minutes_requests(gemini, monkeypatch):
 
 
 def test_batches_are_split_by_tokens_so_one_request_fits_the_quota(gemini, monkeypatch):
-    # The real failure: 100 chunks of ~500 tokens is ~50k tokens in ONE
-    # request -- more than a whole minute's free quota.
     monkeypatch.setattr(settings, "GEMINI_EMBED_TOKENS_PER_MINUTE", 10_000)
     seen = gemini(_echo)
     EmbeddingService.get_embeddings(["word " * 500] * 40)
@@ -186,8 +158,6 @@ def test_requests_are_paced_to_the_per_minute_limit(gemini, monkeypatch):
     EmbeddingService.get_embeddings([f"chunk {i}" for i in range(60)])
 
     assert len(seen) == 3
-    # The 2nd and 3rd batches each waited for the window to roll over; no
-    # 429 was needed.
     waits = gemini.clock.sleeps
     assert len(waits) == 2 and all(55 <= w <= 61 for w in waits)
 
@@ -199,11 +169,6 @@ def test_a_question_does_not_queue_behind_a_document(gemini, monkeypatch):
     EmbeddingService.get_embedding("urgent question?")
 
     assert gemini.clock.sleeps == []
-
-
-# ----------------------------------------------------------------------
-# 429 HANDLING: what Google says, backoff, budgets
-# ----------------------------------------------------------------------
 
 
 def _quota(delay=None, header=None):
@@ -238,7 +203,6 @@ def test_the_wait_google_asks_for_is_honoured(gemini):
     seen = gemini(_then_ok(_quota(delay="37s")))
     assert len(EmbeddingService.get_embeddings(["x"])) == 1
     assert len(seen) == 2
-    # The retry sleep, then the pacer's cool-down wait is already over.
     assert 37 <= sum(gemini.clock.sleeps) < 40
 
 
@@ -246,7 +210,6 @@ def test_without_a_hint_backoff_grows_exponentially(gemini):
     gemini(_then_ok(_quota(), _quota(), _quota()))
     EmbeddingService.get_embeddings(["x"])
 
-    # uniform() is pinned to its upper bound: 2, 4, 8 seconds.
     assert gemini.clock.sleeps == [2.0, 4.0, 8.0]
 
 

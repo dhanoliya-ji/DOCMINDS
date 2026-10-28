@@ -1,34 +1,3 @@
-"""Usage metering and per-organization quotas
-
-WHAT THIS MIGRATION ADDS
-------------------------
-One table and three columns, for metering and quotas (services/usage.py):
-
-    usage_events   one row per chat answer: organization, user, mode, the
-                   model that answered, tokens in and out, estimated cost,
-                   and the id of the request that caused it.
-                   ix_usage_events_org_created serves "this organization,
-                   this month" -- run by the quota check on every chat
-                   request and by GET /org/usage.
-                   ix_usage_events_user_id lets deleting a user (which sets
-                   user_id to NULL here) find its rows without a full scan.
-
-    organizations.monthly_token_quota   per-organization overrides of the
-    organizations.max_documents         QUOTA_* settings. NULL = use the
-    organizations.max_storage_bytes     setting; 0 = unlimited.
-
-WHY NOTHING EXISTING IS REWRITTEN
----------------------------------
-The three columns are nullable and start NULL, so every existing
-organization simply follows the QUOTA_* settings -- no row's meaning changes.
-`usage_events` starts empty: usage is counted from the deploy onwards, so the
-first month's report covers only the part of the month after it.
-
-Revision ID: e5f7a9b1c3d6
-Revises: d4e6f8a0b2c5
-Create Date: 2026-10-22
-"""
-
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -41,9 +10,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ------------------------------------------------------------------
-    # 1. Quota overrides on organizations
-    # ------------------------------------------------------------------
     op.add_column(
         "organizations", sa.Column("monthly_token_quota", sa.BigInteger(), nullable=True)
     )
@@ -52,9 +18,6 @@ def upgrade() -> None:
         "organizations", sa.Column("max_storage_bytes", sa.BigInteger(), nullable=True)
     )
 
-    # ------------------------------------------------------------------
-    # 2. usage_events
-    # ------------------------------------------------------------------
     op.create_table(
         "usage_events",
         sa.Column("id", sa.Uuid(), nullable=False),

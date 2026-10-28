@@ -1,37 +1,3 @@
-"""Cloud imports, auto-sync and Stripe billing
-
-WHAT THIS MIGRATION ADDS
-------------------------
-    connector_connections   an organization's OAuth connections to Google
-                            Drive, OneDrive / SharePoint, Notion and
-                            Confluence; tokens stored ENCRYPTED
-                            (services/connectors/crypto.py).
-    connector_items         each imported document's source id, revision
-                            and sync status. uq_connector_items_source stops
-                            one source file being imported twice into a
-                            project; ix_connector_items_checked serves the
-                            sync sweep.
-    connector_imports       one background import job: the picked items and
-                            each one's progress (pending, downloading,
-                            imported, failed...), polled by the page.
-    billing_events          the ids of Stripe webhook events already applied,
-                            so a redelivered event changes nothing twice.
-    organizations.plan ...  plan (free | pro | team, default free), the
-                            Stripe customer and subscription ids, the
-                            subscription status and the renewal date.
-
-WHY NOTHING EXISTING IS REWRITTEN
----------------------------------
-The tables are new and start empty. Every organization gets plan "free",
-which maps onto the QUOTA_* settings it already uses -- no limit changes.
-Cloud imports and billing stay off until CONNECTORS_ENABLED and
-BILLING_ENABLED are set, so this migration changes no behaviour by itself.
-
-Revision ID: b3d5f7a9c1e2
-Revises: c9e1a3b5d7f0
-Create Date: 2026-10-23
-"""
-
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -45,9 +11,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ------------------------------------------------------------------
-    # 1. connector_connections
-    # ------------------------------------------------------------------
     op.create_table(
         "connector_connections",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -66,9 +29,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_connector_connections_org_id", "connector_connections", ["org_id"])
 
-    # ------------------------------------------------------------------
-    # 2. connector_items
-    # ------------------------------------------------------------------
     op.create_table(
         "connector_items",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -99,9 +59,6 @@ def upgrade() -> None:
     op.create_index("ix_connector_items_org_id", "connector_items", ["org_id"])
     op.create_index("ix_connector_items_checked", "connector_items", ["last_checked_at"])
 
-    # ------------------------------------------------------------------
-    # 2b. connector_imports
-    # ------------------------------------------------------------------
     op.create_table(
         "connector_imports",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -126,9 +83,6 @@ def upgrade() -> None:
     op.create_index("ix_connector_imports_connection_id", "connector_imports", ["connection_id"])
     op.create_index("ix_connector_imports_status_heartbeat", "connector_imports", ["status", "heartbeat_at"])
 
-    # ------------------------------------------------------------------
-    # 3. billing_events
-    # ------------------------------------------------------------------
     op.create_table(
         "billing_events",
         sa.Column("id", sa.String(length=255), nullable=False),
@@ -140,9 +94,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_billing_events_org_id", "billing_events", ["org_id"])
 
-    # ------------------------------------------------------------------
-    # 4. organizations: the plan and its Stripe ids
-    # ------------------------------------------------------------------
     op.add_column(
         "organizations",
         sa.Column("plan", sa.String(length=16), nullable=False, server_default="free"),

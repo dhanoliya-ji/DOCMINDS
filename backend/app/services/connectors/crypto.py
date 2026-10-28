@@ -1,33 +1,4 @@
-"""
-connectors/crypto.py
-====================
-WHAT THIS FILE DOES
--------------------
-Encrypts and decrypts the OAuth tokens a connection holds, before they touch
-the database:
-
-    encrypt_tokens({"access_token": ...})  -> "gAAAAAB..."   (stored)
-    decrypt_tokens("gAAAAAB...")           -> {"access_token": ...}
-
-WHICH KEY
----------
-    CONNECTOR_ENCRYPTION_KEY set    -> those key(s). Comma-separated: the
-                                       FIRST encrypts, ALL decrypt, so a new
-                                       key is rolled in by putting it first
-                                       and keeping the old one after it until
-                                       every connection has been re-saved.
-                                       A value that is not a Fernet key is
-                                       stretched into one with HKDF.
-    unset                           -> a key DERIVED from SECRET_KEY with
-                                       HKDF-SHA256 and a purpose label, so
-                                       the JWT signing key itself is never
-                                       used for encryption.
-
-Fernet is "authenticated" encryption: a tampered ciphertext does not decrypt
-to garbage, it fails to decrypt at all (TokenDecryptError). That matters --
-otherwise someone with write access to the table could edit a token blindly.
-"""
-
+"""Encrypts and decrypts the OAuth tokens a connection holds, before they touch the database."""
 import base64
 import json
 from functools import lru_cache
@@ -75,8 +46,6 @@ def _fernet_for(configured: str, secret_key: str) -> MultiFernet:
 
 
 def _fernet() -> MultiFernet:
-    # Keyed on the current settings, so a test (or a reload) that changes
-    # them gets the matching cipher rather than a stale cached one.
     return _fernet_for(settings.CONNECTOR_ENCRYPTION_KEY, settings.SECRET_KEY)
 
 

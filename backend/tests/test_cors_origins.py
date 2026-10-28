@@ -1,20 +1,3 @@
-"""
-test_cors_origins.py
-====================
-WHAT THIS FILE TESTS
---------------------
-`Settings.cors_origins` -- the list of websites a browser may call the API from.
-
-WHY IT EXISTS
--------------
-A deployed frontend whose address is missing from this list loads fine but
-cannot make a single API call: the browser blocks every request, so sign-in,
-the dashboard and chat all fail. That happened on the live demo when the
-address was entered with a trailing slash, which a browser never sends.
-
-TIER 1: pure configuration. No database, no network.
-"""
-
 from app.core.config import Settings
 
 

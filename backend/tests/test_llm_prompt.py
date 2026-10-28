@@ -1,32 +1,3 @@
-"""
-test_llm_prompt.py
-==================
-WHAT THIS FILE TESTS
---------------------
-`LLMService.build_context_prompt` -- the function that assembles retrieved
-chunks and a question into the text sent to the language model.
-
-WHY THIS ONE FUNCTION DESERVES ITS OWN FILE
--------------------------------------------
-In a RAG system the prompt is not configuration around the real work. The
-prompt IS the work. Two of the project's central guarantees live entirely
-inside this function:
-
-  1. CITATIONS. Excerpts are numbered, and the model writes those numbers into
-     its answer. That numbering is the whole mechanism by which "[2]" resolves
-     to a real file and page. Break it and citations point at the wrong source
-     while continuing to look authoritative.
-
-  2. NO SILENT FALLBACK. When retrieval finds nothing, the prompt says so
-     explicitly rather than shipping an empty context block. An empty block
-     leaves the model free to answer from its training data -- which is
-     precisely the hallucination the whole architecture exists to prevent.
-
-Neither failure crashes anything. Both produce confident, wrong output.
-
-TIER 1: builds a string. No model is called, no key needed, no network.
-"""
-
 import uuid
 
 import pytest
@@ -49,11 +20,6 @@ def chunk(content: str, filename: str = "handbook.pdf", page=12, **extra) -> dic
     return result
 
 
-# ======================================================================
-# The numbering that makes citations possible
-# ======================================================================
-
-
 class TestExcerptNumbering:
     def test_numbering_starts_at_one(self):
         """Humans count citations from [1], not [0]."""
@@ -71,11 +37,7 @@ class TestExcerptNumbering:
         assert "EXCERPT [5]" not in prompt
 
     def test_numbers_follow_retrieval_order(self):
-        """
-        Retrieval returns the closest match first, and the numbering must
-        preserve that. If [1] were not the best match, the model would be
-        subtly steered towards the weaker source.
-        """
+        """Retrieval returns the closest match first, and the numbering must"""
         chunks = [chunk("Alpha content."), chunk("Bravo content."), chunk("Charlie content.")]
 
         prompt = LLMService.build_context_prompt("Q?", chunks)
@@ -94,10 +56,7 @@ class TestSourceAttribution:
         assert "page 42" in prompt
 
     def test_no_page_is_mentioned_when_there_is_none(self):
-        """
-        A CSV or an email has no pages. Writing "page None" would be noise the
-        model might echo into its answer as a fake citation detail.
-        """
+        """A CSV or an email has no pages. Writing "page None" would be noise the"""
         prompt = LLMService.build_context_prompt(
             "Q?", [chunk("Row data.", filename="data.csv", page=None)]
         )
@@ -115,11 +74,6 @@ class TestSourceAttribution:
 
         assert "handbook.pdf" in prompt and "page 12" in prompt
         assert "finance.xlsx" in prompt
-
-
-# ======================================================================
-# The content itself
-# ======================================================================
 
 
 class TestPromptContent:
@@ -146,10 +100,7 @@ class TestPromptContent:
         assert prompt.index("Excerpt text.") < prompt.index("The question here?")
 
     def test_excerpts_are_separated_by_blank_lines(self):
-        """
-        So the model reads them as separate documents rather than one run-on
-        passage -- which would invite it to merge two sources into one claim.
-        """
+        """So the model reads them as separate documents rather than one run-on"""
         prompt = LLMService.build_context_prompt(
             "Q?", [chunk("First excerpt."), chunk("Second excerpt.")]
         )
@@ -158,17 +109,9 @@ class TestPromptContent:
         assert "\n\n" in between
 
 
-# ======================================================================
-# The no-results case -- the anti-hallucination guarantee
-# ======================================================================
-
-
 class TestNoChunks:
     def test_it_says_none_were_found(self):
-        """
-        Explicit, not empty. This is the line that stops the model quietly
-        answering from its training data when the corpus has nothing to say.
-        """
+        """Explicit, not empty. This is the line that stops the model quietly"""
         prompt = LLMService.build_context_prompt("Anything?", [])
 
         assert "none found" in prompt.lower()
@@ -182,17 +125,8 @@ class TestNoChunks:
         assert "EXCERPT [1]" not in prompt
 
 
-# ======================================================================
-# Robustness
-# ======================================================================
-
-
 class TestMissingFields:
-    """
-    Retrieval results are dictionaries, so a field can be absent. The prompt
-    builder must degrade rather than raise -- a KeyError here would take down
-    the request that a user is waiting on.
-    """
+    """Retrieval results are dictionaries, so a field can be absent. The prompt"""
 
     def test_a_missing_filename_does_not_raise(self):
         result = {"content": "Some text.", "page_number": 3}

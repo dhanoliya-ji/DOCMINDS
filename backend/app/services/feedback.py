@@ -1,32 +1,4 @@
-"""
-feedback.py  (service)
-======================
-WHAT THIS FILE DOES
--------------------
-Summarises the thumbs up / thumbs down people gave to answers, for the admin
-endpoint GET /org/feedback and the "Feedback" tab in Settings.
-
-WHAT AN ADMIN LEARNS FROM IT
-----------------------------
-    satisfaction       up / (up + down) -- the one-number health check
-    by mode            is Deep research actually better than Quick answer
-                       for this organization's questions?
-    by model           did switching models (or falling back) hurt?
-    recent negatives   the actual questions people were unhappy with, with
-                       the answer they got and any comment they left.
-
-The last list is the useful one. A run of downvotes on questions about one
-policy usually means that document chunked or OCR'd badly, which no metric
-shows -- but reading five bad answers does. Those questions are also the
-best raw material for the evaluation golden set (app/eval).
-
-TENANT ISOLATION
-----------------
-Feedback has no org_id. It is scoped the way everything else is: by walking
-up feedback -> message -> session -> project -> organization, with the
-organization taken from the caller's verified token.
-"""
-
+"""Summarises the thumbs up / thumbs down people gave to answers, for the admin endpoint GET /org/feedback..."""
 import datetime
 import uuid
 from typing import Any, Dict, List, Optional
@@ -64,7 +36,6 @@ async def summarise(
     org_id: uuid.UUID,
     since: Optional[datetime.datetime] = None,
 ) -> Dict[str, Any]:
-    """Everything FeedbackSummary (schemas/rag.py) needs, as a dictionary."""
     up_count = func.sum(case((Feedback.rating > 0, 1), else_=0))
     down_count = func.sum(case((Feedback.rating < 0, 1), else_=0))
 
@@ -95,8 +66,6 @@ async def summarise(
 
     recent_negative = []
     for feedback, message in negative_rows:
-        # The question is the latest USER message at or before the answer --
-        # a question and its answer can share a timestamp (one transaction).
         question = (
             await db.execute(
                 select(ChatMessage.content)

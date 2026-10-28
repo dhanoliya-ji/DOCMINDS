@@ -1,25 +1,3 @@
-"""
-test_sso.py
-===========
-Single sign-on through OpenID Connect (api/v1/sso.py), end to end, against a
-FAKE identity provider served by an httpx.MockTransport:
-
-    discovery document   the provider's addresses
-    JWKS                 its public signing key (an RSA key made per test run)
-    token endpoint       swaps the code for an ID token we sign here
-
-What is checked:
-    off by default        /config says disabled, the other routes 404
-    the happy path        login -> provider -> callback -> exchange -> tokens
-    account linking       an existing password account is signed in to
-    tenancy               no account + invite joins that org with the
-                          invite's role; no account, no invite creates a
-                          new org (or is refused with OIDC_ALLOW_SIGNUP off)
-    the guards            unverified email, wrong nonce, wrong audience, a
-                          forged state, a missing browser cookie, and a
-                          handoff code used twice are all refused
-"""
-
 import time
 import uuid
 from urllib.parse import parse_qs, urlsplit
@@ -35,8 +13,6 @@ from app.core.config import settings
 from app.models.user import User
 from tests import test_auth_flows as _flows
 
-# The fixtures from test_auth_flows.py, re-exported so pytest finds them here
-# (a fixture is looked up by NAME in the test's module).
 API = _flows.API
 env = _flows.env
 fast_password_hashing = _flows.fast_password_hashing
@@ -80,7 +56,6 @@ class FakeProvider:
         if path == "/token":
             form = parse_qs(request.content.decode())
             self.token_requests.append(form)
-            # The nonce rides in the code in this fake, so the test controls it.
             nonce = form["code"][0]
             return httpx.Response(200, json={"id_token": self.id_token(nonce), "access_token": "x"})
         return httpx.Response(404)
@@ -119,7 +94,6 @@ async def sso_sign_in(env, provider, email: str, *, invite: str | None = None,
     assert query["code_challenge_method"] == ["S256"]
     if not keep_cookie:
         env.client.cookies.clear()
-    # The fake provider echoes the nonce back via the code.
     code = nonce_override or query["nonce"][0]
     callback = await env.client.get(
         f"{API}/auth/sso/callback", params={"code": code, "state": query["state"][0]}
@@ -161,7 +135,6 @@ class TestSignIn:
         assert me.json()["role"] == "Admin"
         env.created_orgs.append(me.json()["org_id"])
 
-        # PKCE and the client credentials went to the token endpoint.
         sent = provider.token_requests[0]
         assert sent["client_id"] == [CLIENT_ID] and "code_verifier" in sent
 

@@ -1,21 +1,3 @@
-"""
-test_access_control.py
-======================
-WHAT THIS FILE TESTS
---------------------
-The small pure pieces the account system is built from, one at a time:
-
-    core/roles.py        the ranking: admin > editor > viewer
-    core/security.py     password policy, opaque tokens, API key format, jti
-    core/config.py       the production SECRET_KEY guard
-    models/invite.py     an invite's derived status
-    services/email.py    the console sender, and that SMTP failure never raises
-
-The full HTTP flows that combine them live in test_auth_flows.py.
-
-TIER 1: no database, no network.
-"""
-
 import datetime
 import uuid
 
@@ -25,11 +7,6 @@ from pydantic import ValidationError
 
 from app.core import roles, security
 from app.core.config import Settings, _DEFAULT_SECRET_KEY, settings
-
-
-# ======================================================================
-# Roles
-# ======================================================================
 
 
 class TestRoles:
@@ -42,8 +19,7 @@ class TestRoles:
         assert roles.normalize_role(alias) == stored
 
     def test_an_unknown_role_is_an_error_not_a_default(self):
-        """A typo in `require_role("edtior")` must fail loudly at import time,
-        never quietly admit or refuse everyone."""
+        """A typo in `require_role("edtior")` must fail loudly at import time,"""
         with pytest.raises(ValueError):
             roles.normalize_role("superuser")
 
@@ -97,11 +73,6 @@ class TestRequireRole:
         assert "api_key_role" not in User.__table__.columns
 
 
-# ======================================================================
-# Password policy
-# ======================================================================
-
-
 class TestPasswordPolicy:
     def test_a_good_password_has_no_problems(self):
         assert security.password_problems("correct horse battery", "ada@example.com") == []
@@ -125,11 +96,6 @@ class TestPasswordPolicy:
         monkeypatch.setattr(settings, "PASSWORD_MIN_LENGTH", 20)
         assert security.password_problems("a" * 19)
         assert not security.password_problems("a" * 20)
-
-
-# ======================================================================
-# Opaque tokens and API keys
-# ======================================================================
 
 
 class TestOpaqueTokens:
@@ -160,20 +126,13 @@ class TestTokenIds:
         assert a["jti"] != b["jti"]
 
     def test_refresh_tokens_are_unique_even_in_the_same_second(self):
-        """The server stores refresh-token HASHES under a unique index; two
-        identical tokens would make the second login fail."""
+        """The server stores refresh-token HASHES under a unique index; two"""
         assert security.create_refresh_token("u") != security.create_refresh_token("u")
 
     def test_iat_is_fractional(self):
-        """Whole seconds would let a token minted in the same second as a
-        password reset survive it."""
+        """Whole seconds would let a token minted in the same second as a"""
         iat = self._decode(security.create_access_token("u"))["iat"]
         assert isinstance(iat, float)
-
-
-# ======================================================================
-# The production SECRET_KEY guard
-# ======================================================================
 
 
 class TestSecretKeyGuard:
@@ -190,11 +149,6 @@ class TestSecretKeyGuard:
 
     def test_production_accepts_a_strong_key(self):
         assert Settings(ENV="production", SECRET_KEY="x" * 64).ENV == "production"
-
-
-# ======================================================================
-# Invite status
-# ======================================================================
 
 
 class TestInviteStatus:
@@ -231,11 +185,6 @@ class TestInviteStatus:
         assert self._invite(revoked_at=now).status == "revoked"
 
 
-# ======================================================================
-# Email
-# ======================================================================
-
-
 class TestEmail:
     async def test_console_is_the_default_and_records_the_message(self, monkeypatch):
         from app.services import email
@@ -248,8 +197,7 @@ class TestEmail:
         assert "reset-password?token=tok123" in email.OUTBOX[-1].body
 
     async def test_an_smtp_failure_returns_false_instead_of_raising(self, monkeypatch):
-        """A mail outage must never become a 500 -- or, on password reset, a
-        response that differs between real and unknown addresses."""
+        """A mail outage must never become a 500 -- or, on password reset, a"""
         from app.services import email
 
         monkeypatch.setattr(settings, "SMTP_HOST", "smtp.invalid")

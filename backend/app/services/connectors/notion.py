@@ -1,24 +1,4 @@
-"""
-connectors/notion.py
-====================
-Notion through its public REST API (version 2022-06-28).
-
-    OAuth     api.notion.com/v1/oauth -- the person connecting chooses WHICH
-              pages DocMinds may see; nothing else in the workspace is
-              visible to us
-    picker    a search over those pages (newest first); a page opens to show
-              its sub-pages
-    import    Notion has no export endpoint, so the page's blocks are read and
-              written out as MARKDOWN (.md): headings, paragraphs, lists,
-              to-dos, quotes, callouts, code, tables. Sub-pages become a
-              heading line pointing at them -- import them separately to
-              index their text too.
-    revision  the page's last_edited_time
-
-Notion's integration tokens do not expire, so most connections have no
-refresh token at all; if Notion issues one, it is used.
-"""
-
+"""Notion through its public REST API (version 2022-06-28)."""
 import os
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -31,8 +11,6 @@ from app.services.connectors.http import ConnectorAuthError, ConnectorError, Sou
 
 API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
-# Most blocks one export reads, and how deep it follows nested blocks: a
-# runaway page must not keep the import busy for minutes.
 MAX_BLOCKS = 5000
 MAX_DEPTH = 5
 
@@ -96,8 +74,6 @@ class Notion(Provider):
     id = "notion"
     name = "Notion"
     allowed_hosts = ("api.notion.com",)
-    # Where a person removes the integration by hand (Settings -> Connections
-    # in the Notion app) when revocation fails.
     manage_access_url = "https://www.notion.so/profile/integrations"
 
     def configured(self) -> bool:
@@ -141,10 +117,7 @@ class Notion(Provider):
         return TokenSet.from_oauth(body, previous=tokens)
 
     async def revoke(self, tokens: TokenSet) -> bool:
-        """Notion's token revocation endpoint (POST /v1/oauth/revoke, client
-        credentials as Basic auth). A 400 means the token is already invalid,
-        which is the outcome we want; anything else is raised, so the person
-        is shown where to remove the integration by hand."""
+        """Notion's token revocation endpoint (POST /v1/oauth/revoke, client"""
         if not tokens.access_token:
             return True
         try:
@@ -242,14 +215,12 @@ class Notion(Provider):
                 if block.get("type") == "table_row":
                     lines.extend(rendered)
                     if not previous_was_row:
-                        # Markdown needs a separator under the first row.
                         cells = len((block.get("table_row") or {}).get("cells") or [])
                         lines.append("|" + " --- |" * max(cells, 1))
                     previous_was_row = True
                     continue
                 previous_was_row = False
                 lines.extend(rendered)
-                # Sub-pages are separate documents; everything else is read through.
                 if block.get("has_children") and block.get("type") != "child_page" and depth < MAX_DEPTH:
                     await self._blocks(tokens, block["id"], depth + 1, budget, lines)
                     if block.get("type") == "table":

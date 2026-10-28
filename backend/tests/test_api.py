@@ -1,32 +1,3 @@
-"""
-test_api.py
-===========
-WHAT THIS FILE TESTS
---------------------
-The HTTP layer: real requests against the real FastAPI app, over an in-process
-transport. No uvicorn, no network port -- httpx talks to the ASGI application
-directly, which is both faster and less flaky than a live server.
-
-WHY THE OTHER TESTS DO NOT COVER THIS
--------------------------------------
-Everything else in this suite calls functions. That leaves a whole layer
-unverified, because these are properties of the *wiring* rather than of any
-function:
-
-    - a protected endpoint actually has its dependency attached
-    - 401 and 403 are distinguished
-    - a malformed body is refused with 422 before any handler runs
-    - a malformed UUID in a path never reaches a query
-    - a router is mounted at the prefix everyone thinks it is
-
-A dependency accidentally omitted from an endpoint is invisible to a unit
-test -- the service still behaves correctly, it is simply now reachable by
-anyone. That is the class of bug this file exists for.
-
-TIER 2. Signup writes rows, so these need a database and skip cleanly without
-one.
-"""
-
 import uuid
 
 import pytest
@@ -56,12 +27,7 @@ async def client():
 
 @pytest_asyncio.fixture
 async def account(client):
-    """
-    A registered, signed-in user.
-
-    Returns the credentials plus a ready-made `Authorization` header, and
-    deletes the organisation afterwards -- everything below it cascades.
-    """
+    """A registered, signed-in user."""
     suffix = uuid.uuid4().hex[:12]
     email = f"user-{suffix}@example.com"
     password = "a-perfectly-fine-password"
@@ -99,11 +65,6 @@ async def account(client):
         await session.commit()
 
 
-# ======================================================================
-# Health -- outside any router, so it answers even if routing is broken
-# ======================================================================
-
-
 class TestHealth:
     async def test_the_root_responds(self, client):
         assert (await client.get("/")).status_code == 200
@@ -114,18 +75,9 @@ class TestHealth:
         assert isinstance(response.json(), dict)
 
 
-# ======================================================================
-# Signup and login
-# ======================================================================
-
-
 class TestSignup:
     async def test_it_returns_201_and_no_password(self, account):
-        """
-        201 Created, not 200. And `response_model=UserOut` is what guarantees
-        the second half -- the hash is on the ORM object and cannot reach the
-        client through the schema.
-        """
+        """201 Created, not 200. And `response_model=UserOut` is what guarantees"""
         body = account["user"]
 
         assert "id" in body and "org_id" in body
@@ -133,8 +85,7 @@ class TestSignup:
         assert "$2b$" not in str(body)
 
     async def test_it_creates_the_organisation_too(self, account):
-        """A user cannot exist without a tenant, which is what makes org_id
-        reliable as the security boundary everywhere downstream."""
+        """A user cannot exist without a tenant, which is what makes org_id"""
         assert account["user"]["org_id"]
 
     async def test_a_duplicate_email_is_refused(self, client, account):
@@ -160,10 +111,7 @@ class TestSignup:
         ],
     )
     async def test_a_malformed_body_is_422(self, client, payload):
-        """
-        Refused by the schema before the handler runs -- which is why no
-        endpoint contains an email regex or a "is this field present" check.
-        """
+        """Refused by the schema before the handler runs -- which is why no"""
         assert (await client.post(f"{API}/auth/signup", json=payload)).status_code == 422
 
 
@@ -192,11 +140,7 @@ class TestLogin:
         assert response.status_code in (400, 401)
 
     async def test_the_error_does_not_reveal_which_half_was_wrong(self, client, account):
-        """
-        Both failures must look alike. Distinguishing them turns the login form
-        into an account-enumeration oracle: an attacker learns which email
-        addresses are registered without ever guessing a password.
-        """
+        """Both failures must look alike. Distinguishing them turns the login form"""
         wrong_password = await client.post(
             f"{API}/auth/login",
             data={"username": account["email"], "password": "definitely-wrong"},
@@ -220,11 +164,7 @@ class TestRefresh:
         assert response.json()["access_token"]
 
     async def test_an_access_token_is_not_accepted_as_a_refresh_token(self, client, account):
-        """
-        The `type` claim, enforced. Without this check a 30-minute credential
-        and a 7-day one become interchangeable, and the short expiry -- the
-        whole point of the split -- stops meaning anything.
-        """
+        """The `type` claim, enforced. Without this check a 30-minute credential"""
         response = await client.post(
             f"{API}/auth/refresh", json={"refresh_token": account["tokens"]["access_token"]}
         )
@@ -239,11 +179,6 @@ class TestRefresh:
         assert response.status_code in (400, 401, 422)
 
 
-# ======================================================================
-# The auth dependency, as actually wired to endpoints
-# ======================================================================
-
-
 PROTECTED = [
     ("GET", f"{API}/users/me"),
     ("GET", f"{API}/projects/"),
@@ -256,11 +191,7 @@ PROTECTED = [
 
 
 class TestAuthenticationIsRequired:
-    """
-    The property no unit test can see: that the dependency is actually attached
-    to each endpoint. Omit it from one handler and the service underneath still
-    works perfectly -- it is just now reachable by anyone.
-    """
+    """The property no unit test can see: that the dependency is actually attached"""
 
     @pytest.mark.parametrize("method,path", PROTECTED)
     async def test_no_token_is_rejected(self, client, method, path):
@@ -298,11 +229,6 @@ class TestAuthenticationIsRequired:
         assert response.json()["email"] == account["email"]
 
 
-# ======================================================================
-# Projects
-# ======================================================================
-
-
 class TestProjects:
     async def test_a_new_account_has_no_projects(self, client, account):
         response = await client.get(f"{API}/projects/", headers=account["headers"])
@@ -320,11 +246,7 @@ class TestProjects:
         assert [p["name"] for p in listed.json()] == ["HR Handbook"]
 
     async def test_another_account_does_not_see_it(self, client, account):
-        """
-        Multi-tenant isolation, over HTTP this time. test_retrieval_db.py
-        proves the retrieval query filters correctly; this proves the endpoint
-        passes the right org_id into it.
-        """
+        """Multi-tenant isolation, over HTTP this time. test_retrieval_db.py"""
         await client.post(
             f"{API}/projects/", headers=account["headers"], json={"name": "Confidential"}
         )
@@ -362,11 +284,6 @@ class TestProjects:
         assert response.status_code == 422
 
 
-# ======================================================================
-# Search
-# ======================================================================
-
-
 class TestSearchEndpoint:
     async def test_an_empty_query_is_422(self, client, account, use_mock_providers):
         response = await client.post(
@@ -382,10 +299,7 @@ class TestSearchEndpoint:
         assert response.status_code == 422
 
     async def test_a_malformed_uuid_is_422(self, client, account, use_mock_providers):
-        """
-        Refused by the schema, so a bad id never reaches a query. Nothing is
-        hand-validated for this -- the type annotation is the validation.
-        """
+        """Refused by the schema, so a bad id never reaches a query. Nothing is"""
         response = await client.post(
             f"{API}/search/",
             headers=account["headers"],
@@ -405,11 +319,6 @@ class TestSearchEndpoint:
         assert response.json()["results"] == []
 
 
-# ======================================================================
-# Path parameters, and the queue diagnostics
-# ======================================================================
-
-
 class TestPathValidation:
     @pytest.mark.parametrize(
         "path",
@@ -419,10 +328,7 @@ class TestPathValidation:
         ],
     )
     async def test_a_malformed_uuid_in_the_path_is_422(self, client, account, path):
-        """
-        Typing the parameter as `uuid.UUID` is what rejects this before any
-        query runs -- no handwritten check, and no bad id reaching Postgres.
-        """
+        """Typing the parameter as `uuid.UUID` is what rejects this before any"""
         response = await client.get(path, headers=account["headers"])
         assert response.status_code == 422
 
@@ -435,22 +341,15 @@ class TestPathValidation:
 
 class TestTaskDiagnostics:
     async def test_triggering_a_task_returns_202(self, client, account):
-        """
-        202 Accepted, not 200: the work has been taken, not done. This endpoint
-        is how you tell "no worker is running" from "the document is at fault".
-        """
+        """202 Accepted, not 200: the work has been taken, not done. This endpoint"""
         response = await client.post(
             f"{API}/tasks/trigger-add", headers=account["headers"], json={"x": 2, "y": 3}
         )
 
-        # 202 when Redis is up; a 5xx when the broker is unreachable is a real
-        # answer too, and not this test's business to assert against.
         assert response.status_code in (202, 422, 500, 503)
 
 
 class TestOpenApi:
-    # Not the default "/openapi.json": main.py moves the spec under the version
-    # prefix, so a v2 could publish its own alongside it.
     SCHEMA_URL = f"{API}/openapi.json"
 
     async def test_the_schema_is_served(self, client):
@@ -464,10 +363,7 @@ class TestOpenApi:
         assert (await client.get("/docs")).status_code == 200
 
     async def test_every_router_is_mounted_under_the_version_prefix(self, client):
-        """
-        Guards the URL contract. A router mounted at the wrong prefix breaks
-        every client at once, and nothing else here would notice.
-        """
+        """Guards the URL contract. A router mounted at the wrong prefix breaks"""
         paths = (await client.get(self.SCHEMA_URL)).json()["paths"]
 
         for expected in (
@@ -482,12 +378,7 @@ class TestOpenApi:
 
 
 class TestInlineIngestion:
-    """
-    INGESTION_MODE=inline: the API processes uploads itself, with no Celery
-    worker and no Redis. This is what the free live demo runs on, so the whole
-    path -- upload, extract, chunk, embed, mark completed -- is exercised here
-    against the real database.
-    """
+    """INGESTION_MODE=inline: the API processes uploads itself, with no Celery"""
 
     async def test_an_upload_is_fully_processed_without_a_worker(
         self, client, account, use_mock_providers, monkeypatch
@@ -507,12 +398,9 @@ class TestInlineIngestion:
             files={"files": ("policy.txt", text.encode(), "text/plain")},
         )
 
-        # The reply still comes back at once, as with a worker...
         assert response.status_code == 202, response.text
         assert response.json()[0]["status"] == "pending"
 
-        # ...and the API's in-process queue works on it after the request has
-        # ended. Once the queue is idle it has been processed end to end.
         from app.tasks.ingestion import wait_for_inline_jobs
 
         await wait_for_inline_jobs()

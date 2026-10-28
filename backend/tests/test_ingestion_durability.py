@@ -1,32 +1,3 @@
-"""
-test_ingestion_durability.py
-============================
-WHAT THIS FILE TESTS
---------------------
-The rules in tasks/ingestion.py that decide what happens when processing goes
-wrong -- the part of the pipeline that is invisible until production:
-
-    classification   transient (retry) versus permanent (fail now)
-    the claim        exactly one run processes a document; duplicates skip
-    retries          a transient failure goes back to "pending", then succeeds
-                     or, on the final attempt, fails with a reason
-    quarantine       a file the malware scan rejects is failed and deleted
-    recovery         stuck documents are re-queued, or failed when out of tries
-    inline mode      the same retry policy without Celery
-    the Celery task  acks_late, reject_on_worker_lost, time limits, beat entry
-
-HOW IT RUNS
------------
-Every database test runs twice, like test_auth_flows.py:
-
-    [sqlite]    always, on an in-memory database built from the models
-    [postgres]  when one is reachable (CI), against the schema Alembic built
-                -- which is what proves the new migration matches the models
-
-The pipeline runs for real on small text files: real extraction, real
-chunking, mock embeddings. Files live in LocalStorage under tmp_path.
-"""
-
 import datetime
 import os
 import uuid
@@ -61,11 +32,6 @@ from tests.conftest import database_available
 from tests.sqlite_harness import make_sqlite_factory
 
 TEXT = "Refunds are available within thirty days of purchase. " * 40
-
-
-# ======================================================================
-# Classification -- pure functions, no database
-# ======================================================================
 
 
 class OperationalError(Exception):
@@ -110,11 +76,7 @@ class TestClassification:
         assert [retry_delay_seconds(n) for n in range(5)] == [2, 4, 8, 10, 10]
 
     def test_the_default_retries_outlast_a_short_outage(self):
-        """
-        The point of retrying is to ride out an outage: a rate limit that
-        resets each minute, ClamAV reloading its definitions. Waits that are
-        all over within a few seconds would fail the document first.
-        """
+        """The point of retrying is to ride out an outage: a rate limit that"""
         total = sum(retry_delay_seconds(n) for n in range(settings.INGESTION_MAX_RETRIES))
         assert total >= 60
 
@@ -158,21 +120,12 @@ class TestCeleryConfiguration:
         assert celery_app.conf.worker_prefetch_multiplier == 1
 
     def test_redis_does_not_redeliver_a_job_that_is_merely_slow(self):
-        """
-        With acks_late, Redis re-delivers any message still unacknowledged
-        after the visibility timeout. A job may legitimately run up to the
-        hard time limit after waiting out its longest retry delay.
-        """
+        """With acks_late, Redis re-delivers any message still unacknowledged"""
         timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
         assert timeout >= 3600
         assert timeout > (
             settings.INGESTION_TIME_LIMIT_SECONDS + settings.INGESTION_RETRY_BACKOFF_MAX_SECONDS
         )
-
-
-# ======================================================================
-# Fixtures for the database tests
-# ======================================================================
 
 
 def _backends():
@@ -208,7 +161,6 @@ async def db(request, monkeypatch, use_mock_providers, local_store):
         from app.db.session import SessionLocal as factory  # noqa: N813
 
     monkeypatch.setattr(ingestion, "SessionLocal", factory)
-    # Nothing is really queued in these tests; dispatch is checked by spying.
     dispatched: list[str] = []
     monkeypatch.setattr(ingestion, "dispatch", lambda document_id: dispatched.append(document_id))
 
@@ -283,11 +235,6 @@ def minutes_ago(minutes: int) -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes)
 
 
-# ======================================================================
-# The claim
-# ======================================================================
-
-
 class TestClaim:
     async def test_a_pending_document_is_claimed_once(self, db):
         document_id = await db.document()
@@ -327,14 +274,8 @@ class TestClaim:
     async def test_a_duplicate_delivery_skips(self, db):
         document_id = await db.document()
         assert await async_process_document(str(document_id)) == "completed"
-        # The same message delivered again (acks_late after a lost ack).
         assert await async_process_document(str(document_id)) == "skipped"
         assert (await db.get(document_id)).attempts == 1
-
-
-# ======================================================================
-# The pipeline's outcomes
-# ======================================================================
 
 
 class TestOutcomes:
@@ -352,7 +293,6 @@ class TestOutcomes:
     async def test_a_permanent_failure_is_not_retried(self, db):
         document_id = await db.document(content=b"   \n  ")
 
-        # Even with retries left, there is no exception to retry on.
         result = await async_process_document(str(document_id), final_attempt=False)
 
         document = await db.get(document_id)
@@ -385,9 +325,6 @@ class TestOutcomes:
         waiting = await db.get(document_id)
         assert waiting.status == "pending"
         assert "unreachable" in waiting.error_message
-        # The chunks were committed before embedding began, so the retry
-        # RESUMES at embedding rather than extracting the file again. They
-        # are invisible to search until the document is "completed".
         chunks_before = await db.chunk_count(document_id)
         assert chunks_before > 0
         assert waiting.meta_data["chunking_complete"] is True
@@ -453,16 +390,10 @@ class TestQuarantine:
             await async_process_document(str(document_id), final_attempt=False)
         document = await db.get(document_id)
         assert document.status == "pending"
-        # Never scanned, so never recorded as scanned: the preview endpoint
-        # keeps the file locked away until a scan passes.
         assert "malware_scan" not in document.meta_data
 
     async def test_a_clean_scan_is_remembered_when_a_later_stage_fails(self, db, monkeypatch):
-        """
-        The scan passed, then extraction found no text. The document fails
-        -- but the record that its bytes were scanned clean must survive,
-        or a failed file could never be previewed while scanning is on.
-        """
+        """The scan passed, then extraction found no text. The document fails"""
         document_id = await db.document(content=b"   \n  ")
         monkeypatch.setattr(
             malware, "scan_file", lambda path: malware.ScanResult(clean=True, scanner="clamav")
@@ -482,11 +413,6 @@ class TestQuarantine:
 
         assert await async_process_document(str(document_id)) == "completed"
         assert (await db.get(document_id)).meta_data["malware_scan"] == "clamav"
-
-
-# ======================================================================
-# Recovery
-# ======================================================================
 
 
 class TestRecovery:
@@ -547,10 +473,7 @@ class TestRecovery:
         assert await async_process_document(str(document_id)) == "completed"
 
     async def test_one_failed_dispatch_does_not_stop_the_sweep(self, db, monkeypatch):
-        """
-        The queue refusing ONE document (Redis restarting under the API at
-        startup) must not abort the sweep -- or the API start it runs in.
-        """
+        """The queue refusing ONE document (Redis restarting under the API at"""
         stale = minutes_ago(settings.INGESTION_STALE_AFTER_MINUTES + 5)
         first = await db.document(status="pending")
         second = await db.document(status="pending")
@@ -565,21 +488,12 @@ class TestRecovery:
 
         monkeypatch.setattr(ingestion, "dispatch", flaky_dispatch)
 
-        # Membership, not equality: on the shared Postgres the sweep may
-        # also find other tests' rows.
         result = await recover_stuck_documents()
 
         assert str(first) in attempted and str(second) in attempted
         assert str(first) in result["requeued"] and str(second) in result["requeued"]
-        # Both are back on "pending", so a later sweep retries the one the
-        # queue refused.
         assert (await db.get(first)).status == "pending"
         assert (await db.get(second)).status == "pending"
-
-
-# ======================================================================
-# Inline mode
-# ======================================================================
 
 
 class TestInlineRetries:

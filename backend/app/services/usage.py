@@ -1,51 +1,4 @@
-"""
-usage.py  (service)
-===================
-WHAT THIS FILE DOES
--------------------
-Metering and quotas: what each organization has used this month, what that is
-estimated to cost, and whether it may use more.
-
-    record_chat_usage(...)     stage a usage event for one chat answer
-    check_token_quota(...)     refuse a chat when the month's tokens are gone
-    upload_allowance(...)      refuse an upload that would cross the document
-                               or storage quota
-    usage_summary(...)         the month so far, for GET /org/usage
-    estimate_cost_usd(...)     tokens -> dollars, from the LLM_PRICING table
-
-WHY QUOTAS AT ALL
------------------
-Every organization shares the same model provider account and the same
-server. Without a ceiling, one tenant running a script against chat can spend
-the whole provider budget -- and exhaust the provider's rate limit, which
-fails everyone else's answers too. Rate limits (core/rate_limit.py) cap the
-SPEED of one user; quotas cap the monthly TOTAL of a whole organization.
-
-TWO DIFFERENT "NO"s, ON PURPOSE
--------------------------------
-    429 Too Many Requests   monthly token quota used up. It RESETS on the 1st
-                            (UTC), so the reply carries a Retry-After header
-                            counting down to it, like any other rate limit.
-    402 Payment Required    document or storage quota full. Waiting will not
-                            help -- nothing frees up by itself -- so this says
-                            "you need a bigger plan", which is what 402 means.
-
-THE LIMITS COME FROM TWO PLACES
--------------------------------
-The QUOTA_* settings are the defaults for everyone. An organization row may
-override any of them (models/organization.py): NULL there means "use the
-setting", 0 means unlimited, anything else is that organization's own limit.
-
-SOFT AT THE EDGE, HARD AFTER IT
--------------------------------
-The token check runs BEFORE the model is called, against what has been used
-so far. A request made with 100 tokens left is allowed, and may finish a few
-hundred over -- we cannot know an answer's length before it is written. The
-request after that is refused. The same is true of two uploads racing each
-other. Being a few hundred tokens or one document over is the price of never
-cutting an answer off half-way.
-"""
-
+"""Metering and quotas: what each organization has used this month, what that is estimated to cost, and..."""
 import calendar
 import datetime
 import logging
@@ -66,10 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class QuotaExceeded(Exception):
-    """
-    Raised when an organization is out of something. The API layer turns it
-    into an HTTP error with exactly this status, message and headers.
-    """
+    """Raised when an organization is out of something. The API layer turns it"""
 
     def __init__(self, status_code: int, message: str, retry_after: Optional[int] = None):
         super().__init__(message)
@@ -78,23 +28,12 @@ class QuotaExceeded(Exception):
         self.headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
 
 
-# ======================================================================
-# PERIODS, LIMITS AND MONEY
-# ======================================================================
-
-
 def utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
 def month_bounds(now: Optional[datetime.datetime] = None) -> Tuple[datetime.datetime, datetime.datetime]:
-    """
-    The calendar month (UTC) containing `now`: [start, end).
-
-    Calendar months rather than "the last 30 days" because that is what a
-    person means by "this month's usage", and because a fixed reset date is
-    something a 429 can promise: "try again on the 1st".
-    """
+    """The calendar month (UTC) containing `now`: [start, end)."""
     now = now or utcnow()
     start = datetime.datetime(now.year, now.month, 1, tzinfo=datetime.timezone.utc)
     days = calendar.monthrange(now.year, now.month)[1]
@@ -118,23 +57,11 @@ def storage_quota(org: Optional[Organization]) -> int:
     return _limit(getattr(org, "max_storage_bytes", None), settings.QUOTA_MAX_STORAGE_BYTES)
 
 
-# Models already reported as missing from LLM_PRICING, so the warning is
-# logged once per process rather than on every answer.
 _unpriced_models: set = set()
 
 
 def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """
-    Dollars for one call: tokens x price per million, input and output
-    priced separately.
-
-        gpt-oss-120b, 3,000 in + 400 out
-        = 3000 x $0.15/1M + 400 x $0.60/1M = $0.00045 + $0.00024 = $0.00069
-
-    A model missing from LLM_PRICING -- including "mock" and "error" -- is
-    costed at zero. For a real model that is logged once, so a forgotten
-    price shows up in the logs rather than silently as free usage.
-    """
+    """Dollars for one call: tokens x price per million, input and output"""
     price = settings.LLM_PRICING.get(model)
     if price is None:
         if model not in ("mock", "error") and model not in _unpriced_models:
@@ -151,11 +78,6 @@ def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) ->
     return round(cost, 8)
 
 
-# ======================================================================
-# RECORDING
-# ======================================================================
-
-
 def record_chat_usage(
     db: AsyncSession,
     *,
@@ -168,16 +90,9 @@ def record_chat_usage(
     total_tokens: int,
     request_id: Optional[str] = None,
 ) -> UsageEvent:
-    """
-    Stage one usage event in the CURRENT transaction (no commit).
-
-    The chat endpoint commits it together with the question and the answer,
-    so usage can never be recorded for an answer that was rolled back -- or
-    an answer saved without its usage.
-    """
+    """Stage one usage event in the CURRENT transaction (no commit)."""
     prompt_tokens = int(prompt_tokens or 0)
     completion_tokens = int(completion_tokens or 0)
-    # Providers report a total; if one did not, the parts add up to it.
     total_tokens = int(total_tokens or 0) or prompt_tokens + completion_tokens
     event = UsageEvent(
         org_id=org_id,
@@ -195,11 +110,6 @@ def record_chat_usage(
     return event
 
 
-# ======================================================================
-# THE TOKEN QUOTA
-# ======================================================================
-
-
 async def tokens_used(db: AsyncSession, org_id: uuid.UUID, since: datetime.datetime) -> int:
     """Total tokens the organization has used since `since`."""
     result = await db.execute(
@@ -213,10 +123,7 @@ async def tokens_used(db: AsyncSession, org_id: uuid.UUID, since: datetime.datet
 async def check_token_quota(
     db: AsyncSession, org_id: uuid.UUID, now: Optional[datetime.datetime] = None
 ) -> None:
-    """
-    Raise QuotaExceeded (429) if the organization has used its monthly
-    tokens. Call it BEFORE saving the question or calling the model.
-    """
+    """Raise QuotaExceeded (429) if the organization has used its monthly"""
     quota = token_quota(await db.get(Organization, org_id))
     if quota == 0:
         return  # unlimited
@@ -237,24 +144,12 @@ async def check_token_quota(
             f"It resets on {end:%B} 1 (UTC). Search and documents still work "
             "in the meantime."
         ),
-        # Seconds until midnight UTC on the 1st. Long, but true -- and a
-        # client that honours Retry-After will not hammer us until then.
         retry_after=max(1, int((end - now).total_seconds())),
     )
 
 
-# ======================================================================
-# THE DOCUMENT AND STORAGE QUOTAS
-# ======================================================================
-
-
 async def stored_documents(db: AsyncSession, org_id: uuid.UUID) -> Tuple[int, int]:
-    """
-    (document count, total bytes) across every project in the organization.
-
-    Every row counts whatever its status -- a failed document still has its
-    file in storage until someone removes it.
-    """
+    """(document count, total bytes) across every project in the organization."""
     result = await db.execute(
         select(func.count(Document.id), func.coalesce(func.sum(Document.file_size), 0))
         .join(Project, Document.project_id == Project.id)
@@ -276,11 +171,7 @@ def format_bytes(size: int) -> str:
 
 @dataclass
 class UploadAllowance:
-    """
-    The room an organization has left, consumed file by file as an upload is
-    accepted. The upload endpoint calls `admit` for each new (non-duplicate)
-    file BEFORE storing it, so a refused upload stores nothing at all.
-    """
+    """The room an organization has left, consumed file by file as an upload is"""
 
     documents: int
     bytes_used: int
@@ -319,11 +210,6 @@ async def upload_allowance(db: AsyncSession, org_id: uuid.UUID) -> UploadAllowan
         max_documents=document_quota(org),
         max_bytes=storage_quota(org),
     )
-
-
-# ======================================================================
-# THE SUMMARY (GET /org/usage)
-# ======================================================================
 
 
 def _quota_view(used: int, quota: int) -> Dict[str, Any]:

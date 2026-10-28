@@ -1,55 +1,4 @@
-"""
-embedding.py
-============
-WHAT THIS FILE DOES
--------------------
-It turns TEXT into NUMBERS. That is the whole job.
-
-    "annual leave policy"  ->  [0.021, -0.184, 0.377, ... 384 numbers total]
-
-That list of numbers is called an EMBEDDING (or a "vector").
-
-WHY WOULD ANYONE WANT THAT?
----------------------------
-Because computers cannot compare meanings, but they CAN compare numbers.
-
-The model that produces these numbers was trained so that text with a similar
-MEANING lands in a similar place. Picture every possible sentence as a dot in
-space: "how many holidays do I get" and "annual leave entitlement" end up as
-two dots sitting right next to each other, even though they share zero words.
-"chocolate cake recipe" lands far away from both.
-
-So to find the passage that answers a question, we:
-   1. convert the question into a vector,
-   2. convert every paragraph of every document into a vector (done once, at
-      upload time),
-   3. find whichever paragraph vectors sit closest to the question vector.
-
-That is semantic search, and it is step "R" (Retrieval) of RAG.
-
-WHERE THIS FITS IN THE PIPELINE
--------------------------------
-Called from TWO places, and this is the key thing to understand:
-
-  * app/tasks/ingestion.py -- when a document is uploaded. Every chunk gets
-    embedded and the vectors are saved into Postgres. Happens ONCE per chunk.
-
-  * app/services/retrieval.py -- when a user asks a question. The QUESTION is
-    embedded and compared against the saved chunk vectors. Happens on every
-    search.
-
-Both sides MUST use the same model. Vectors from two different models are not
-comparable at all -- it would be like measuring one in centimetres and the
-other in pounds. That is why the model name is stored alongside every vector.
-
-THE PROVIDER PATTERN
---------------------
-Rather than hard-wiring one embedding company into the codebase, this file
-exposes ONE function, `get_embeddings()`, and internally routes to whichever
-provider `settings.EMBEDDING_PROVIDER` names. Swapping OpenAI for a local model
-is then a one-line change in .env, and no other file in the project notices.
-"""
-
+"""It turns TEXT into NUMBERS."""
 import hashlib
 import json
 import logging
@@ -67,55 +16,22 @@ from app.services.pacing import RatePacer
 
 logger = logging.getLogger(__name__)
 
-# ----------------------------------------------------------------------
-# MODULE-LEVEL CACHE for the local AI model.
-# ----------------------------------------------------------------------
-# Loading a sentence-transformers model means reading ~90 MB from disk and
-# building the neural network in memory. That takes several seconds. We must
-# NOT do it once per request -- the app would be unusably slow.
-#
-# So we load it the first time it is needed and keep it in this variable for
-# the lifetime of the process. This is called a "singleton" or "lazy cache".
 _local_model = None
 
-# A lock guards the loading step. Without it, two web requests arriving at the
-# exact same moment could BOTH see `_local_model is None` and both start
-# loading the model, wasting memory and time. The lock ensures only the first
-# one loads while the second waits and then reuses the result.
 _local_model_lock = threading.Lock()
 
 
-# ----------------------------------------------------------------------
-# RATE LIMITS: the shared pacer, the "please pause" exception, the listener
-# ----------------------------------------------------------------------
-# ONE pacer per process for the Gemini key, shared by every thread: uploads
-# being embedded and questions being asked all draw on the same quota.
-# (Several Celery workers each keep their own count; lower the
-# GEMINI_EMBED_* limits accordingly if you run more than one.)
 gemini_pacer = RatePacer()
 
 
 class EmbeddingRateLimited(Exception):
-    """
-    The provider is still refusing us after the whole retry budget.
-
-    NOT a failure of the document: the ingestion pipeline catches this,
-    keeps every chunk embedded so far, and PAUSES the document until
-    `retry_after` seconds from now. The class name contains "RateLimit", so
-    anything that classifies errors by name (tasks/ingestion.is_transient)
-    also sees it as transient.
-    """
+    """The provider is still refusing us after the whole retry budget."""
 
     def __init__(self, message: str, retry_after: Optional[float] = None):
         super().__init__(message)
         self.retry_after = retry_after
 
 
-# Set by the ingestion pipeline around one embedding call: told
-# (seconds, reason) whenever that call is about to wait, so the document's
-# status can say "waiting for rate limit" instead of looking frozen.
-# A ContextVar rather than an argument, so every provider keeps the simple
-# get_embeddings(texts) signature (and tests can still replace it).
 wait_listener: "ContextVar[Optional[Callable[[float, str], None]]]" = ContextVar(
     "embedding_wait_listener", default=None
 )
@@ -132,14 +48,7 @@ def _sleep(seconds: float) -> None:
 
 
 def gemini_retry_hint(response) -> Optional[float]:
-    """
-    How long Google asked us to wait, in seconds -- or None if it did not say.
-
-    Two places it may say it:
-        Retry-After: 37                                    (an HTTP header)
-        {"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
-                                "retryDelay": "37s"}]}}    (the JSON body)
-    """
+    """How long Google asked us to wait, in seconds -- or None if it did not say."""
     header = response.headers.get("retry-after")
     if header:
         try:
@@ -159,46 +68,15 @@ def gemini_retry_hint(response) -> Optional[float]:
 
 
 class EmbeddingService:
-    """
-    A namespace holding every embedding-related function.
+    """A namespace holding every embedding-related function."""
 
-    These are all `@classmethod`s rather than instance methods because the
-    service holds no per-instance state -- you never need to write
-    `EmbeddingService()`. You just call `EmbeddingService.get_embeddings(...)`.
-    """
-
-    # ==================================================================
-    # PUBLIC ENTRY POINTS -- the rest of the codebase only calls these two
-    # ==================================================================
 
     @classmethod
     def get_embeddings(cls, texts: List[str], *, for_query: bool = False) -> List[List[float]]:
-        """
-        Convert a LIST of texts into a LIST of vectors, all in one go.
-
-        Input : ["first chunk of text", "second chunk of text"]
-        Output: [[0.1, 0.2, ...], [0.4, -0.1, ...]]
-
-        The order is guaranteed: output[0] is the vector for input[0]. The
-        ingestion task relies on that to pair each vector back to its chunk.
-
-        We accept a list rather than a single string because embedding 32 texts
-        in one call is dramatically faster than 32 separate calls -- the model
-        processes them as one batch on the CPU/GPU, and for API providers it is
-        one network round-trip instead of 32.
-
-        `for_query` says the text is a user's question rather than document
-        content. Only the Gemini provider uses it (it embeds questions and
-        documents slightly differently, which improves retrieval); the others
-        treat both the same.
-        """
-        # Guard clause: an empty input gives an empty output. Without this,
-        # some providers would raise an error on a zero-length batch.
+        """Convert a LIST of texts into a LIST of vectors, all in one go."""
         if not texts:
             return []
 
-        # .lower() makes the setting forgiving: "Local", "LOCAL" and "local"
-        # all work, so a typo in .env capitalisation does not break the app.
         provider = settings.EMBEDDING_PROVIDER.lower()
 
         if provider == "local":
@@ -210,9 +88,6 @@ class EmbeddingService:
         elif provider == "mock":
             return cls._get_mock_embeddings(texts)
         else:
-            # An unknown provider name is a configuration mistake. We warn
-            # loudly but fall back to mock so the app still starts, which makes
-            # the problem much easier to diagnose than a hard crash on boot.
             logger.warning(
                 f"Unknown provider '{provider}'. "
                 f"Falling back to mock embeddings."
@@ -221,16 +96,7 @@ class EmbeddingService:
 
     @classmethod
     def get_embedding(cls, text: str) -> List[float]:
-        """
-        Convenience wrapper for embedding exactly ONE text.
-
-        Used when a user asks a question: there is only one question, so
-        wrapping it in a one-item list and unwrapping the result keeps the
-        calling code in retrieval.py readable.
-        """
-        # The QUERY CACHE (off unless EMBEDDING_CACHE_ENABLED): the same
-        # question asked again reuses the vector instead of re-running the
-        # model. See QueryEmbeddingCache at the bottom of this file.
+        """Convenience wrapper for embedding exactly ONE text."""
         cache_key = None
         if settings.EMBEDDING_CACHE_ENABLED:
             cache_key = query_cache.key(cls.current_model_name(), text)
@@ -239,48 +105,23 @@ class EmbeddingService:
                 return cached
 
         results = cls.get_embeddings([text], for_query=True)
-        # `results[0] if results else []` guards against the (unlikely) case of
-        # a provider returning nothing, so we return an empty list rather than
-        # raising an IndexError.
         vector = results[0] if results else []
 
         if cache_key is not None and vector:
             query_cache.set(cache_key, vector)
         return vector
 
-    # ==================================================================
-    # PROVIDER 1: LOCAL MODEL (the default -- free, no API key needed)
-    # ==================================================================
 
     @classmethod
     def _load_local_model(cls):
-        """
-        Load the sentence-transformers model into memory, exactly once.
-
-        The leading underscore in the name is a Python convention meaning
-        "internal -- do not call this from outside this file".
-        """
-        # `global` tells Python we intend to REASSIGN the module-level variable
-        # rather than create a new local variable that shadows it.
+        """Load the sentence-transformers model into memory, exactly once."""
         global _local_model
 
-        # First check WITHOUT taking the lock. Once the model is loaded (the
-        # overwhelmingly common case) this returns immediately with no locking
-        # overhead at all.
         if _local_model is not None:
             return _local_model
 
-        # Only the very first callers reach here and contend for the lock.
         with _local_model_lock:
-            # Check AGAIN, now that we hold the lock. Another thread may have
-            # finished loading while we were queued waiting for it. This
-            # check-lock-check sequence is the standard "double-checked
-            # locking" pattern.
             if _local_model is None:
-                # The import lives INSIDE the function on purpose. Importing
-                # sentence_transformers pulls in PyTorch, which is heavy and
-                # slow. Doing it here means a deployment configured to use
-                # OpenAI or mock never pays that cost at all.
                 from sentence_transformers import SentenceTransformer
 
                 logger.info(
@@ -288,9 +129,6 @@ class EmbeddingService:
                     f"'{settings.local_embedding_model}' (first use only, "
                     f"this can take ~10s)..."
                 )
-                # On the very first run this downloads the model from
-                # HuggingFace and caches it on disk (~/.cache/huggingface).
-                # Every later start reads from that cache and is much faster.
                 _local_model = SentenceTransformer(settings.local_embedding_model)
                 logger.info("Local model ready.")
 
@@ -298,65 +136,35 @@ class EmbeddingService:
 
     @classmethod
     def _get_local_embeddings(cls, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings using a model running on THIS server.
-
-        No API key, no network call, no per-request cost, and the document text
-        never leaves the machine -- which genuinely matters for the
-        "enterprise documents" use case this project is built around.
-        """
+        """Generate embeddings using a model running on THIS server."""
         try:
             model = cls._load_local_model()
 
             embeddings = model.encode(
                 texts,
-                # Process in batches rather than all at once, to bound memory.
                 batch_size=settings.EMBEDDING_BATCH_SIZE,
-                # Scale every vector to length 1. This is important: once all
-                # vectors have the same length, "angle between them" and
-                # "distance between them" rank results identically, so cosine
-                # similarity becomes a simple dot product. Postgres then gives
-                # us clean 0..1 similarity scores.
                 normalize_embeddings=True,
-                # We are embedding many chunks at once; a progress bar in the
-                # server log would just be noise.
                 show_progress_bar=False,
-                # The model natively returns NumPy arrays.
                 convert_to_numpy=True,
             )
 
-            # Postgres and JSON cannot store NumPy types, so convert to plain
-            # Python lists of floats before handing the result onward.
             return embeddings.tolist()
 
         except ImportError:
-            # Raised when the `sentence-transformers` package is not installed.
             logger.warning(
                 "sentence-transformers is not installed. "
                 "Run: pip install sentence-transformers. Using mock vectors."
             )
             return cls._get_mock_embeddings(texts)
         except Exception as exc:
-            # Any other failure (out of memory, corrupted model cache, no
-            # internet on the very first download) also degrades to mock rather
-            # than taking the entire ingestion pipeline down.
             logger.warning(f"Local embedding failed: {exc}. Using mock vectors.")
             return cls._get_mock_embeddings(texts)
 
-    # ==================================================================
-    # PROVIDER 2: OPENAI (optional, paid)
-    # ==================================================================
 
     @classmethod
     def _get_openai_embeddings(cls, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings by calling OpenAI's hosted API over the network.
-
-        Higher quality than the small local model, but it costs money, requires
-        internet, and sends your document text to a third party.
-        """
+        """Generate embeddings by calling OpenAI's hosted API over the network."""
         try:
-            # Fail fast and clearly if the key was never configured.
             if not settings.OPENAI_API_KEY:
                 logger.warning(
                     "OPENAI_API_KEY is missing from .env. "
@@ -364,8 +172,6 @@ class EmbeddingService:
                 )
                 return cls._get_mock_embeddings(texts)
 
-            # Imported inside the function so the package is only required by
-            # deployments that actually choose this provider.
             from openai import OpenAI
 
             client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -375,27 +181,16 @@ class EmbeddingService:
                 model=settings.OPENAI_EMBEDDING_MODEL,
             )
 
-            # OpenAI returns the results in the same order they were sent, so a
-            # straightforward list comprehension preserves the pairing.
             return [item.embedding for item in response.data]
 
         except Exception as exc:
             logger.warning(f"OpenAI API call failed: {exc}. Using mock vectors.")
             return cls._get_mock_embeddings(texts)
 
-    # ==================================================================
-    # PROVIDER: GEMINI (Google's hosted API -- free tier)
-    # ==================================================================
 
-    # batchEmbedContents takes at most 100 texts per call.
     _GEMINI_BATCH = 100
-    # Gemini reads at most this many tokens of one text and ignores the rest,
-    # so a longer chunk never costs more quota than this.
     _GEMINI_MAX_INPUT_TOKENS = 2048
-    # Our token counter (cl100k, see chunker.py) is not Gemini's tokenizer.
-    # Counting 15% high keeps the estimate on the safe side of the quota.
     _TOKEN_SAFETY = 1.15
-    # Tests swap in an httpx.MockTransport here; None means the real network.
     _gemini_transport = None
 
     @classmethod
@@ -408,16 +203,7 @@ class EmbeddingService:
 
     @classmethod
     def _gemini_batches(cls, texts: List[str]) -> List[Tuple[int, int, int]]:
-        """
-        Split `texts` into (start, end, tokens) batches that each fit the quota.
-
-        The old code always sent 100 texts per call. With 500-token chunks
-        that is ~50,000 tokens in ONE request -- more than the free tier's
-        whole per-minute token quota, so that request could never succeed no
-        matter how long it waited. Each batch now holds at most half a
-        minute's token budget and at most a minute's request budget, so the
-        pacer can always fit it.
-        """
+        """Split `texts` into (start, end, tokens) batches that each fit the quota."""
         rpm = settings.GEMINI_EMBED_REQUESTS_PER_MINUTE
         max_texts = max(1, min(cls._GEMINI_BATCH, rpm if rpm > 0 else cls._GEMINI_BATCH))
         tpm = settings.GEMINI_EMBED_TOKENS_PER_MINUTE
@@ -440,19 +226,7 @@ class EmbeddingService:
 
     @classmethod
     def _get_gemini_embeddings(cls, texts: List[str], *, for_query: bool = False) -> List[List[float]]:
-        """
-        Embed through Google's Gemini API, which has a free tier.
-
-        This is what lets the live demo run on a 512 MB free host: there is no
-        PyTorch model in memory, just an HTTPS call.
-
-        Unlike the other providers, a failure here RAISES instead of falling
-        back to mock vectors. Mock vectors would be stored as if they were
-        real, and search would quietly return nothing; a raised error marks
-        the document "failed" and says why. Running out of RATE-LIMIT patience
-        raises EmbeddingRateLimited instead, which the ingestion pipeline
-        turns into a PAUSE: nothing embedded so far is lost.
-        """
+        """Embed through Google's Gemini API, which has a free tier."""
         import httpx
 
         if not settings.GEMINI_API_KEY:
@@ -466,11 +240,7 @@ class EmbeddingService:
             "https://generativelanguage.googleapis.com/v1beta/"
             f"models/{model}:batchEmbedContents"
         )
-        # Questions and passages are embedded differently on purpose: the
-        # model places a question near the passages that ANSWER it.
         task_type = "RETRIEVAL_QUERY" if for_query else "RETRIEVAL_DOCUMENT"
-        # A document can afford to wait minutes; a person asking a question
-        # cannot.
         budget = (
             settings.GEMINI_QUERY_RETRY_BUDGET_SECONDS if for_query else settings.GEMINI_RETRY_BUDGET_SECONDS
         )
@@ -499,9 +269,6 @@ class EmbeddingService:
                     raise RuntimeError(
                         f"Gemini returned {len(embeddings)} embeddings for {len(batch)} texts."
                     )
-                # Below the full 3072 numbers, Gemini's vectors are not unit
-                # length; its docs say to normalise them. Cosine distance would
-                # cope either way, but every other provider stores unit vectors.
                 vectors.extend(cls._unit(item["values"]) for item in embeddings)
         return vectors
 
@@ -517,29 +284,7 @@ class EmbeddingService:
         budget_seconds: Optional[float] = None,
         for_query: bool = False,
     ) -> dict:
-        """
-        POST one batch: paced, and patient with rate limits (429) and blips.
-
-        HOW LONG TO WAIT AFTER A 429, in order of preference:
-            1. what Google SAYS -- the Retry-After header, or the RetryInfo
-               "retryDelay": "37s" in the JSON error body;
-            2. otherwise exponential backoff WITH JITTER: 2, 4, 8 ... seconds,
-               each randomised between half and all of that, so several
-               waiting callers do not all retry in the same instant.
-        No single wait exceeds GEMINI_RETRY_MAX_DELAY_SECONDS (90 s by
-        default -- a per-minute quota has always reset by then), and all the
-        waits together stay within the call's budget (GEMINI_RETRY_BUDGET_
-        SECONDS, several minutes). When the budget is spent, or Google asks
-        for a wait longer than the per-wait cap (a DAILY quota is exhausted),
-        EmbeddingRateLimited is raised with the suggested delay attached.
-
-        The old version waited 2+4+8+16 = 30 seconds in total against a quota
-        that resets once a MINUTE -- it gave up just before it would have
-        worked.
-
-        A 400/401/403 is a bad key or request and fails at once: no amount of
-        waiting fixes it. Network errors get the same patience as a 429.
-        """
+        """POST one batch: paced, and patient with rate limits (429) and blips."""
         import httpx
 
         if budget_seconds is None:
@@ -557,8 +302,6 @@ class EmbeddingService:
                     logger.debug("embedding wait listener failed", exc_info=True)
 
         while True:
-            # PACING. A question records its cost but never queues behind a
-            # document; a document waits for room in the per-minute budget.
             gemini_pacer.acquire(
                 texts,
                 tokens,
@@ -573,7 +316,6 @@ class EmbeddingService:
                     url, json=body, headers={"x-goog-api-key": settings.GEMINI_API_KEY}
                 )
             except httpx.TransportError as exc:
-                # Connection reset, DNS hiccup, timeout: the same patience.
                 what = f"network error: {exc.__class__.__name__}"
                 status_code = None
             else:
@@ -588,8 +330,6 @@ class EmbeddingService:
                 what = f"HTTP {status_code}"
 
             if hint is not None and hint > cap:
-                # Google wants longer than any per-minute reset: most likely
-                # the DAILY quota. Waiting here would only hold the worker.
                 raise EmbeddingRateLimited(
                     f"Gemini quota exhausted ({what}); Google asks to retry in {int(hint)}s.",
                     retry_after=hint,
@@ -603,7 +343,6 @@ class EmbeddingService:
                     retry_after=delay,
                 )
             if status_code == 429:
-                # Everyone sharing this key waits it out, not just this call.
                 gemini_pacer.cool_down(delay)
             logger.info("Gemini %s; retrying in %.1fs (attempt %d)", what, delay, attempt + 1)
             notify(delay, "rate_limit" if status_code == 429 else "retry")
@@ -615,41 +354,20 @@ class EmbeddingService:
         norm = math.sqrt(sum(v * v for v in values)) or 1.0
         return [v / norm for v in values]
 
-    # ==================================================================
-    # PROVIDER 3: MOCK (for tests, CI, and offline development)
-    # ==================================================================
 
     @classmethod
     def _get_mock_embeddings(cls, texts: List[str]) -> List[List[float]]:
-        """
-        Produce fake vectors that are nonetheless DETERMINISTIC.
-
-        "Deterministic" means the same input text always yields the exact same
-        vector. That is what makes these usable in automated tests: the test
-        can assert that searching for a chunk's own text retrieves that chunk,
-        with no API key, no network and no model download.
-
-        These vectors carry no real meaning, so semantic search results will be
-        nonsense. Never enable this provider in production.
-        """
+        """Produce fake vectors that are nonetheless DETERMINISTIC."""
         dimension = settings.EMBEDDING_DIMENSION
         results = []
 
         for text in texts:
-            # Hash the text to get a number that is always the same for that
-            # text, and use it to seed the random generator. Same text -> same
-            # seed -> same "random" sequence -> same vector, every time.
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             seed = int(digest, 16) % (2**32)
 
-            # A private Random instance, so seeding it cannot disturb any other
-            # part of the program that happens to use the global `random`.
             rng = random.Random(seed)
             vector = [rng.uniform(-1, 1) for _ in range(dimension)]
 
-            # Normalise to length 1, matching what the real providers do, so
-            # similarity scores stay on the same 0..1 scale in tests.
-            # Length of a vector = square root of the sum of its squares.
             magnitude = sum(value * value for value in vector) ** 0.5
             if magnitude > 0:
                 vector = [value / magnitude for value in vector]
@@ -658,70 +376,27 @@ class EmbeddingService:
 
         return results
 
-    # ==================================================================
-    # HELPER used when saving vectors, so we always record WHICH model made them
-    # ==================================================================
 
     @classmethod
     def current_model_name(cls) -> str:
-        """
-        Return a human-readable name for the model currently in use.
-
-        This gets stored in the `model_name` column next to every vector. It
-        matters because vectors from different models are NOT comparable. If
-        you later switch models, this column tells you exactly which rows are
-        stale and need re-embedding -- without it you would have silently
-        broken search and no way to tell which data was affected.
-        """
+        """Return a human-readable name for the model currently in use."""
         provider = settings.EMBEDDING_PROVIDER.lower()
         if provider == "local":
             return settings.local_embedding_model
         elif provider == "openai":
             return settings.OPENAI_EMBEDDING_MODEL
         elif provider == "gemini":
-            # The size is part of the name: the same model at a different
-            # size produces vectors that are not comparable.
             return f"{settings.GEMINI_EMBEDDING_MODEL}@{settings.EMBEDDING_DIMENSION}"
         return f"mock-embedding-{settings.EMBEDDING_DIMENSION}"
-
-
-# ======================================================================
-# THE QUERY-EMBEDDING CACHE
-# ======================================================================
-# WHY ONLY QUESTIONS
-#   A document chunk is embedded once, at upload, and the vector is stored in
-#   Postgres -- it is never asked for again. A QUESTION is embedded on every
-#   search, and real users repeat themselves a lot. That is where a cache pays.
-#
-# TWO STORES, ONE INTERFACE
-#   Redis   shared by every API process, survives a restart of one of them.
-#   memory  an LRU ("least recently used") dictionary inside this process:
-#           when it is full, the entry untouched for longest is dropped.
-#
-#   With EMBEDDING_CACHE_BACKEND=auto, Redis is used when it answers, and the
-#   in-memory LRU otherwise -- the same "degrade, don't fail" rule as the rate
-#   limiter (core/rate_limit.py). A cache that is down must never take search
-#   down with it, so every Redis error simply means "cache miss".
-#
-# THE KEY
-#   sha256(model name + text). The model name is in the key because vectors
-#   from two models are not comparable: after switching model (say, to the
-#   multilingual one) every old entry simply stops matching. Hashing keeps
-#   the question text itself out of Redis -- a cache key should not be a
-#   readable log of what people searched for.
-# ======================================================================
 
 
 class QueryEmbeddingCache:
     """A small TTL + LRU cache for question vectors, Redis-backed when possible."""
 
-    # After a Redis failure, wait this long before trying Redis again, so a
-    # down Redis does not add a connection timeout to every single search.
     _REDIS_RETRY_SECONDS = 30.0
     _PREFIX = "docminds:qemb:"
 
     def __init__(self) -> None:
-        # key -> (expires_at monotonic seconds, vector)
         self._memory: "OrderedDict[str, Tuple[float, List[float]]]" = OrderedDict()
         self._lock = threading.Lock()
         self._redis = None
@@ -734,7 +409,6 @@ class QueryEmbeddingCache:
         digest = hashlib.sha256(f"{model_name}\x00{text}".encode("utf-8")).hexdigest()
         return QueryEmbeddingCache._PREFIX + digest
 
-    # ---- Redis (best effort) ----------------------------------------
     def _redis_client(self):
         """The Redis client, or None when Redis is not in use right now."""
         if settings.EMBEDDING_CACHE_BACKEND != "auto":
@@ -745,8 +419,6 @@ class QueryEmbeddingCache:
             try:
                 import redis  # already a dependency, for Celery
 
-                # Short timeouts: a cache that makes search slower is worse
-                # than no cache.
                 self._redis = redis.Redis.from_url(
                     settings.REDIS_URL, socket_timeout=0.25, socket_connect_timeout=0.25
                 )
@@ -760,7 +432,6 @@ class QueryEmbeddingCache:
         self._redis = None
         self._redis_down_until = time.monotonic() + self._REDIS_RETRY_SECONDS
 
-    # ---- Public API ---------------------------------------------------
     def get(self, key: str) -> Optional[List[float]]:
         client = self._redis_client()
         if client is not None:
@@ -777,7 +448,6 @@ class QueryEmbeddingCache:
             if entry is not None:
                 expires_at, vector = entry
                 if expires_at > time.monotonic():
-                    # Touch: move to the "recently used" end.
                     self._memory.move_to_end(key)
                     self.hits += 1
                     return vector
@@ -798,7 +468,6 @@ class QueryEmbeddingCache:
         with self._lock:
             self._memory[key] = (time.monotonic() + ttl, list(vector))
             self._memory.move_to_end(key)
-            # Evict the least recently used entries beyond the size limit.
             while len(self._memory) > max(1, settings.EMBEDDING_CACHE_MAX_ENTRIES):
                 self._memory.popitem(last=False)
 
@@ -810,5 +479,4 @@ class QueryEmbeddingCache:
         self.misses = 0
 
 
-# One cache per process, shared by every request.
 query_cache = QueryEmbeddingCache()

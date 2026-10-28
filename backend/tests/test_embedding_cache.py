@@ -1,11 +1,3 @@
-"""
-test_embedding_cache.py
-=======================
-The query-embedding cache and the multilingual model switch
-(services/embedding.py). No Redis, no model download: the cache runs in its
-in-memory mode, and the provider is the deterministic mock.
-"""
-
 import pytest
 
 from app.core.config import settings
@@ -81,7 +73,6 @@ class TestQueryCache:
 
     def test_the_key_includes_the_model_so_switching_never_mixes_vectors(self):
         assert query_cache.key("model-a", "q") != query_cache.key("model-b", "q")
-        # ...and the question text itself is not readable in the key.
         assert "leave" not in query_cache.key("m", "leave policy")
 
     def test_a_broken_redis_falls_back_to_memory(self, cache_on, monkeypatch):
@@ -130,8 +121,6 @@ class TestMultilingual:
         monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "local")
         monkeypatch.setattr(settings, "EMBEDDING_MULTILINGUAL", True)
         assert settings.local_embedding_model == "paraphrase-multilingual-MiniLM-L12-v2"
-        # The name stored next to every vector changes too, which is what
-        # makes stale (pre-switch) vectors identifiable for re-indexing.
         assert EmbeddingService.current_model_name() == "paraphrase-multilingual-MiniLM-L12-v2"
 
     def test_off_uses_the_english_model(self, monkeypatch):

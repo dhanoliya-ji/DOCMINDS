@@ -1,28 +1,3 @@
-"""
-test_zip_safety.py
-==================
-WHAT THIS FILE TESTS
---------------------
-The ZIP_* limits in extractor.py's archive handling. Each test builds a small
-archive that breaks exactly one rule:
-
-    too many members            -> the whole archive is rejected
-    expands past the total cap  -> rejected (declared AND actually counted)
-    compressed beyond the ratio -> rejected: the shape of a zip bomb
-    "../" or absolute paths     -> that member is skipped, the rest extracted
-    symlinks                    -> skipped
-    zips inside zips            -> followed to ZIP_MAX_NESTING_DEPTH, then skipped
-
-And the Office formats, which are zip archives underneath: a .docx, .pptx or
-.xlsx that expands past the total cap is rejected before its parser opens it
--- but is NOT judged on member count or ratio, which real documents exceed.
-
-The limits are set low with monkeypatch so the archives stay tiny -- a real
-zip bomb is not needed to prove the counting works.
-
-TIER 1: pytest's tmp_path only.
-"""
-
 import io
 import os
 import tempfile
@@ -36,10 +11,7 @@ from app.services.extractor import DocumentExtractor, UnsafeArchiveError
 
 @pytest.fixture
 def scratch_temp(monkeypatch, tmp_path):
-    """
-    Point the SYSTEM temp directory at an empty folder of our own, so a test
-    can see exactly what extraction left behind there.
-    """
+    """Point the SYSTEM temp directory at an empty folder of our own, so a test"""
     folder = tmp_path / "system-temp"
     folder.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(folder))
@@ -94,17 +66,9 @@ class TestLimits:
         assert result.metadata["file_count"] == 1
 
     def test_a_member_lying_about_its_size_never_yields_more_than_declared(self, tmp_path):
-        """
-        The header's size field is forged smaller than the real data, so the
-        declared-size checks pass. The bytes actually produced must still be
-        capped -- Python's zipfile stops at the declared size and then fails
-        the CRC check, and our own counting is the second line of defence.
-        Either way the member fails on its own; the archive is not trusted.
-        """
+        """The header's size field is forged smaller than the real data, so the"""
         path = tmp_path / "liar.zip"
         make_zip(path, {"a.txt": "A" * 5000, "good.txt": "good text"}, compression=zipfile.ZIP_STORED)
-        # Patch the uncompressed size, in both the local header and the
-        # central directory, from 5000 down to 10.
         data = path.read_bytes()
         real, fake = (5000).to_bytes(4, "little"), (10).to_bytes(4, "little")
         assert data.count(real) >= 2
@@ -127,7 +91,6 @@ class TestUnsafeMembers:
         assert result.metadata["files_extracted"] == ["good.txt"]
         assert any("unsafe path" in entry for entry in result.metadata["skipped_entries"])
         assert "evil" not in result.text.replace("good", "")
-        # Nothing was written outside the archive's folder.
         assert not (tmp_path.parent / "evil.txt").exists()
         assert sorted(os.listdir(tmp_path)) == ["slip.zip"]
 
@@ -154,11 +117,7 @@ class TestUnsafeMembers:
     def test_unpacking_happens_in_the_system_temp_dir_not_beside_the_archive(
         self, tmp_path, scratch_temp, monkeypatch
     ):
-        """
-        With local storage the archive sits in the uploads folder. A worker
-        killed mid-extraction would leave its debris there for good; in the
-        system temp dir the operating system clears it up.
-        """
+        """With local storage the archive sits in the uploads folder. A worker"""
         uploads = tmp_path / "uploads"
         uploads.mkdir()
         inner = zip_bytes({"inner.txt": "inner text"})
@@ -176,7 +135,6 @@ class TestUnsafeMembers:
 
         assert "inner text" in result.text and "b text" in result.text
         assert seen and all(path.startswith(str(scratch_temp)) for path in seen)
-        # Nothing left anywhere: not beside the archive, not in temp.
         assert sorted(os.listdir(uploads)) == ["a.zip"]
         assert list(scratch_temp.iterdir()) == []
 
@@ -222,11 +180,6 @@ class TestNesting:
             DocumentExtractor.extract(archive, "zip")
 
 
-# ======================================================================
-# Office files -- zip archives under another name
-# ======================================================================
-
-
 def office_file(path, extension: str, body: str = "<w:document>hello</w:document>") -> str:
     """A minimal zip shaped like an Office file, with one main XML part."""
     part = {"docx": "word/document.xml", "pptx": "ppt/presentation.xml", "xlsx": "xl/workbook.xml"}
@@ -256,11 +209,7 @@ class TestOfficeContainers:
         assert opened == []
 
     def test_a_real_document_is_not_judged_on_count_or_ratio(self, tmp_path, monkeypatch):
-        """
-        Legitimate Office files break both archive limits: a 400-slide deck
-        holds ~1,600 parts, and a document of identical table cells compresses
-        past 100:1. Only the total expansion applies to them.
-        """
+        """Legitimate Office files break both archive limits: a 400-slide deck"""
         import docx
 
         monkeypatch.setattr(settings, "ZIP_MAX_ENTRIES", 1)
@@ -285,10 +234,7 @@ class TestOfficeContainers:
         assert "DOCX extraction failed" in result.text
 
     def test_a_bomb_inside_an_uploaded_zip_fails_the_whole_archive(self, tmp_path, monkeypatch):
-        """
-        The docx is SMALL inside the outer zip, so the outer archive's own
-        budget never notices it -- the Office check catches it on the way in.
-        """
+        """The docx is SMALL inside the outer zip, so the outer archive's own"""
         monkeypatch.setattr(settings, "ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES", 1024 * 1024)
         bomb = office_file(tmp_path / "inner.docx", "docx", body="<p/>" * 400_000)
         with open(bomb, "rb") as handle:

@@ -1,31 +1,3 @@
-"""
-test_upload_limit.py
-====================
-WHAT THIS FILE TESTS
---------------------
-core/upload_limit.py -- the middleware that refuses an over-sized upload
-REQUEST with 413 before the multipart body is parsed and spooled to disk.
-
-It has two ways of noticing, and both are tested here:
-
-    the header   Content-Length over the ceiling -> 413 at once; the app is
-                 never even called, so not one byte of the body is read
-    the count    no Content-Length (chunked transfer), or one that lies ->
-                 the bytes are counted as the app pulls them in, and the
-                 request is cut off with 413 the moment the total crosses
-
-The second is the one that matters against a deliberate attacker -- a header
-is just a claim -- and it is the one test_upload_hardening.py cannot reach,
-because httpx always sends a Content-Length for an ordinary upload.
-
-HOW IT RUNS
------------
-TIER 1. The middleware is a plain ASGI callable, so it is driven directly:
-a list of "http.request" messages goes in through `receive`, and every
-message it sends is collected. The app behind it is a few lines standing in
-for FastAPI. No server, no database, no network.
-"""
-
 import json
 
 import pytest
@@ -38,26 +10,14 @@ UPLOAD_PATH = f"{settings.API_V1_STR}/documents/upload"
 
 @pytest.fixture
 def limit(monkeypatch) -> int:
-    """
-    A small ceiling, so the tests send kilobytes rather than gigabytes.
-
-    The request ceiling is MAX_UPLOAD_SIZE_BYTES x MAX_FILES_PER_UPLOAD plus
-    1 MB of room for the form fields -- so with one 1,000-byte file allowed,
-    it is 1,049,576 bytes.
-    """
+    """A small ceiling, so the tests send kilobytes rather than gigabytes."""
     monkeypatch.setattr(settings, "MAX_UPLOAD_SIZE_BYTES", 1000)
     monkeypatch.setattr(settings, "MAX_FILES_PER_UPLOAD", 1)
     return settings.max_upload_request_bytes
 
 
 class ReadingApp:
-    """
-    Stands in for FastAPI: reads the whole body, then answers 200.
-
-    `on_receive_error` mimics what a framework does when reading the body
-    fails part-way: FastAPI catches the error and answers "400 There was an
-    error parsing the body". The middleware must replace that with its 413.
-    """
+    """Stands in for FastAPI: reads the whole body, then answers 200."""
 
     def __init__(self, on_receive_error: str = "respond"):
         self.called = False
@@ -92,12 +52,7 @@ def http_scope(path: str = UPLOAD_PATH, method: str = "POST", content_length=Non
 
 
 async def run(app, scope: dict, chunks: list[bytes]):
-    """
-    Push `chunks` through the middleware as the request body.
-
-    Returns (status, body, every message sent). After the last chunk,
-    `receive` reports a disconnect, which is what a server does too.
-    """
+    """Push `chunks` through the middleware as the request body."""
     queue = [
         {"type": "http.request", "body": chunk, "more_body": index < len(chunks) - 1}
         for index, chunk in enumerate(chunks)
@@ -118,19 +73,12 @@ async def run(app, scope: dict, chunks: list[bytes]):
     return (starts[0]["status"] if starts else None), body, sent
 
 
-# ======================================================================
-# The header check
-# ======================================================================
-
-
 class TestDeclaredLength:
     async def test_an_honest_oversized_request_is_refused_unread(self, limit):
         app = ReadingApp()
         status, body, _ = await run(app, http_scope(content_length=limit + 1), [b"x"])
 
         assert status == 413
-        # Refused at the door: the app never ran, so nothing was parsed or
-        # spooled to disk.
         assert app.called is False
         assert "per request" in json.loads(body)["detail"]
 
@@ -156,11 +104,6 @@ class TestDeclaredLength:
         assert status == 200
 
 
-# ======================================================================
-# The counting check -- the one a lying client meets
-# ======================================================================
-
-
 class TestCountedBody:
     async def test_a_chunked_upload_is_cut_off_when_it_crosses(self, limit):
         """No Content-Length at all, as with Transfer-Encoding: chunked."""
@@ -172,10 +115,7 @@ class TestCountedBody:
 
         assert status == 413
         assert "too large" in json.loads(body)["detail"]
-        # Reading stopped at the first chunk over the line, not at the end.
         assert app.bytes_read < limit
-        # And exactly ONE response went out: the app's own 400 for its
-        # interrupted read was swallowed and replaced, never interleaved.
         assert [m["type"] for m in sent].count("http.response.start") == 1
 
     async def test_a_lying_content_length_does_not_help(self, limit):
@@ -199,11 +139,6 @@ class TestCountedBody:
 
         assert status == 200
         assert body == b"200"
-
-
-# ======================================================================
-# What the middleware leaves alone
-# ======================================================================
 
 
 class TestScope:

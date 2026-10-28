@@ -1,30 +1,3 @@
-"""
-test_upload_hardening.py
-========================
-WHAT THIS FILE TESTS
---------------------
-The upload and preview endpoints over real HTTP requests, after hardening:
-
-    413   a file over MAX_UPLOAD_SIZE_BYTES, and a whole request over the
-          ceiling (refused by middleware before the body is parsed) --
-          including a chunked request that declares no length at all
-    415   an extension extractor.py cannot read; bytes that do not match
-    422   chunking options out of range
-    safe  the client's filename is cleaned for display and NEVER used in
-          the storage path; nothing is stored when a request is refused
-    queue the job is queued after the commit, and a dead Redis does not
-          lose the upload
-    preview  streamed from storage; a quarantined file is 410 Gone; with
-          scanning on, a file the scan has not cleared is 409; uploaded
-          HTML comes back as plain text, never as a live page
-
-HOW IT RUNS
------------
-Like test_auth_flows.py: every test runs on in-memory SQLite always, and on
-Postgres too when one is reachable (CI). Files go to LocalStorage under
-tmp_path. Password hashing is swapped for SHA-256 -- nothing here tests it.
-"""
-
 import hashlib
 import os
 import uuid
@@ -108,7 +81,6 @@ async def env(request, monkeypatch, store_dir, use_mock_providers):
     else:
         from app.db.session import SessionLocal as factory  # noqa: N813
 
-    # Inline ingestion and recovery read through this name.
     monkeypatch.setattr(ingestion, "SessionLocal", factory)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -185,11 +157,6 @@ class Env:
         ]
 
 
-# ======================================================================
-# Accepting a good upload
-# ======================================================================
-
-
 class TestAccepted:
     async def test_the_file_is_stored_under_a_server_key(self, env, queued):
         response = await env.upload(("../../../etc/policy.txt", TEXT))
@@ -220,7 +187,6 @@ class TestAccepted:
 
         response = await env.upload(("a.txt", TEXT))
 
-        # Accepted and safely stored as pending; recovery queues it later.
         assert response.status_code == 202
         assert [d.status for d in await env.documents()] == ["pending"]
 
@@ -234,8 +200,6 @@ class TestAccepted:
     async def test_inline_mode_processes_it_end_to_end(self, env, monkeypatch):
         monkeypatch.setattr(settings, "INGESTION_MODE", "inline")
         await env.upload(("policy.txt", TEXT))
-        # The upload returned at once; the in-process queue works on it
-        # after the request -- wait for it to be idle.
         await ingestion.wait_for_inline_jobs()
 
         listed = await env.client.get(
@@ -243,19 +207,8 @@ class TestAccepted:
         )
         document = listed.json()[0]
         assert document["status"] == "completed", document
-        # The in-memory SQLite harness runs every session over ONE shared
-        # connection, so the upload request's still-open session and the
-        # queue's claim interleave in a single transaction (FastAPI 0.143 keeps
-        # the request's session open while background work starts). The claim
-        # counter is therefore only meaningful on Postgres, where each session
-        # has its own connection -- as in production.
         if env.backend == "postgres":
             assert document["attempts"] == 1
-
-
-# ======================================================================
-# Refusals
-# ======================================================================
 
 
 class TestRefused:
@@ -276,11 +229,7 @@ class TestRefused:
         assert "per request" in response.json()["detail"]
 
     async def test_a_chunked_request_with_no_length_is_cut_off(self, env, queued, monkeypatch):
-        """
-        Transfer-Encoding: chunked declares no Content-Length, so there is
-        nothing to check up front. The middleware counts the bytes as the
-        multipart parser pulls them in, and stops the request mid-stream.
-        """
+        """Transfer-Encoding: chunked declares no Content-Length, so there is"""
         monkeypatch.setattr(settings, "MAX_UPLOAD_SIZE_BYTES", 1000)
         monkeypatch.setattr(settings, "MAX_FILES_PER_UPLOAD", 1)
         boundary = "docminds-test-boundary"
@@ -309,7 +258,6 @@ class TestRefused:
 
         assert response.status_code == 413
         assert "per request" in response.json()["detail"]
-        # Cut off part-way, not after reading the whole 2 MB.
         assert sent["bytes"] < 2 * 1024 * 1024
         assert await env.documents() == []
         assert env.stored_files() == []
@@ -382,11 +330,6 @@ class TestRefused:
         assert await env.documents() == []
 
 
-# ======================================================================
-# Preview
-# ======================================================================
-
-
 class TestPreview:
     async def test_the_original_bytes_come_back_under_the_original_name(self, env, queued):
         document_id = (await env.upload(("Policy 2026.txt", TEXT))).json()[0]["id"]
@@ -409,11 +352,7 @@ class TestPreview:
         assert response.status_code == 410
 
     async def test_uploaded_html_is_served_as_plain_text(self, env, queued):
-        """
-        The same bytes -- but labelled text/plain, so a browser shows the
-        source instead of running the uploader's script, however the file
-        is opened (directly, or as a blob URL in the frontend).
-        """
+        """The same bytes -- but labelled text/plain, so a browser shows the"""
         page = b"<html><body><script>alert('hi')</script>Policy</body></html>"
         document_id = (await env.upload(("page.html", page))).json()[0]["id"]
 
@@ -425,10 +364,7 @@ class TestPreview:
         assert "page.html" in response.headers["content-disposition"]
 
     async def test_a_type_from_before_the_allowlist_is_served_as_opaque_bytes(self, env, queued):
-        """
-        Before the allowlist any extension was stored -- an .svg, which can
-        carry script, included. Such a legacy row is downloaded, never shown.
-        """
+        """Before the allowlist any extension was stored -- an .svg, which can"""
         document_id = (await env.upload(("a.txt", TEXT))).json()[0]["id"]
         await env.update_document(document_id, filename="drawing.svg", file_type="svg")
 
@@ -463,18 +399,8 @@ class TestPreview:
         assert "UTF-8''notes.md" in response.headers["content-disposition"]
 
 
-# ======================================================================
-# Preview while malware scanning is on
-# ======================================================================
-
-
 class TestPreviewWithScanning:
-    """
-    The scan runs in the worker, after the upload is stored. Until it has
-    passed, the file must not be handed to anybody -- or the gap between
-    upload and scan, or a scan that never ran because ClamAV was down until
-    the retries ran out, would let one user pass another a malicious file.
-    """
+    """The scan runs in the worker, after the upload is stored. Until it has"""
 
     @pytest.fixture
     def scanning(self, monkeypatch):

@@ -1,24 +1,3 @@
-"""
-test_llm_robustness.py
-======================
-WHAT THIS FILE TESTS
---------------------
-What services/llm.py, services/agent.py and services/retrieval.py do when
-things are NOT going well, or when a document is hostile:
-
-    * transient Groq errors (429, 5xx, dropped connection) are retried with
-      backoff; permanent ones (401, 400) are not
-    * the fallback model takes over when the main one is exhausted, timed
-      out or retired
-    * the current question reaches the model exactly ONCE
-    * document text is fenced off as untrusted data -- in rag prompts AND in
-      the agent's tool output -- and cannot close its own fence
-    * retrieval compares only vectors from the current embedding model, and
-      never runs the (blocking) embedding on the event loop
-
-TIER 1: a fake Groq client, a fake database session. No network, no key.
-"""
-
 import asyncio
 import threading
 import uuid
@@ -123,11 +102,6 @@ def groq(monkeypatch):
     return SimpleNamespace(install=install, waits=waits)
 
 
-# ======================================================================
-# Classifying failures
-# ======================================================================
-
-
 class TestClassification:
     @pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503])
     def test_transient_statuses(self, status):
@@ -160,11 +134,6 @@ class TestClassification:
 
     def test_a_bug_in_our_code_is_never_masked(self):
         assert not should_try_fallback(KeyError("x"))
-
-
-# ======================================================================
-# Retries and the fallback model, end to end through generate_answer
-# ======================================================================
 
 
 class TestGenerateAnswer:
@@ -236,11 +205,6 @@ class TestGenerateAnswer:
         client = LLMService._client()
         assert client.max_retries == 0
         assert LLMService._client() is client, "reused, not rebuilt per question"
-
-
-# ======================================================================
-# The current question is sent exactly once
-# ======================================================================
 
 
 class TestQuestionSentOnce:
@@ -320,11 +284,6 @@ class TestQuestionSentOnce:
         assert order[:2] == ["history", "add:user"]
 
 
-# ======================================================================
-# Prompt injection: document text is data
-# ======================================================================
-
-
 class TestUntrustedContent:
     def test_excerpts_are_fenced(self):
         prompt = LLMService.build_context_prompt("Q?", [chunk("Plain text.")])
@@ -333,7 +292,6 @@ class TestUntrustedContent:
 
     def test_an_excerpt_cannot_close_its_own_fence(self):
         prompt = LLMService.build_context_prompt("Q?", [chunk(INJECTION)])
-        # Exactly one real opening and one real closing tag: ours.
         assert prompt.count(f"<{EXCERPT_TAG}") == 1 + prompt.count("Reminder: the <")
         assert prompt.count(f"</{EXCERPT_TAG}>") == 1
         assert f"&lt;/{EXCERPT_TAG}" in prompt
@@ -360,11 +318,6 @@ class TestUntrustedContent:
 
     def test_agent_prompt_carries_the_rule(self):
         assert llm_module.UNTRUSTED_CONTENT_RULE in agent_module.AGENT_SYSTEM_PROMPT
-
-
-# ======================================================================
-# Retrieval: current model only, embedding off the event loop
-# ======================================================================
 
 
 class CapturingDb:

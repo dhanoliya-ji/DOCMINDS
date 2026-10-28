@@ -1,16 +1,3 @@
-"""
-test_rate_limit.py
-==================
-WHAT THIS FILE TESTS
---------------------
-core/rate_limit.py (the sliding-window limiter), the RATE_LIMIT_* settings,
-core/client_ip.py (which address a request is counted against), and the
-429 + Retry-After an endpoint returns once a caller is over the limit.
-
-TIER 1: no Redis, no database. A fake clock makes the window arithmetic
-exact, and a fake Redis client exercises the shared-counter path.
-"""
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
@@ -46,11 +33,6 @@ def rate_limits_on(monkeypatch):
     rate_limit.limiter.reset()
     yield
     rate_limit.limiter.reset()
-
-
-# ======================================================================
-# Parsing "20/minute"
-# ======================================================================
 
 
 class TestParsing:
@@ -90,14 +72,8 @@ class TestParsing:
             deps.rate_limit_by_ip("logn")
 
 
-# ======================================================================
-# The sliding-window arithmetic
-# ======================================================================
-
-
 class TestArithmetic:
     def test_the_docstring_example(self):
-        # previous 20, current 4, 15s into a 60s window -> 20 x 45/60 + 4 = 19
         assert weighted_count(20, 4, 15, 60) == pytest.approx(19)
 
     def test_previous_window_fades_out(self):
@@ -108,8 +84,6 @@ class TestArithmetic:
         assert seconds_until_allowed(0, 3, 10, 60, 5) == 0
 
     def test_full_current_window_waits_into_the_next(self):
-        # 5 of 5 used 10s in: the rest of this window (50s) plus the time for
-        # this window's share to fade below 4 in the next: 60 x (1 - 4/5) = 12.
         assert seconds_until_allowed(0, 5, 10, 60, 5) == pytest.approx(62)
 
     def test_refusal_message_names_the_limit_and_the_wait(self):
@@ -118,11 +92,6 @@ class TestArithmetic:
         )
         assert "3 minutes" in refusal_message("chat", 150)
         assert "2 hours" in refusal_message("signup", 7200)
-
-
-# ======================================================================
-# The limiter, in memory
-# ======================================================================
 
 
 class TestMemoryLimiter:
@@ -190,11 +159,6 @@ class TestMemoryLimiter:
         monkeypatch.setattr(settings, "RATE_LIMIT_SEARCH", "off")
         assert await rate_limit.check("search", "user:x") is None
         assert await rate_limit.check("chat", "user:x") is not None
-
-
-# ======================================================================
-# The limiter, with Redis -- and without it
-# ======================================================================
 
 
 class FakePipeline:
@@ -271,7 +235,6 @@ class TestRedisPath:
 
         assert [d.allowed for d in decisions] == [True, True, False]
         assert "cannot reach Redis" in caplog.text
-        # Logged once on the transition, not on every request.
         assert caplog.text.count("cannot reach Redis") == 1
 
     async def test_memory_setting_never_touches_redis(self, monkeypatch):
@@ -282,11 +245,6 @@ class TestRedisPath:
 
         limiter = RateLimiter(clock=Clock(), redis_factory=explode)
         assert (await limiter.hit("login", "ip:a", 2, 60)).allowed
-
-
-# ======================================================================
-# Which address is "the client"?
-# ======================================================================
 
 
 def scope(peer="10.0.0.1", headers=()):
@@ -307,7 +265,6 @@ class TestClientIp:
     def test_one_trusted_proxy_takes_the_rightmost_entry(self, monkeypatch):
         monkeypatch.setattr(settings, "TRUSTED_PROXY_COUNT", 1)
         monkeypatch.setattr(settings, "CLIENT_IP_HEADER", "")
-        # The client claimed 6.6.6.6; our proxy appended the real 203.0.113.7.
         s = scope(headers=[("X-Forwarded-For", "6.6.6.6, 203.0.113.7")])
         assert client_ip_from_scope(s) == "203.0.113.7"
 
@@ -336,11 +293,6 @@ class TestClientIp:
         assert client_ip_from_scope(scope(headers=[("X-Forwarded-For", "[2001:db8::1]:443")])) == "2001:db8::1"
 
 
-# ======================================================================
-# The HTTP behaviour: 429 + Retry-After
-# ======================================================================
-
-
 @pytest.fixture
 async def client():
     async def no_db():
@@ -355,8 +307,6 @@ async def client():
 class TestEndpoints:
     async def test_login_is_limited_per_ip_with_retry_after(self, rate_limits_on, monkeypatch, client):
         monkeypatch.setattr(settings, "RATE_LIMIT_LOGIN", "2/minute")
-        # No form body at all: the first two get the ordinary 422, which
-        # proves the limiter runs independently of the endpoint's own work.
         first = await client.post(f"{API}/auth/login")
         second = await client.post(f"{API}/auth/login")
         third = await client.post(f"{API}/auth/login")
@@ -383,7 +333,6 @@ class TestEndpoints:
         await client.post(f"{API}/auth/signup", json={})
         assert (await client.post(f"{API}/auth/signup", json={})).status_code == 429
         await client.post(f"{API}/auth/password-reset/request", json={})
-        # Request and confirm share one budget.
         assert (await client.post(f"{API}/auth/password-reset/confirm", json={})).status_code == 429
 
     async def test_chat_search_upload_are_limited_per_user(self, rate_limits_on, monkeypatch, client):
@@ -419,8 +368,6 @@ class TestVerifyResendLimit:
         import uuid
         from types import SimpleNamespace
 
-        # Already verified, so the endpoint returns without touching the
-        # database or sending email -- only the limiter is under test.
         bob = SimpleNamespace(id=uuid.uuid4(), org_id=uuid.uuid4(), is_active=True,
                               role="member", is_verified=True)
         app.dependency_overrides[deps.get_current_active_user] = lambda: bob

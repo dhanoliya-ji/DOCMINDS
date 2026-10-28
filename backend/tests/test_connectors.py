@@ -1,25 +1,4 @@
 # ruff: noqa: F811 -- the fixtures imported from test_upload_hardening are re-used as test arguments
-"""
-test_connectors.py
-==================
-WHAT THIS FILE TESTS
---------------------
-Cloud imports and auto-sync (services/connectors/, api/v1/integrations.py):
-
-    * token encryption: round trip, key rotation, tampering, derived key
-    * the OAuth state: signed, typed, per provider
-    * the SSRF guard: https only, allowlisted hosts, public addresses,
-      redirects checked and stripped of our token, the size cap
-    * item ids are validated before they reach a URL
-    * provider parsing against faked APIs (Drive export types, Graph ids,
-      Notion -> Markdown, Confluence pages)
-    * through the API with a fake provider: connect via the callback, browse,
-      import (queued like an upload, audited, de-duplicated), Sync now
-      (busy / unchanged / updated / source deleted), the periodic sweep,
-      disconnect, viewers refused, everything 404 while switched off
-
-Runs on in-memory SQLite always, and on Postgres too when one is reachable.
-"""
 
 import datetime
 import time
@@ -51,11 +30,6 @@ from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
 
 API = settings.API_V1_STR
 TEXT = ("Travel expenses are reimbursed within fourteen days. " * 30).encode()
-
-
-# ======================================================================
-# Encryption
-# ======================================================================
 
 
 class TestCrypto:
@@ -95,11 +69,6 @@ class TestCrypto:
             crypto.decrypt_tokens(blob[:-4] + ("AAAA" if not blob.endswith("AAAA") else "BBBB"))
 
 
-# ======================================================================
-# OAuth state, ids
-# ======================================================================
-
-
 class TestState:
     def _user(self):
         return User(id=uuid.uuid4(), org_id=uuid.uuid4(), email="a@b.c", role="Admin", hashed_password="x")
@@ -132,11 +101,6 @@ class TestState:
         for good in ("1AbC-_x", "D4648F06C91D9D3D!54927", "b!abc~01XYZ", "12345", "site~contoso.sharepoint.com,1,2"):
             assert check_id(good) == good
         assert split_id("b!drive~item!1") == ("b!drive", "item!1")
-
-
-# ======================================================================
-# The SSRF guard
-# ======================================================================
 
 
 @pytest.fixture
@@ -216,11 +180,6 @@ class TestGuard:
         assert not (tmp_path / "f").exists()
 
 
-# ======================================================================
-# Providers against faked APIs
-# ======================================================================
-
-
 class TestProviders:
     async def test_google_drive_listing_and_export(self, fake_net, tmp_path):
         routes, calls = fake_net
@@ -279,11 +238,6 @@ class TestProviders:
         fetched = await Confluence().fetch(tokens, item, str(tmp_path / "p"))
         html = (tmp_path / "p").read_text("utf-8")
         assert fetched.filename.endswith(".html") and "&lt;runbook&gt;" in html and "Page the SRE." in html
-
-
-# ======================================================================
-# Through the API, with a fake provider
-# ======================================================================
 
 
 class FakeProvider(Provider):
@@ -374,8 +328,7 @@ async def _start_import(env, connection_id, *ids):
 
 
 async def _import(env, connection_id, *ids):
-    """Start an import (202, every item pending), run the background job the
-    way the worker would, and return the finished job's items."""
+    """Start an import (202, every item pending), run the background job the"""
     started = await _start_import(env, connection_id, *ids)
     assert started.status_code == 202, started.text
     job = started.json()
@@ -504,7 +457,6 @@ class TestThroughTheApi:
         fake.files["f1"][1] = TEXT + b" Changed."
         fake.files["f1"][2] = "r9"
 
-        # Checked just now: not due.
         assert await service.sync_due(env.factory) == {}
         later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
             minutes=settings.CONNECTOR_SYNC_INTERVAL_MINUTES + 1)
@@ -515,7 +467,6 @@ class TestThroughTheApi:
         document_id = (await _import(env, connection_id, "f1"))[0]["document_id"]
         response = await env.client.delete(f"{API}/integrations/connections/{connection_id}", headers=env.headers)
         assert response.status_code == 200
-        # The fake provider has no revocation API: the reply says so.
         assert response.json()["revoked"] is False
         assert len(await env.documents()) == 1
         link = await _link(env, document_id)
@@ -555,7 +506,6 @@ def test_beat_schedule_has_the_sync():
 
 
 def test_document_model_unchanged_for_imports():
-    # Imports are plain Document rows: nothing in the pipeline is import-specific.
     assert not hasattr(Document, "connector")
 
 

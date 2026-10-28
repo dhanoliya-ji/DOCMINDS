@@ -1,23 +1,9 @@
-"""
-schemas/integrations.py
-=======================
-Request and response shapes for cloud imports (api/v1/integrations.py),
-billing (api/v1/billing.py) and the admin dashboard (api/v1/analytics.py).
-
-No response ever carries an OAuth token, a Stripe or Razorpay secret or a
-raw provider object: connections are described by provider, account label
-and status only.
-"""
-
+"""No response ever carries an OAuth token, a Stripe or Razorpay secret or a raw provider object: connections..."""
 import datetime
 import uuid
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
-# ======================================================================
-# CLOUD IMPORTS
-# ======================================================================
 
 
 class ProviderOut(BaseModel):
@@ -69,17 +55,14 @@ class ImportItemOut(BaseModel):
     """One picked item's progress in a background import."""
 
     item_id: str
-    # Known once the provider has been asked about the item.
     name: Optional[str] = None
     status: Literal["pending", "downloading", "imported", "duplicate", "already_imported", "skipped", "failed"]
     document_id: Optional[str] = None
-    # Why it failed or was skipped; the filename once imported.
     detail: Optional[str] = None
 
 
 class ImportJobOut(BaseModel):
-    """A background import: POST .../import answers with this (202), and
-    GET /integrations/imports/{id} reports it until `status` is "completed"."""
+    """A background import: POST .../import answers with this (202), and"""
 
     id: uuid.UUID
     connection_id: Optional[uuid.UUID] = None
@@ -88,15 +71,13 @@ class ImportJobOut(BaseModel):
     status: Literal["queued", "running", "completed"]
     auto_sync: bool
     items: List[ImportItemOut]
-    # Items per status, for a summary line.
     counts: Dict[str, int] = {}
     created_at: Optional[datetime.datetime] = None
     finished_at: Optional[datetime.datetime] = None
 
 
 class DisconnectOut(BaseModel):
-    """The local disconnect always happens; this says whether the provider
-    also revoked DocMinds' access, and where to remove it by hand if not."""
+    """The local disconnect always happens; this says whether the provider"""
 
     revoked: bool
     manage_url: Optional[str] = None
@@ -132,11 +113,6 @@ class SyncResult(BaseModel):
     last_error: Optional[str] = None
 
 
-# ======================================================================
-# BILLING
-# ======================================================================
-
-
 class PlanLimits(BaseModel):
     """0 = unlimited, as everywhere else."""
 
@@ -154,14 +130,11 @@ class PlanOut(BaseModel):
 
 class BillingStatus(BaseModel):
     plan: str
-    # The provider new subscriptions go through (BILLING_PROVIDER).
     provider: Literal["stripe", "razorpay"] = "stripe"
     subscription_status: Optional[str] = None
     renews_at: Optional[datetime.datetime] = None
     has_customer: bool
-    # Stripe: POST /billing/portal opens the Customer Portal.
     can_manage: bool = False
-    # Razorpay: POST /billing/cancel cancels at the end of the paid cycle.
     can_cancel: bool = False
     limits: PlanLimits
     plans: List[PlanOut]
@@ -173,11 +146,6 @@ class CheckoutRequest(BaseModel):
 
 class RedirectOut(BaseModel):
     url: str
-
-
-# ======================================================================
-# ADMIN DASHBOARD
-# ======================================================================
 
 
 class DailyUsage(BaseModel):

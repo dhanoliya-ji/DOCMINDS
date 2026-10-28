@@ -1,33 +1,3 @@
-"""
-test_agent.py
-=============
-WHAT THIS FILE TESTS
---------------------
-Agent mode (`app/services/agent.py`) and the schema changes that expose it.
-
-THE GUARANTEES WORTH PINNING DOWN
----------------------------------
-  1. CITATION NUMBERING. The agent may search three times. Every chunk any tool
-     surfaces must get ONE global number, first-seen order, and keep it if it
-     turns up again. Otherwise the model's "[3]" points at a different passage
-     from the citation card numbered 3 -- wrong, while looking authoritative.
-
-  2. SCOPING. The tools pass the caller's org_id and project_id to retrieval.
-     The model chooses WHAT to search, never WHERE.
-
-  3. GRACEFUL FALLBACK. With no API key the agent still produces a real step
-     and real citations (demo mode), and a failed run returns a readable
-     answer while keeping whatever sources were already found.
-
-  4. BACKWARDS COMPATIBILITY. A client that never heard of agent mode sends no
-     `mode`, and must get the old "rag" behaviour.
-
-TIER 1: no database, no network, no API key. Retrieval is replaced with a
-fake, and the model (when pydantic-ai is installed) is Pydantic AI's own
-FunctionModel -- a scripted stand-in that issues the tool calls we tell it to.
-Tests that need pydantic-ai skip cleanly when it is not installed.
-"""
-
 import uuid
 
 import pytest
@@ -67,19 +37,12 @@ def chunk(content: str, document_id=DOC_A, filename="handbook.pdf", index=0) -> 
 
 
 def make_deps(top_k: int = 5) -> AgentDeps:
-    # db=None is safe: every DB call in these tests is either faked or never
-    # reached (invalid ids return before touching the database).
     return AgentDeps(db=None, org_id=ORG, project_id=PROJECT, top_k=top_k)
 
 
 @pytest.fixture
 def fake_search(monkeypatch):
-    """
-    Replace RetrievalService.search with a scripted fake.
-
-    `script` maps a query string to the chunks it should return; `calls`
-    records every call's keyword arguments so tests can check scoping.
-    """
+    """Replace RetrievalService.search with a scripted fake."""
     state = {"script": {}, "calls": []}
 
     async def search(**kwargs):
@@ -95,11 +58,6 @@ def keyless(monkeypatch):
     """No API key -> run_agent must take its demo fallback."""
     monkeypatch.setattr(settings, "GROQ_API_KEY", "")
     monkeypatch.setattr(settings, "LLM_PROVIDER", "groq")
-
-
-# ======================================================================
-# Schemas: the API contract
-# ======================================================================
 
 
 class TestSchemas:
@@ -124,18 +82,12 @@ class TestSchemas:
         }
 
 
-# ======================================================================
-# The citation registry
-# ======================================================================
-
-
 class TestCitationRegistry:
     def test_numbers_are_global_and_first_seen(self):
         deps = make_deps()
         a, b, c = chunk("a"), chunk("b"), chunk("c")
 
         assert deps.register([a, b]) == [1, 2]
-        # `b` was already seen as [2]; `c` is new and continues the count.
         assert deps.register([b, c]) == [2, 3]
 
     def test_duplicate_keeps_first_number_and_is_stored_once(self):
@@ -159,11 +111,6 @@ class TestCitationRegistry:
         assert [c["content"] for c in out] == ["1", "2", "3"]
 
 
-# ======================================================================
-# The tools, called directly
-# ======================================================================
-
-
 class TestSearchTool:
     async def test_excerpts_carry_global_numbers(self, fake_search):
         shared = chunk("shared text")
@@ -177,7 +124,6 @@ class TestSearchTool:
         second = await search_documents_tool(deps, "sick")
 
         assert "EXCERPT [1]" in first and "EXCERPT [2]" in first
-        # The shared chunk is shown again under its ORIGINAL number.
         assert "EXCERPT [2]" in second and "EXCERPT [3]" in second
         assert "EXCERPT [4]" not in second
         assert len(deps.citation_chunks()) == 3
@@ -236,11 +182,6 @@ class TestReadSectionTool:
         assert args["start_chunk"] == 0
 
 
-# ======================================================================
-# run_agent's keyless fallback
-# ======================================================================
-
-
 class TestKeylessFallback:
     async def test_demo_answer_with_real_step_and_citations(self, keyless, fake_search):
         fake_search["script"] = {"How much leave?": [chunk("25 days of leave.")]}
@@ -275,11 +216,6 @@ class TestKeylessFallback:
     async def test_top_k_defaults_from_settings(self, keyless, fake_search):
         await run_agent(db=None, question="q", org_id=ORG, project_id=PROJECT)
         assert fake_search["calls"][0]["top_k"] == settings.RETRIEVAL_TOP_K
-
-
-# ======================================================================
-# History conversion (needs pydantic-ai for its message classes)
-# ======================================================================
 
 
 class TestHistoryConversion:
@@ -334,19 +270,8 @@ class TestHistoryConversion:
         assert agent_module.to_model_messages(None, "q") == []
 
 
-# ======================================================================
-# The real Pydantic AI agent, driven by a scripted model
-# ======================================================================
-
-
 def _scripted_model(queries, final_text):
-    """
-    A FunctionModel that issues one search_documents call per query, then
-    answers with `final_text`.
-
-    FunctionModel calls our function with the conversation so far; we count
-    how many tool results have come back to decide what to do next.
-    """
+    """A FunctionModel that issues one search_documents call per query, then"""
     models_function = pytest.importorskip("pydantic_ai.models.function")
     messages_mod = pytest.importorskip("pydantic_ai.messages")
 
@@ -431,7 +356,6 @@ class TestAgentRun:
         monkeypatch.setattr(settings, "AGENT_MAX_STEPS", 2)
         fake_search["script"] = {f"q{i}": [chunk(f"text {i}")] for i in range(10)}
 
-        # Asks for ten searches -- far more than two model calls allow.
         model = _scripted_model([f"q{i}" for i in range(10)], "never reached")
         result = await run_agent(
             db=None, question="loop", org_id=ORG, project_id=PROJECT, model=model
@@ -453,25 +377,8 @@ class TestAgentRun:
         assert names == {"search_documents", "list_documents", "read_document_section"}
 
 
-# ======================================================================
-# The endpoint: POST /chat/sessions/{id}/messages in both modes
-# ----------------------------------------------------------------------
-# WHY THIS EXISTS: the [n] -> citation mapping is only correct if chat.py
-# numbers agent citations from chunk["number"]. Put enumerate() back in the
-# agent branch and every agent.py test above still passes, while the UI's
-# citation cards silently point at the wrong passages. These tests drive the
-# real route with the database and the AI replaced by fakes, so they need no
-# Postgres and run in Tier 1.
-# ======================================================================
-
-
 class FakeSession:
-    """
-    Just enough of an AsyncSession for ask_question.
-
-    refresh() fills in what Postgres would (id, created_at) so the response
-    schema validates.
-    """
+    """Just enough of an AsyncSession for ask_question."""
 
     def __init__(self):
         self.added = []
@@ -497,10 +404,7 @@ class FakeSession:
 
 @pytest.fixture
 def chat_client(monkeypatch):
-    """
-    An HTTP client for the real FastAPI app with auth, the DB session, the
-    session-ownership check, history and both answer paths faked.
-    """
+    """An HTTP client for the real FastAPI app with auth, the DB session, the"""
     from types import SimpleNamespace
 
     from httpx import ASGITransport, AsyncClient
@@ -523,8 +427,6 @@ def chat_client(monkeypatch):
     async def no_history(db, sid, limit=6):
         return []
 
-    # Agent mode: two citations whose GLOBAL numbers are 3 and 7 -- numbers
-    # enumerate() could never produce for a two-item list.
     agent_chunks = [
         {**chunk("Leave is 25 days."), "number": 3},
         {**chunk("Carry-over is 5 days.", document_id=DOC_B, filename="policy.pdf"), "number": 7},
@@ -555,7 +457,6 @@ def chat_client(monkeypatch):
 
     monkeypatch.setattr(chat_module, "_get_owned_session", owned_session)
     monkeypatch.setattr(chat_module, "run_agent", fake_run_agent)
-    # The quota check queries usage_events, which FakeSession cannot answer.
     monkeypatch.setattr(chat_module.usage, "check_token_quota", within_quota)
     monkeypatch.setattr(RetrievalService, "build_history", staticmethod(no_history))
     monkeypatch.setattr(RetrievalService, "search", staticmethod(fake_search))
@@ -583,7 +484,6 @@ class TestChatEndpointModes:
         assert len(body["steps"]) == 1
         assert body["steps"][0]["tool"] == "search_documents"
         assert chat_client.state["agent_calls"] == 1
-        # The stored assistant message carries the same global numbers.
         assistant = next(
             obj for obj in chat_client.db.added
             if isinstance(obj, ChatMessage) and obj.role == "assistant"
@@ -604,11 +504,7 @@ class TestChatEndpointModes:
 
 
 class TestToolDatabaseErrors:
-    """
-    A failed query inside a tool must roll back only that tool call (a
-    SAVEPOINT) and reach the model as a readable sentence, so the endpoint can
-    still commit the question and answer.
-    """
+    """A failed query inside a tool must roll back only that tool call (a"""
 
     async def test_search_db_error_is_a_message_inside_a_savepoint(self, monkeypatch):
         from sqlalchemy.exc import OperationalError

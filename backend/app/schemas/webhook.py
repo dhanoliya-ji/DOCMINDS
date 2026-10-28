@@ -1,12 +1,4 @@
-"""
-schemas/webhook.py
-==================
-Request and response shapes for the webhook admin endpoints
-(api/v1/webhooks.py). The signing secret appears in exactly ONE kind of
-response -- `WebhookCreated`, returned at creation and on rotation -- and
-nowhere else, so it cannot leak through a list or a later read.
-"""
-
+"""Request and response shapes for the webhook admin endpoints response -- `WebhookCreated`, returned at..."""
 import datetime
 import uuid
 from typing import Any, Dict, List, Optional
@@ -16,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class WebhookCreate(BaseModel):
     url: str = Field(..., min_length=1, max_length=2048)
-    # e.g. ["document.processed", "member.joined"], or ["*"] for everything.
     event_types: List[str] = Field(..., min_length=1, max_length=50)
     description: Optional[str] = Field(None, max_length=255)
 
@@ -42,7 +33,6 @@ class WebhookOut(BaseModel):
 
 
 class WebhookCreated(WebhookOut):
-    # Shown ONCE. Store it in the receiver to verify X-DocMinds-Signature.
     secret: str
 
 

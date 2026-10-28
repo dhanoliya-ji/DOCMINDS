@@ -1,36 +1,4 @@
-"""
-webhooks.py  (API router)
-=========================
-WHAT THIS FILE DOES
--------------------
-Lets an organization's Admins manage outgoing webhooks:
-
-    GET    /api/v1/webhooks/events                 the event catalogue
-    POST   /api/v1/webhooks                        register a URL (secret shown ONCE)
-    GET    /api/v1/webhooks                        list this org's webhooks
-    PATCH  /api/v1/webhooks/{id}                   change URL / events / pause
-    DELETE /api/v1/webhooks/{id}                   remove it (and its log)
-    POST   /api/v1/webhooks/{id}/rotate-secret     new secret, shown once
-    POST   /api/v1/webhooks/{id}/test              send a "ping" event
-    GET    /api/v1/webhooks/{id}/deliveries        the delivery log
-    POST   /api/v1/webhooks/{id}/deliveries/{d}/redeliver   send one again
-
-The sending itself -- signing, retries, SSRF checks -- is in
-services/webhooks.py and tasks/webhooks.py.
-
-WHO MAY CALL THESE
-------------------
-Admins only, via the router-wide dependency. And only while WEBHOOKS_ENABLED
-is on: otherwise every route answers 404, as if it did not exist, so a
-deployment that has not opted in exposes nothing new.
-
-TENANT ISOLATION
-----------------
-Every lookup is `WHERE id = :id AND org_id = :caller's org`. A webhook id from
-another organization therefore answers 404 -- the same as one that does not
-exist -- so ids cannot even be probed.
-"""
-
+"""Lets an organization's Admins manage outgoing webhooks."""
 import asyncio
 import datetime
 import uuid
@@ -61,9 +29,6 @@ def _require_enabled() -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
 
 
-# Order matters: the "enabled" check runs first, so a disabled deployment
-# answers 404 even to an unauthenticated caller instead of revealing, with a
-# 401, that the route exists.
 router = APIRouter(dependencies=[Depends(_require_enabled), Depends(deps.require_admin)])
 
 
@@ -91,7 +56,6 @@ def _check_event_types(event_types: List[str]) -> List[str]:
 
 
 async def _check_url(url: str) -> str:
-    """The SSRF check (services/webhooks.py), off the event loop (it does DNS)."""
     try:
         return await asyncio.to_thread(webhooks.validate_target_url, url)
     except webhooks.WebhookURLError as exc:
@@ -134,11 +98,6 @@ def _new_ping(endpoint: WebhookEndpoint) -> WebhookDelivery:
     )
 
 
-# ----------------------------------------------------------------------
-# ENDPOINTS
-# ----------------------------------------------------------------------
-
-
 @router.get("/events", response_model=List[WebhookEventType])
 async def list_event_types():
     """Every event a webhook can subscribe to ("*" means all of them)."""
@@ -175,7 +134,6 @@ async def create_webhook(
     )
     db.add(endpoint)
     await db.flush()
-    # The secret is deliberately NOT in the audit details.
     await audit.record(
         db, "webhook.create", org_id=current_user.org_id, user_id=current_user.id, request=request,
         details={"webhook_id": endpoint.id, "url": endpoint.url, "event_types": endpoint.event_types},

@@ -1,44 +1,14 @@
-"""
-test_chunker.py
-===============
-WHAT THIS FILE TESTS
---------------------
-`services/chunker.py` -- the module that splits a document's text into the
-pieces that get embedded, searched and cited.
-
-WHY THIS FILE EXISTS FIRST
---------------------------
-The chunker is the densest piece of pure logic in the project: token-space
-arithmetic, overlapping windows, page-aware splitting and index bookkeeping,
-all with no database and no network. That combination makes it both the most
-likely place for a subtle bug and the cheapest thing to test properly.
-
-It is also the place where a bug is hardest to notice. Nothing crashes if
-chunks silently lose their overlap or report the wrong page -- search quality
-just quietly degrades, and citations start pointing a page or two off.
-
-TIER 1: these tests need no database, no Redis and no API key. They run
-anywhere `pip install -r requirements.txt` has been run.
-"""
-
 import pytest
 
 from app.services.chunker import ChunkerService
 
 
-# The exact marker extractor.py writes between pages. The chunker splits on it,
-# so page-awareness is really "does this string round-trip correctly".
 PAGE_BREAK = "\n--- PAGE BREAK ---\n"
 
 
 def make_text(word: str, count: int) -> str:
     """Build a long run of one repeated word, for size-based tests."""
     return " ".join([word] * count)
-
-
-# ======================================================================
-# count_tokens
-# ======================================================================
 
 
 class TestCountTokens:
@@ -53,13 +23,7 @@ class TestCountTokens:
         assert 0 < short < longer
 
     def test_tokens_are_not_characters(self):
-        """
-        The whole reason the chunker works in token space.
-
-        A long English word is a handful of tokens, not one token per letter --
-        if these were equal, sizing by characters would be just as good and the
-        tiktoken dependency would be pointless.
-        """
+        """The whole reason the chunker works in token space."""
         text = "unbelievable"
         assert ChunkerService.count_tokens(text) < len(text)
 
@@ -67,11 +31,6 @@ class TestCountTokens:
         """Deterministic, so chunk sizes are reproducible across runs."""
         text = "The quick brown fox jumps over the lazy dog."
         assert ChunkerService.count_tokens(text) == ChunkerService.count_tokens(text)
-
-
-# ======================================================================
-# chunk_document -- the entry point
-# ======================================================================
 
 
 class TestEmptyAndTrivialInput:
@@ -125,13 +84,7 @@ class TestChunkIndex:
         assert [c["chunk_index"] for c in chunks] == list(range(len(chunks)))
 
     def test_index_keeps_counting_across_pages(self):
-        """
-        The bookkeeping detail that is easy to get wrong.
-
-        `page_number` restarts per page; `chunk_index` must NOT -- it stays
-        unique document-wide, because it answers "where in the document?"
-        rather than "which page?".
-        """
+        """The bookkeeping detail that is easy to get wrong."""
         page = make_text("word", 200)
         text = page + PAGE_BREAK + page + PAGE_BREAK + page
 
@@ -140,13 +93,7 @@ class TestChunkIndex:
 
         assert indexes == list(range(len(chunks)))
         assert len(set(indexes)) == len(indexes), "indexes must be unique"
-        # Several pages' worth, so this genuinely crossed a page boundary.
         assert max(indexes) > 3
-
-
-# ======================================================================
-# Page awareness -- what makes a citation able to say "page 12"
-# ======================================================================
 
 
 class TestPageAwareness:
@@ -174,10 +121,7 @@ class TestPageAwareness:
         assert "Gamma" in by_page[3]
 
     def test_no_chunk_spans_a_page_boundary(self):
-        """
-        Pages are chunked independently, so no chunk may contain text from two
-        pages. A chunk that straddled a boundary could not be cited to either.
-        """
+        """Pages are chunked independently, so no chunk may contain text from two"""
         text = make_text("alpha", 300) + PAGE_BREAK + make_text("beta", 300)
 
         for chunk in ChunkerService.chunk_document(text, chunk_size=100):
@@ -185,12 +129,7 @@ class TestPageAwareness:
             assert not ("alpha" in content and "beta" in content)
 
     def test_the_ocr_page_marker_is_also_recognised(self):
-        """
-        extractor.py writes TWO marker shapes -- "--- PAGE BREAK ---" from
-        normal extraction and "--- PAGE 3 (OCR) ---" from the OCR path. A
-        scanned document would silently lose all page numbers if only the
-        first were handled.
-        """
+        """normal extraction and "--- PAGE 3 (OCR) ---" from the OCR path. A"""
         text = "Scanned first page.\n--- PAGE 2 (OCR) ---\nScanned second page."
 
         chunks = ChunkerService.chunk_document(text)
@@ -198,11 +137,6 @@ class TestPageAwareness:
         assert [c["page_number"] for c in chunks] == [1, 2]
         assert "Scanned first" in chunks[0]["content"]
         assert "Scanned second" in chunks[1]["content"]
-
-
-# ======================================================================
-# Fixed-size strategy -- the default
-# ======================================================================
 
 
 class TestFixedSizeChunking:
@@ -225,11 +159,7 @@ class TestFixedSizeChunking:
         assert len(many) > 10
 
     def test_overlap_actually_repeats_text(self):
-        """
-        The reason overlap exists at all. Consecutive chunks must share some
-        tokens, or a fact landing on a boundary is in neither chunk in full and
-        will match neither.
-        """
+        """The reason overlap exists at all. Consecutive chunks must share some"""
         chunks = ChunkerService.chunk_document(
             make_text("alpha bravo charlie delta", 200),
             strategy="fixed_size",
@@ -242,7 +172,6 @@ class TestFixedSizeChunking:
         first_tokens = ChunkerService._encoder.encode(chunks[0]["content"])
         second_tokens = ChunkerService._encoder.encode(chunks[1]["content"])
 
-        # The tail of chunk 0 must be the head of chunk 1.
         assert first_tokens[-30:] == second_tokens[:30]
 
     def test_more_overlap_produces_more_chunks(self):
@@ -262,15 +191,10 @@ class TestFixedSizeChunking:
         rebuilt = "".join(c["content"] for c in chunks)
         original_token_count = ChunkerService.count_tokens(make_text("word", 500))
 
-        # With no overlap the pieces reassemble to the original token count.
         assert ChunkerService.count_tokens(rebuilt) == original_token_count
 
     def test_overlap_larger_than_chunk_size_does_not_hang(self):
-        """
-        A nonsensical configuration makes `step` zero or negative, which would
-        loop forever. The guard in the source turns it into a no-overlap run,
-        and this test is what stops that guard being deleted as dead code.
-        """
+        """A nonsensical configuration makes `step` zero or negative, which would"""
         chunks = ChunkerService.chunk_document(
             make_text("word", 300), chunk_size=50, chunk_overlap=500
         )
@@ -279,14 +203,7 @@ class TestFixedSizeChunking:
         assert all(c["meta_data"]["token_count"] <= 50 for c in chunks)
 
     def test_no_trailing_chunk_of_pure_repetition(self):
-        """
-        With overlap, a naive loop emits a final window made entirely of text
-        already present in the previous chunk. The source breaks out early to
-        avoid it; this pins that behaviour.
-        """
-        # Distinct words, so "did this chunk contain anything new?" is a
-        # meaningful question -- with repeated identical words every chunk is
-        # a substring of every other and the check would prove nothing.
+        """With overlap, a naive loop emits a final window made entirely of text"""
         text = " ".join(f"w{i}" for i in range(420))
 
         chunks = ChunkerService.chunk_document(text, chunk_size=100, chunk_overlap=50)
@@ -297,11 +214,6 @@ class TestFixedSizeChunking:
         assert last_tokens - previous_tokens, (
             "the final chunk is entirely repeated from the previous one"
         )
-
-
-# ======================================================================
-# The other two strategies
-# ======================================================================
 
 
 class TestSentenceChunking:
@@ -326,8 +238,6 @@ class TestSentenceChunking:
         chunks = ChunkerService.chunk_document(text, strategy="sentence", chunk_size=80)
 
         assert len(chunks) > 1
-        # A single sentence may exceed the budget on its own; the point is that
-        # the chunker stops PACKING once the budget is reached.
         assert sum(1 for c in chunks if c["meta_data"]["token_count"] > 160) == 0
 
 
@@ -346,11 +256,7 @@ class TestMarkdownChunking:
         assert "Introduction" in joined and "Results" in joined
 
     def test_works_on_the_whole_document_not_page_by_page(self):
-        """
-        The deliberate exception. A section under one header can legitimately
-        run across a page break, so markdown chunking ignores page markers
-        rather than tearing the section in half.
-        """
+        """The deliberate exception. A section under one header can legitimately"""
         text = "# Section One\nStart of the section." + PAGE_BREAK + "End of the same section."
 
         chunks = ChunkerService.chunk_document(text, strategy="markdown")
@@ -362,11 +268,7 @@ class TestMarkdownChunking:
 
 class TestStrategySelection:
     def test_an_unknown_strategy_raises(self):
-        """
-        Fail loudly on a typo rather than silently falling back to a default
-        the caller did not ask for -- which would show up much later as
-        unexplained changes in search quality.
-        """
+        """Fail loudly on a typo rather than silently falling back to a default"""
         with pytest.raises(ValueError, match="Unsupported chunking strategy"):
             ChunkerService.chunk_document("Some text.", strategy="fixed-size")
 

@@ -1,11 +1,3 @@
-"""The two database URLs must always name their driver.
-
-A bare `postgresql://` means "whatever SQLAlchemy's default driver is", and
-that default is not stable: SQLAlchemy 2.1 switched it from psycopg2 to
-psycopg 3, which this project does not install. Migrations then failed with
-"No module named 'psycopg'" -- on an upgrade nobody thought touched them.
-"""
-
 import pytest
 
 from app.core.config import Settings
@@ -43,9 +35,6 @@ def test_the_component_settings_build_explicit_drivers():
 
 
 def test_neon_tls_options_are_translated_for_asyncpg():
-    # Exactly the shape Neon hands out. asyncpg rejects `sslmode` and
-    # `channel_binding`, so the API could not connect; psycopg2 (Alembic)
-    # understands them and keeps them.
     neon = "postgresql://u:p@ep-x.us-west-2.aws.neon.tech/db?sslmode=require&channel_binding=require"
     settings = Settings(DATABASE_URL=neon)
     assert settings.SQLALCHEMY_DATABASE_URI == "postgresql+asyncpg://u:p@ep-x.us-west-2.aws.neon.tech/db?ssl=require"

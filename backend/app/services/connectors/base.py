@@ -1,32 +1,4 @@
-"""
-connectors/base.py
-==================
-WHAT THIS FILE DOES
--------------------
-The shape every cloud provider is written to, so the importer, the sync and
-the API never need to know which provider they are talking to:
-
-    Provider.authorize_url(state, redirect_uri)   where to send the browser
-    Provider.exchange_code(code, redirect_uri)    the OAuth code -> tokens
-    Provider.refresh(tokens)                      a new access token
-    Provider.list_items(tokens, parent, query)    the file / page picker
-    Provider.get_item(tokens, item_id)            one item's CURRENT revision
-    Provider.fetch(tokens, item, dest_dir)        the bytes, in a format the
-                                                  extractor reads
-    Provider.revoke(tokens)                       revoke our grant at the
-                                                  provider on disconnect;
-                                                  False = no API for it
-
-Plus the plain data it passes around: TokenSet, RemoteItem, FetchedFile.
-
-ITEM IDS ARE UNTRUSTED
-----------------------
-An id arrives from the browser (the picker sends back what it was shown).
-It is only ever placed in a URL PATH, percent-encoded, and must first pass
-`check_id` -- so "../../admin" or "x?y=z" can never change which endpoint of
-the provider we call, let alone which host.
-"""
-
+"""The shape every cloud provider is written to, so the importer, the sync and the API never need to know..."""
 import re
 import time
 from dataclasses import dataclass, field
@@ -54,9 +26,7 @@ def path_id(item_id: str) -> str:
 class TokenSet:
     access_token: str
     refresh_token: Optional[str] = None
-    # Unix time the access token stops working; None = it does not expire.
     expires_at: Optional[float] = None
-    # Provider extras that must survive a refresh (Confluence's cloud id).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def needs_refresh(self, margin: float = 60.0) -> bool:
@@ -81,8 +51,7 @@ class TokenSet:
 
     @classmethod
     def from_oauth(cls, body: Dict[str, Any], previous: Optional["TokenSet"] = None) -> "TokenSet":
-        """A standard OAuth token response. Keeps the old refresh token and
-        extras when the provider does not send new ones (Google does not)."""
+        """A standard OAuth token response. Keeps the old refresh token and"""
         if not body.get("access_token"):
             raise ConnectorError("The provider did not return an access token.")
         expires_in = body.get("expires_in")
@@ -98,20 +67,14 @@ class TokenSet:
 class RemoteItem:
     id: str
     name: str
-    # "folder": can be opened in the picker, not imported.
-    # "file" / "page": can be imported (when `importable`).
     kind: str
     mime_type: Optional[str] = None
     modified_at: Optional[str] = None
-    # The provider's change marker; a different value means "changed".
     revision: Optional[str] = None
     size: Optional[int] = None
     web_url: Optional[str] = None
     importable: bool = True
-    # Pages that also contain pages (Notion, Confluence) can be opened too.
     has_children: bool = False
-    # The extension the imported document will have (".docx" for a Google
-    # Doc exported to Word); None for a file kept in its own format.
     export_extension: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
@@ -140,12 +103,8 @@ class Provider:
 
     id: str = ""
     name: str = ""
-    # Hosts API calls may go to; ".example.com" allows its subdomains.
     allowed_hosts: Tuple[str, ...] = ()
-    # Extra hosts a DOWNLOAD may be redirected to (pre-signed file URLs).
     redirect_hosts: Tuple[str, ...] = ()
-    # The provider's own page where a person removes DocMinds' access by
-    # hand -- shown after a disconnect when `revoke` cannot do it.
     manage_access_url: Optional[str] = None
 
     def configured(self) -> bool:  # pragma: no cover - overridden
@@ -161,9 +120,7 @@ class Provider:
         raise ConnectorAuthError("This connection has expired. Reconnect it.")
 
     async def revoke(self, tokens: TokenSet) -> bool:
-        """Revoke DocMinds' grant at the provider. True when revoked; False when
-        the provider offers no API for it. May raise ConnectorError (the
-        caller logs it and carries on -- the local disconnect stands)."""
+        """Revoke DocMinds' grant at the provider. True when revoked; False when"""
         return False
 
     async def list_items(
@@ -181,7 +138,6 @@ class Provider:
     async def fetch(self, tokens: TokenSet, item: RemoteItem, dest_path: str) -> FetchedFile:  # pragma: no cover
         raise NotImplementedError
 
-    # ---- helpers shared by the subclasses ----
 
     async def _token_request(self, url: str, data: Dict[str, Any], *, what: str, auth=None, as_json: bool = False):
         response = await request(

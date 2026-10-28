@@ -1,30 +1,4 @@
-"""
-prompts.py
-==========
-WHAT THIS FILE DOES
--------------------
-The PROMPT LIBRARY: reusable prompts a user can drop into the chat box.
-
-    GET    /prompts           the built-ins, my personal templates and the
-                              organization's shared ones, in that order
-    POST   /prompts           save one (scope "org" needs the editor role)
-    PATCH  /prompts/{id}      change one
-    DELETE /prompts/{id}      delete one
-
-WHO MAY CHANGE WHAT
--------------------
-    built-in            nobody: they live in code (services/prompt_library.py)
-    personal            its owner, and only its owner -- not even an admin
-                        sees someone else's personal templates
-    org                 editors and admins (the people who curate the
-                        documents), plus whoever wrote it while they are
-                        still an editor. Moving a template INTO the org
-                        library needs the editor role too.
-
-Every query filters on the caller's org_id, and another person's personal
-template answers 404 exactly like one that does not exist.
-"""
-
+"""The PROMPT LIBRARY: reusable prompts a user can drop into the chat box."""
 import uuid
 from typing import List
 
@@ -41,8 +15,6 @@ from app.services.prompt_library import BUILTIN_TEMPLATES, builtin_id
 
 router = APIRouter()
 
-# Saved templates per person (personal + org they wrote). A library, not a
-# database: past this, curate.
 MAX_TEMPLATES_PER_USER = 200
 
 
@@ -150,8 +122,6 @@ async def update_prompt(
     if payload.scope is not None and payload.scope != template.scope:
         if payload.scope == "org" and not _is_editor(current_user):
             raise _forbid_org_scope()
-        # Back to personal: it becomes the CALLER's, so nobody ends up owning
-        # a private template they never wrote... unless they wrote it.
         if payload.scope == "personal":
             template.user_id = current_user.id
         template.scope = payload.scope

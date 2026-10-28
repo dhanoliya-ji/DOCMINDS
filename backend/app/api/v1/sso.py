@@ -1,73 +1,4 @@
-"""
-sso.py  (API router)
-====================
-WHAT THIS FILE DOES
--------------------
-"Continue with SSO": signing in through an OpenID Connect (OIDC) provider --
-Google, Microsoft Entra ID, Okta, Auth0, Keycloak -- instead of a password.
-
-    GET  /api/v1/auth/sso/config     is SSO on? what should the button say?
-    GET  /api/v1/auth/sso/login      redirect the browser to the provider
-    GET  /api/v1/auth/sso/callback   the provider sends the browser back here
-    POST /api/v1/auth/sso/exchange   the frontend swaps a one-time code for
-                                     the usual access + refresh tokens
-
-Off unless OIDC_ENABLED and the discovery URL, client id and client secret
-are all set (settings.oidc_configured). While off, /config says so and every
-other route answers 404.
-
-THE FLOW, STEP BY STEP (the "authorization code flow with PKCE")
-----------------------------------------------------------------
-  1. The login page links to /sso/login. We create:
-        state     a short-lived token WE signed, carrying a nonce, the PKCE
-                  verifier and (optionally) an invite token. It proves the
-                  callback answers a login WE started.
-        a cookie  holding a random "binding" value that is also inside the
-                  state. An attacker who starts a login and tricks YOUR
-                  browser into finishing it (login CSRF) fails: your browser
-                  does not have their cookie.
-     ...and redirect the browser to the provider's login page.
-
-  2. The user signs in AT THE PROVIDER. We never see their password.
-
-  3. The provider redirects back to /sso/callback with a one-time `code`.
-     Server to server, we exchange it (plus our client secret and the PKCE
-     verifier) for an ID TOKEN: a JWT the provider signed, saying who the
-     user is. We check its signature against the provider's published keys
-     (JWKS), its issuer, its audience (our client id), its expiry and our
-     nonce. Only then do we believe the email address inside it.
-
-  4. We find or create the DocMinds account (rules below), then redirect
-     the browser to the FRONTEND with a one-time, two-minute code in the URL
-     FRAGMENT (#code=...). A fragment is never sent to any server, so it does
-     not end up in access logs or Referer headers.
-
-  5. The frontend POSTs that code to /sso/exchange and receives exactly what
-     a password login returns. The code is single-use (stored hashed, like a
-     password-reset token), so a copy of the URL is worthless afterwards.
-
-WHO GETS IN -- ACCOUNT LINKING AND TENANCY
-------------------------------------------
-Accounts are matched by EMAIL, and only an email the provider says it has
-VERIFIED is trusted (OIDC_REQUIRE_EMAIL_VERIFIED). Without that check,
-anyone able to set an unverified email at some provider could sign in as
-the DocMinds user who owns that address.
-
-    an account with that email exists -> sign in to it ("linking"); the
-                                         address is now proven, so the
-                                         account is marked verified
-    no account, invite in the link    -> join the inviting organization with
-                                         the role the Admin chose -- only if
-                                         the invite was sent to THIS email
-    no account, no invite             -> create a NEW organization, with the
-                                         user as its Admin -- only when
-                                         OIDC_ALLOW_SIGNUP is on
-
-There is deliberately NO "join the organization whose domain matches my
-email" rule: joining an existing organization always takes an invite,
-exactly as with password signup (see api/v1/auth.py).
-"""
-
+""""Continue with SSO": signing in through an OpenID Connect (OIDC) provider -- Google, Microsoft Entra ID,..."""
 import base64
 import datetime
 import hashlib
@@ -97,27 +28,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The UserToken purpose for the one-time code handed to the frontend.
 SSO_HANDOFF = "sso_handoff"
 HANDOFF_LIFETIME = datetime.timedelta(minutes=2)
-# How long the user may spend at the provider's login page.
 STATE_LIFETIME_SECONDS = 10 * 60
 STATE_COOKIE = "docminds_sso"
 
-# Algorithms we accept on an ID token. Asymmetric only: "HS256" would mean
-# the token is signed with OUR client secret, and "none" means unsigned.
 _ID_TOKEN_ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"]
 
-# Tests swap in an httpx.MockTransport here; None means the real network.
 _transport = None
 
 
-# ======================================================================
-# PROVIDER METADATA (discovery document + signing keys), cached
-# ======================================================================
-# Both are fetched over the network and change rarely, so they are kept for
-# an hour. A login that sees an unknown key id refreshes the keys once --
-# that is how a provider's routine key rotation is picked up.
 _CACHE_SECONDS = 3600
 _metadata_cache: Dict[str, Any] = {}
 
@@ -161,11 +81,6 @@ def clear_metadata_cache() -> None:
     _metadata_cache.clear()
 
 
-# ======================================================================
-# HELPERS
-# ======================================================================
-
-
 def _require_sso() -> None:
     if not settings.oidc_configured:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
@@ -201,7 +116,6 @@ def _email_is_verified(claims: Dict[str, Any]) -> bool:
     if not settings.OIDC_REQUIRE_EMAIL_VERIFIED:
         return True
     value = claims.get("email_verified")
-    # Some providers send the JSON string "true" instead of a boolean.
     return value is True or (isinstance(value, str) and value.lower() == "true")
 
 
@@ -278,12 +192,9 @@ async def _find_or_create_user(
     if user is not None:
         if not user.is_active:
             raise _SSOError("This account has been deactivated.")
-        # The provider has just proven the address belongs to this person.
         user.is_verified = True
         return user
 
-    # A random password nobody knows: the account signs in through SSO, or
-    # sets a real password later with "Forgot password?".
     unusable_password = security.get_password_hash(security.generate_token())
 
     if invite_token:
@@ -329,11 +240,6 @@ async def _find_or_create_user(
         details={"email": email, "role": user.role, "via_invite": False, "method": "sso"},
     )
     return user
-
-
-# ======================================================================
-# ENDPOINTS
-# ======================================================================
 
 
 class SSOConfig(BaseModel):
@@ -392,8 +298,6 @@ async def sso_login(request: Request, invite: Optional[str] = None):
         f"{discovery['authorization_endpoint']}?{urlencode(params)}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    # SameSite=Lax: sent on the provider's top-level redirect back to us,
-    # never on a cross-site sub-request.
     response.set_cookie(
         STATE_COOKIE,
         binding,
@@ -416,7 +320,6 @@ async def sso_callback(
 ):
     """The provider sends the browser back here after the user signed in."""
     if error:
-        # e.g. "access_denied" when the user pressed Cancel at the provider.
         return _frontend_redirect(error="Sign-in was cancelled or refused by the identity provider.")
     if not code or not state:
         return _frontend_redirect(error="The sign-in response was incomplete. Please try again.")

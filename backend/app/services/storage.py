@@ -1,53 +1,4 @@
-"""
-storage.py
-==========
-WHAT THIS FILE DOES
--------------------
-Gives the rest of the backend ONE way to keep and fetch the original uploaded
-files, whatever is actually holding them:
-
-    LocalStorage   a directory on this machine (the default, backend/uploads)
-    S3Storage      any S3-compatible object store: AWS S3, Cloudflare R2,
-                   MinIO, Backblaze B2 ...
-
-The upload endpoint, the ingestion worker and the preview endpoint all go
-through this interface and never touch `open()` or boto3 directly. Switching
-from disk to S3 is then a settings change (STORAGE_BACKEND=s3), not a code
-change.
-
-WHY THIS MATTERS
-----------------
-A cloud container's disk is usually EPHEMERAL: a restart or redeploy wipes it.
-With local storage, every original file vanishes on every deploy -- search keeps
-working (the text and vectors are in Postgres), but the preview button and any
-future re-indexing are broken. An object store survives restarts, can keep old
-versions of every object, and can be backed up independently of the server.
-
-KEYS, NOT FILENAMES
--------------------
-Every file is stored under a key the SERVER invents:
-
-    <project_id>/<random uuid>.<extension>
-
-The name the user uploaded is never part of it. A client-supplied name is
-attacker-controlled text: "../../app/main.py" is a path traversal, "CON" is a
-reserved device on Windows, and two users' "report.pdf" would collide. The
-original name is kept in the database for display, where it is harmless.
-
-WHICH BACKEND HOLDS WHICH FILE
-------------------------------
-Each Document row records the backend its file was saved to (the
-`storage_backend` column). A deployment that moves from local to S3 therefore
-keeps reading its old files from disk while new uploads go to the bucket --
-nothing has to be migrated on the day of the switch.
-
-WHY THE METHODS ARE SYNCHRONOUS
--------------------------------
-boto3 is a blocking library and so is ordinary file I/O. Callers inside the
-async API wrap these calls in `asyncio.to_thread(...)`, which keeps the event
-loop free for other requests while a 50 MB upload is copied.
-"""
-
+"""Gives the rest of the backend ONE way to keep and fetch the original uploaded files, whatever is actually..."""
 from __future__ import annotations
 
 import contextlib
@@ -59,14 +10,7 @@ from typing import Iterator, Optional
 
 from app.core.config import settings
 
-# How much is read or written at once when copying. Big enough to be fast,
-# small enough that a 50 MB file never sits in memory in one piece.
 CHUNK_SIZE = 1024 * 1024
-
-
-# ======================================================================
-# ERRORS
-# ======================================================================
 
 
 class StorageError(Exception):
@@ -78,35 +22,18 @@ class StorageObjectNotFound(StorageError):
 
 
 class StorageUnavailableError(StorageError):
-    """
-    The store could not be reached: a network failure, a timeout, a 5xx.
-
-    Kept separate from "not found" because the ingestion task RETRIES this one
-    -- the object is probably fine and the network will come back -- while a
-    missing object will still be missing on the next attempt.
-    """
+    """The store could not be reached: a network failure, a timeout, a 5xx."""
 
 
 def new_key(project_id: uuid.UUID | str, extension: str) -> str:
-    """
-    Invent a storage key for a new upload.
-
-    `extension` must already be validated against the upload allowlist; it is
-    the only part of the key that came from the client at all.
-    """
+    """Invent a storage key for a new upload."""
     extension = extension.lower().lstrip(".")
     return f"{project_id}/{uuid.uuid4().hex}.{extension}"
-
-
-# ======================================================================
-# THE INTERFACE
-# ======================================================================
 
 
 class Storage:
     """What every backend provides. Subclasses implement each method."""
 
-    #: Stored on the Document row so the right backend reads it back later.
     name: str = ""
 
     def save(self, key: str, source_path: str) -> None:
@@ -126,21 +53,9 @@ class Storage:
 
     @contextlib.contextmanager
     def local_copy(self, key: str) -> Iterator[str]:
-        """
-        A path on THIS machine holding the object's bytes, for as long as the
-        `with` block lasts.
-
-        The extractors (PyMuPDF, python-docx, ...) all want a file path, not a
-        stream. Local storage simply hands back the real path; S3 downloads to
-        a temporary file and deletes it afterwards.
-        """
+        """A path on THIS machine holding the object's bytes, for as long as the"""
         raise NotImplementedError
         yield  # pragma: no cover  (makes this a generator for the decorator)
-
-
-# ======================================================================
-# LOCAL DISK
-# ======================================================================
 
 
 class LocalStorage(Storage):
@@ -153,16 +68,7 @@ class LocalStorage(Storage):
         os.makedirs(self.root, exist_ok=True)
 
     def path_for(self, key: str) -> str:
-        """
-        Turn a key into an absolute path, refusing any that escape the root.
-
-        Documents uploaded before this module existed stored an ABSOLUTE path
-        in `file_path`; those are passed through unchanged so old rows keep
-        working. They were written by the server itself, never by a client.
-        A RELATIVE key is joined to the root and checked: a key containing
-        "../" that climbed out of the directory is a bug or an attack, and
-        either way it must not be read.
-        """
+        """Turn a key into an absolute path, refusing any that escape the root."""
         if os.path.isabs(key):
             return key
         candidate = os.path.abspath(os.path.join(self.root, key))
@@ -173,7 +79,6 @@ class LocalStorage(Storage):
     def save(self, key: str, source_path: str) -> None:
         destination = self.path_for(key)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
-        # Copy, not move: the caller owns `source_path` and cleans it up.
         shutil.copyfile(source_path, destination)
 
     def exists(self, key: str) -> bool:
@@ -200,26 +105,11 @@ class LocalStorage(Storage):
         path = self.path_for(key)
         if not os.path.isfile(path):
             raise StorageObjectNotFound(key)
-        # Already local: no copy needed, and nothing to clean up.
         yield path
 
 
-# ======================================================================
-# S3 AND COMPATIBLES
-# ======================================================================
-
-
 class S3Storage(Storage):
-    """
-    Objects in an S3-compatible bucket.
-
-    boto3 is imported LAZILY, inside `_make_client`, so a deployment that never
-    sets STORAGE_BACKEND=s3 does not need boto3 installed at all, and importing
-    this module never fails because of it.
-
-    `client` can be passed in directly; the tests use that to substitute a
-    fake, so no bucket or credentials are needed to test this class.
-    """
+    """Objects in an S3-compatible bucket."""
 
     name = "s3"
 
@@ -245,36 +135,18 @@ class S3Storage(Storage):
             ) from exc
 
         config_options: dict = {
-            # boto3's own retries, with backoff, for throttling and 5xx. Our
-            # ingestion retries sit on top of these for longer outages.
             "retries": {"max_attempts": 5, "mode": "standard"},
-            # boto3 waits 60 s for a connection by default; five attempts at
-            # that left an upload hanging for minutes before it failed. A
-            # healthy endpoint connects in well under a second.
             "connect_timeout": 5,
             "read_timeout": 60,
         }
         kwargs: dict = {}
-        # Every one of these is optional; an empty setting means "let boto3
-        # work it out" (IAM role, AWS_* variables, ~/.aws/config).
         if settings.S3_REGION:
             kwargs["region_name"] = settings.S3_REGION
         if settings.S3_ENDPOINT_URL:
             endpoint = settings.S3_ENDPOINT_URL.strip().rstrip("/")
-            # Providers show the endpoint as a bare host name
-            # ("s3.us-west-004.backblazeb2.com"). Without a scheme boto3
-            # cannot connect at all, and every upload fails as "storage
-            # unavailable", so the https:// is added here.
             if "://" not in endpoint:
                 endpoint = f"https://{endpoint}"
             kwargs["endpoint_url"] = endpoint
-            # NOT AWS, then. Since boto3 1.36 every upload carries a new
-            # CRC checksum header by default. AWS understands it; several
-            # S3-compatible stores do not, and refuse every upload. Asking
-            # for checksums only where the API requires them -- boto3's old
-            # behaviour -- works everywhere. (A custom endpoint is also
-            # addressed path-style, "<endpoint>/<bucket>/<key>", which is
-            # what MinIO needs; boto3 does that on its own.)
             config_options["request_checksum_calculation"] = "when_required"
             config_options["response_checksum_validation"] = "when_required"
         if settings.S3_ACCESS_KEY_ID:
@@ -285,15 +157,8 @@ class S3Storage(Storage):
     def _object_key(self, key: str) -> str:
         return f"{self.prefix}{key}"
 
-    # ---- Error translation --------------------------------------------
-    # boto3 raises botocore's own exception types. They are mapped onto ours
-    # here so that no caller ever has to import botocore to tell "missing"
-    # from "unreachable".
     @staticmethod
     def _translate(exc: Exception, key: str) -> StorageError:
-        # `upload_file` wraps the real ClientError in boto3's own
-        # S3UploadFailedError, which carries no `response`. Without unwrapping
-        # it, a plain "access denied" was reported as an outage.
         inner = exc
         while not getattr(inner, "response", None) and (inner.__cause__ or inner.__context__):
             inner = inner.__cause__ or inner.__context__
@@ -305,17 +170,11 @@ class S3Storage(Storage):
         if code in {"404", "NoSuchKey", "NotFound"} or status == 404:
             return StorageObjectNotFound(key)
         if status is not None and status < 500 and code not in {"SlowDown", "RequestTimeout", "Throttling"}:
-            # 403 AccessDenied, 400 bad request ... a configuration problem
-            # that waiting will not fix.
             return StorageError(f"S3 refused the request for {key!r}: {code or status}")
-        # No HTTP response at all (connection refused, DNS, timeout) or a 5xx
-        # or throttling reply: worth trying again.
         return StorageUnavailableError(f"S3 is unavailable for {key!r}: {exc}")
 
     def save(self, key: str, source_path: str) -> None:
         try:
-            # `upload_file` streams from disk and switches to a multipart
-            # upload for large files on its own.
             self.client.upload_file(
                 source_path,
                 self.bucket,
@@ -376,22 +235,11 @@ class S3Storage(Storage):
                 os.remove(path)
 
 
-# ======================================================================
-# CHOOSING A BACKEND
-# ======================================================================
-
-# One instance per backend per process. S3 clients are expensive to create
-# (credential lookup, connection pool) and safe to share between threads.
 _instances: dict[str, Storage] = {}
 
 
 def get_storage(name: Optional[str] = None) -> Storage:
-    """
-    The backend called `name`, or the configured default when `name` is None.
-
-    Pass a Document's `storage_backend` to read that document's file; pass
-    nothing to choose where a NEW upload goes.
-    """
+    """The backend called `name`, or the configured default when `name` is None."""
     name = name or settings.STORAGE_BACKEND
     if name not in _instances:
         if name == "local":

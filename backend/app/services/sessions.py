@@ -1,36 +1,4 @@
-"""
-sessions.py
-===========
-WHAT THIS FILE DOES
--------------------
-The server-side half of signing in and out. core/security.py MAKES tokens; this
-file decides which ones are still ALIVE, using three tables:
-
-    refresh_tokens   every refresh token issued, so it can be rotated/revoked
-    revoked_tokens   access tokens signed out before they expired (denylist)
-    user_tokens      single-use emailed links (password reset, verification)
-
-WHY THIS IS NOT IN THE ENDPOINTS
---------------------------------
-Login, refresh, logout, password reset and member deactivation all need some
-of these operations. Written inline, the same "revoke every session of this
-user" would exist in four places -- and the one that drifted would be the
-security bug. Here each rule exists once.
-
-NOTHING HERE COMMITS
---------------------
-Every function only stages changes in the caller's session. The endpoint
-commits once, so "password changed" and "every old session revoked" land in
-the same transaction or not at all.
-
-A NOTE ON TIMEZONES
--------------------
-Columns are `timestamptz`, which Postgres returns timezone-AWARE. Other
-databases (SQLite, used by the fast tests) hand back NAIVE datetimes, and
-Python refuses to compare naive with aware. `as_aware` treats a naive value as
-UTC, which is what we always store, so the comparisons work everywhere.
-"""
-
+"""file decides which ones are still ALIVE, using three tables."""
 import datetime
 import uuid
 from typing import Optional
@@ -62,24 +30,12 @@ def is_expired(value: Optional[datetime.datetime]) -> bool:
     return value is not None and as_aware(value) <= utcnow()
 
 
-# ----------------------------------------------------------------------
-# ACCESS + REFRESH TOKEN PAIRS
-# ----------------------------------------------------------------------
-
-
 async def issue_token_pair(
     db: AsyncSession, user: User, family_id: Optional[uuid.UUID] = None
 ) -> dict:
-    """
-    Mint an access token and a refresh token, and record the refresh token.
-
-    `family_id` is passed on rotation so the new token joins the old one's
-    family; a fresh sign-in starts a new family. See models/refresh_token.py
-    for why families exist.
-    """
+    """Mint an access token and a refresh token, and record the refresh token."""
     access_token = security.create_access_token(
         subject=user.id,
-        # Embedded so a request can be authorised from the token alone.
         additional_claims={"org_id": str(user.org_id), "role": user.role},
     )
     refresh_token = security.create_refresh_token(subject=user.id)
@@ -118,13 +74,7 @@ async def revoke_family(db: AsyncSession, family_id: uuid.UUID) -> None:
 
 
 async def revoke_all_sessions(db: AsyncSession, user_id: uuid.UUID) -> None:
-    """
-    Sign a user out everywhere: revoke all their refresh tokens.
-
-    Used on password reset, deactivation and removal. Their CURRENT access
-    tokens die separately -- through `password_changed_at` after a reset, or
-    the `is_active` check after a deactivation -- within the same request.
-    """
+    """Sign a user out everywhere: revoke all their refresh tokens."""
     await db.execute(
         update(RefreshToken)
         .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
@@ -132,21 +82,10 @@ async def revoke_all_sessions(db: AsyncSession, user_id: uuid.UUID) -> None:
     )
 
 
-# ----------------------------------------------------------------------
-# THE ACCESS-TOKEN DENYLIST
-# ----------------------------------------------------------------------
-
-
 async def deny_access_token(
     db: AsyncSession, jti: Optional[str], expires_at: Optional[datetime.datetime]
 ) -> None:
-    """
-    Put an access token's jti on the denylist until it would have expired.
-
-    Also prunes entries whose tokens have expired anyway: a cheap, indexed
-    delete that keeps the table at roughly one token-lifetime of sign-outs
-    without needing a scheduled cleanup job.
-    """
+    """Put an access token's jti on the denylist until it would have expired."""
     if not jti:
         return
     await db.execute(delete(RevokedToken).where(RevokedToken.expires_at < utcnow()))
@@ -166,21 +105,10 @@ async def is_access_token_revoked(db: AsyncSession, jti: Optional[str]) -> bool:
     return await db.get(RevokedToken, jti) is not None
 
 
-# ----------------------------------------------------------------------
-# SINGLE-USE EMAILED TOKENS
-# ----------------------------------------------------------------------
-
-
 async def create_user_token(
     db: AsyncSession, user_id: uuid.UUID, purpose: str, lifetime: datetime.timedelta
 ) -> str:
-    """
-    Create a reset or verification token, returning the PLAINTEXT to email.
-
-    Any earlier unused token of the same purpose is marked used first, so
-    only the newest email's link works. That matters for reset: if an old
-    email sits in a compromised inbox, asking for a new link kills it.
-    """
+    """Create a reset or verification token, returning the PLAINTEXT to email."""
     await db.execute(
         update(UserToken)
         .where(
@@ -203,11 +131,7 @@ async def create_user_token(
 
 
 async def redeem_user_token(db: AsyncSession, token: str, purpose: str) -> Optional[UserToken]:
-    """
-    Look a token up and USE it: returns the row (now marked used) only when
-    it exists, has the right purpose, is unused and unexpired. Otherwise None
-    -- and the caller gives one generic error, never which check failed.
-    """
+    """Look a token up and USE it: returns the row (now marked used) only when"""
     result = await db.execute(
         select(UserToken).where(UserToken.token_hash == security.hash_token(token))
     )
