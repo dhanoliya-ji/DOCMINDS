@@ -278,38 +278,13 @@ export type ChatMode = "rag" | "agent";
 export type Role = "Admin" | "Manager" | "Employee";
 export type RoleInput = Role | "admin" | "editor" | "viewer";
 
-export interface Member {
-  id: string;
-  email: string;
-  role: Role;
-  is_active: boolean;
-  is_verified: boolean;
-  created_at: string;
-}
+export type Member = Schema<"MemberOut">;
 
-export interface Invite {
-  id: string;
-  email: string;
-  role: Role;
-  expires_at: string;
-  accepted_at: string | null;
-  revoked_at: string | null;
-  invited_by: string | null;
-  created_at: string;
-  status: "pending" | "accepted" | "revoked" | "expired";
-}
+export type Invite = Schema<"InviteOut">;
 
-export interface InviteCreated extends Invite {
-  token: string;
-  invite_url: string;
-}
+export type InviteCreated = Schema<"InviteCreated">;
 
-export interface InvitePreview {
-  email: string;
-  role: Role;
-  org_name: string;
-  expires_at: string;
-}
+export type InvitePreview = Schema<"InvitePreview">;
 
 export interface ApiKey {
   id: string;
@@ -328,21 +303,9 @@ export interface ApiKeyCreated extends ApiKey {
   key: string;
 }
 
-export interface AuditLogItem {
-  id: string;
-  action: string;
-  details: Record<string, unknown>;
-  ip_address: string | null;
-  user_id: string | null;
-  created_at: string;
-}
+export type AuditLogItem = Schema<"AuditLogOut">;
 
-export interface AuditLogPage {
-  items: AuditLogItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+export type AuditLogPage = Schema<"AuditLogPage">;
 
 export interface AuditLogFilters {
   limit?: number;
@@ -365,39 +328,11 @@ export interface CurrentUser {
   updated_at: string;
 }
 
-export interface QuotaUsage {
-  used: number;
-  quota: number;
-  unlimited: boolean;
-  remaining: number | null;
-}
+export type QuotaUsage = Schema<"QuotaUsage">;
 
-export interface UsageSummary {
-  period_start: string;
-  period_end: string;
-  requests: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  estimated_cost_usd: number;
-  tokens: QuotaUsage;
-  documents: QuotaUsage;
-  storage_bytes: QuotaUsage;
-  by_model: {
-    model: string;
-    requests: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-    estimated_cost_usd: number;
-  }[];
-  by_mode: { mode: string; requests: number; total_tokens: number }[];
-}
+export type UsageSummary = Schema<"UsageSummary">;
 
-export interface AgentStep {
-  tool: string;
-  args: Record<string, unknown>;
-  summary: string;
-}
+export type AgentStep = Schema<"AgentStep">;
 
 export interface ChatResponse {
   session_id: string;
