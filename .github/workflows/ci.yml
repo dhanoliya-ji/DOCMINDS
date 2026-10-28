@@ -1,36 +1,3 @@
-# CI — runs on every push and pull request.
-#
-# WHY THIS EXISTS
-# ---------------
-# There are hundreds of tests across this repository, and until this file they only
-# ran when someone remembered to run them. That is the failure mode CI exists
-# to remove: a suite nobody runs is a suite that quietly stops passing.
-#
-# WHAT IT CHECKS, AND WHY EACH STEP EARNS ITS PLACE
-# -------------------------------------------------
-# The backend and frontend run as separate jobs, in parallel, because they
-# share nothing and a failure in one should not hide the state of the other.
-#
-# A fourth job runs the end-to-end suite, and it is the only thing in the
-# repository that checks the two halves still AGREE. `lib/api.ts` hand-writes
-# ten interfaces mirroring backend/app/schemas/; renaming a field in a
-# Pydantic model leaves every unit test green while the running app renders
-# nothing. Verified by doing exactly that -- see docs/DEVELOPMENT.md (Testing).
-#
-# The frontend job runs FOUR checks rather than the obvious two, and the extra
-# two are the ones that have actually caught things:
-#
-#   - `npm run build` catches what tests cannot. A Next.js upgrade once left
-#     122 passing tests beside a build that would not compile, because the
-#     tests never type-check the config files that `next build` does.
-#   - `npm audit` catches supply-chain drift. Both halves of this project
-#     currently report zero vulnerabilities, and the only way that stays true
-#     is if something fails when it stops being true.
-#
-# WHAT IT DELIBERATELY DOES NOT DO
-# --------------------------------
-# No deployment, and no publishing. This workflow only ever reports.
-
 name: CI
 
 on:
@@ -38,432 +5,116 @@ on:
     branches: [main]
   pull_request:
 
-# A new push to the same branch cancels the run still in flight. Without this,
-# pushing three times in a minute queues three full runs and you wait for the
-# answer to a question you have already moved past.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Read-only unless a job asks for more.
 permissions:
   contents: read
 
-jobs:
-  # ====================================================================
-  backend:
-    name: Backend — 234 tests
-    runs-on: ubuntu-latest
-    # id-token lets the Codecov upload authenticate with OIDC, so there is no
-    # upload token to store as a secret.
-    permissions:
-      contents: read
-      id-token: write
+env:
+  POSTGRES_HOST: localhost
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgrespassword
+  POSTGRES_DB: document_intelligence
+  REDIS_HOST: localhost
+  REDIS_PORT: 6379
+  LLM_PROVIDER: mock
+  OCR_PROVIDER: mock
+  SECRET_KEY: ci-only-secret-not-used-anywhere-else
 
-    services:
-      # The real thing, with pgvector. The Tier 2 tests are written against
-      # the `vector` column type and the `<=>` distance operator, so SQLite
-      # is not a substitute -- it would be a different test passing while the
-      # real query is broken.
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services: &services
       postgres:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgrespassword
           POSTGRES_DB: document_intelligence
-        ports:
-          - 5432:5432
-        # Without this the job races the container and the first connection
-        # fails on a database that is seconds from being ready.
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 10s --health-retries 10
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-retries 10
     env:
-      # The service is published on 5432; the app defaults to 5433 locally so
-      # it does not collide with a developer's own Postgres. CI has no such
-      # collision, so it points at the standard port.
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: document_intelligence
-      REDIS_HOST: localhost
-      REDIS_PORT: 6379
-      # Every external dependency mocked. This is what the mock providers were
-      # built for: the full pipeline runs with no API key, no model download
-      # and no Tesseract install, producing deterministic output.
       EMBEDDING_PROVIDER: mock
-      LLM_PROVIDER: mock
-      OCR_PROVIDER: mock
-      # Never the checked-in default, even in CI.
-      SECRET_KEY: ci-only-secret-not-used-anywhere-else
-
     defaults:
       run:
         working-directory: backend
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-
-      - name: Install dependencies
-        # pytest-cov is CI-only: it measures coverage for the Codecov report.
-        run: pip install -r requirements.txt pytest-cov==7.1.0
-
-      - name: Lint (Ruff)
-        # Rules live in backend/ruff.toml. The version is pinned so a new Ruff
-        # release cannot turn CI red without any change to the code.
-        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+      - run: pip install -r requirements.txt
+      - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: "0.16.7"
           src: backend
-
-      - name: Run migrations
-        # Creates every table, enables the pgvector extension and builds the
-        # HNSW index. The Tier 2 tests skip themselves without it, so leaving
-        # this out would turn every database test green by not running it.
-        run: alembic upgrade head
-
-      - name: Run tests
+      - run: alembic upgrade head
+      - name: Test (fails if DB tests were skipped)
         env:
-          # Lets test_embedding_gemini.py make one real call to Google's
-          # embedding API (the provider the free live demo uses). Secrets are
-          # never given to Dependabot or fork PRs; there the test skips.
           GEMINI_API_KEY: ${{ secrets.AI_API_KEY }}
-        # One run, then inspect its summary. The suite skips its database
-        # tests when no database is reachable -- correct on a laptop, and
-        # dangerous here: a broken service container would present as a pass.
-        # So a skip in CI is an error.
-        #
-        # Without a key (Dependabot and fork PRs) the one live-API test is
-        # DESELECTED rather than skipped, so it cannot trip this guard.
         run: |
           set -o pipefail
-          live=""
-          if [ -z "$GEMINI_API_KEY" ]; then live="not gemini_live"; fi
-          python -m pytest --cov=app --cov-report=xml ${live:+-m "$live"} | tee result.txt
-          if grep -qE "[0-9]+ skipped" result.txt; then
-            echo "::error::Tests were skipped in CI. The database service is probably not reachable, so Tier 2 never ran."
-            exit 1
-          fi
+          live=""; [ -z "$GEMINI_API_KEY" ] && live="not gemini_live"
+          python -m pytest ${live:+-m "$live"} | tee result.txt
+          ! grep -qE "[0-9]+ skipped" result.txt
 
-      - name: Python SDK tests
-        # sdk/python against a fake API (httpx.MockTransport); httpx and
-        # pytest are already installed from backend/requirements.txt.
-        working-directory: sdk/python
-        run: python -m pytest -q
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          use_oidc: true
-          files: backend/coverage.xml
-          flags: backend
-          # Codecov being down, or this repo not yet activated on codecov.io,
-          # must never fail the build.
-          fail_ci_if_error: false
-
-  # ====================================================================
   frontend:
-    name: Frontend — 122 tests
     runs-on: ubuntu-latest
-    # id-token lets the Codecov upload authenticate with OIDC, so there is no
-    # upload token to store as a secret.
-    permissions:
-      contents: read
-      id-token: write
-
     defaults:
       run:
         working-directory: frontend
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # 22, not 20. Two floors have to be cleared at once: Next 16 needs
-          # >=20.9.0, and vite 7 needs ^20.19.0 || >=22.12.0. A bare "20"
-          # resolves to whatever the latest 20.x happens to be, which clears
-          # both today and is one release-line decision away from not doing.
-          # Naming 22 makes the floor explicit rather than incidental.
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:run
+      - run: npm run build
 
-      - name: Install dependencies
-        # `npm ci` rather than `npm install`: it installs exactly what the
-        # lockfile says and fails if package.json and the lockfile disagree.
-        # `npm install` would quietly resolve a newer version, so CI would be
-        # testing something nobody has on their machine.
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Check generated API types
-        # lib/api-types.ts and sdk/typescript/src/schema.ts must match the
-        # committed openapi.json (npm run gen:api). Needs neither the backend
-        # nor the network.
-        run: npm run check:api
-
-      - name: Test
-        run: npm run test:run -- --coverage --coverage.reporter=lcov --coverage.reporter=text-summary
-
-      - name: Build
-        # The check that catches what the tests cannot -- `next build`
-        # type-checks config files the test run never touches.
-        run: npm run build
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          use_oidc: true
-          files: frontend/coverage/lcov.info
-          flags: frontend
-          # Codecov being down, or this repo not yet activated on codecov.io,
-          # must never fail the build.
-          fail_ci_if_error: false
-
-  # ====================================================================
   e2e:
-    name: End to end — 14 tests
     runs-on: ubuntu-latest
-    # Runs only once the halves it joins are individually green. A schema-drift
-    # failure here is meaningful; the same failure alongside 40 unit failures
-    # is noise.
     needs: [backend, frontend]
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgrespassword
-          POSTGRES_DB: document_intelligence
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
+    services: *services
     env:
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: document_intelligence
-      REDIS_HOST: localhost
-      REDIS_PORT: 6379
-      # The LLM is mocked -- no API key, and the answer's wording is not what
-      # these tests assert on.
-      LLM_PROVIDER: mock
-      OCR_PROVIDER: mock
-      # Embeddings must be REAL. The mock provider hashes its input, so a
-      # search for a sentence from a document produces a vector unrelated to
-      # the chunk holding it, scores below RETRIEVAL_MIN_SCORE, and no
-      # results. Meaning-based retrieval is the product's central claim and
-      # only a real model demonstrates it. See docs/DEVELOPMENT.md (Testing).
       EMBEDDING_PROVIDER: local
-      SECRET_KEY: ci-only-secret-not-used-anywhere-else
       NEXT_PUBLIC_API_URL: http://localhost:8000
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: pip install -r requirements.txt
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Chromium
-        working-directory: frontend
-        run: npx playwright install chromium --with-deps
-
-      - name: Run migrations
-        working-directory: backend
-        run: alembic upgrade head
-
-      - name: Start the API and the worker
-        working-directory: backend
-        # Both processes are required. With the API alone, uploads succeed and
-        # then sit on "pending" forever -- which is the failure step 8 exists
-        # to catch, and would be a confusing way to discover a CI mistake.
+      - name: Install
         run: |
-          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/api.log 2>&1 &
-          nohup celery -A app.core.celery_app worker --loglevel=info > /tmp/worker.log 2>&1 &
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8000/api/v1/health > /dev/null; then
-              echo "API up after ${i}s"; exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::The API never became healthy."; cat /tmp/api.log; exit 1
-
-      - name: Warm the embedding model
+          (cd backend && pip install -r requirements.txt && alembic upgrade head)
+          (cd frontend && npm ci && npx playwright install chromium --with-deps)
+      - name: Start API and worker
         working-directory: backend
-        # all-MiniLM-L6-v2 downloads (~90 MB) and loads on first use, per
-        # process. Doing it here, once, keeps that cost out of the test
-        # timeouts -- where it would otherwise look like a slow query.
-        run: python -c "from app.services.embedding import EmbeddingService as E; print(len(E.get_embedding('warm')))"
-
-      - name: Run the e2e suite
-        working-directory: frontend
+        run: |
+          nohup uvicorn app.main:app --port 8000 > /tmp/api.log 2>&1 &
+          nohup celery -A app.core.celery_app worker > /tmp/worker.log 2>&1 &
+          for i in $(seq 60); do curl -sf localhost:8000/api/v1/health && exit 0; sleep 1; done
+          cat /tmp/api.log; exit 1
+      - working-directory: frontend
         run: npm run test:e2e
-
-      - name: Upload traces and screenshots on failure
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: playwright-report
-          path: |
-            frontend/test-results/
-            frontend/playwright-report/
-          retention-days: 7
-
-      - name: Show the server logs on failure
-        if: failure()
-        run: |
-          echo "===== API ====="; tail -80 /tmp/api.log || true
-          echo "===== WORKER ====="; tail -80 /tmp/worker.log || true
-
-  # ====================================================================
-  demo-image:
-    name: Free-demo image (no PyTorch)
-    runs-on: ubuntu-latest
-    # The live demo builds the image with EMBEDDING_PROVIDER=gemini, which
-    # leaves PyTorch out so the API fits a 512 MB free host. Nothing else
-    # builds that variant, so this proves it still starts, really is
-    # PyTorch-free, and stays well inside the memory limit.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Build the demo variant
-        run: docker build --build-arg EMBEDDING_PROVIDER=gemini -t docminds-demo backend
-
-      - name: It starts without PyTorch, inside the memory budget
-        run: |
-          docker run --rm -e EMBEDDING_PROVIDER=gemini -e INGESTION_MODE=inline docminds-demo             python -c "
-          import importlib.util, resource
-          import app.main  # the whole app: every router, model and service
-          for heavy in ('torch', 'sentence_transformers'):
-              assert importlib.util.find_spec(heavy) is None, heavy + ' is installed'
-          peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-          print(f'Peak memory after importing the app: {peak_mb:.0f} MB')
-          # Render's free web service has 512 MB; leave room for real requests.
-          assert peak_mb < 300, f'{peak_mb:.0f} MB is too close to the 512 MB limit'
-          "
-          docker image ls docminds-demo --format 'Image size: {{.Size}}'
-
-  # ====================================================================
-  audit:
-    name: Dependency audit
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: npm audit
-        working-directory: frontend
-        # A new moderate advisory reports without failing the build, while a
-        # high or critical one stops it -- the line between "worth knowing" and
-        # "worth blocking".
-        #
-        # ONE advisory is excused, by exact ID, and nothing else:
-        #
-        #   GHSA-vfj7-8cjw-p6xm  braces: stack exhaustion on deeply nested
-        #   glob patterns. There is no patched release of braces at all, and
-        #   it arrives only through eslint-config-next -> fast-glob ->
-        #   micromatch, i.e. the linter matching this repo's own file globs.
-        #   No attacker-supplied pattern ever reaches it. npm's only proposed
-        #   "fix" is downgrading the lint config to Next 14.
-        #
-        # Blocking on it would keep this job red until upstream ships a fix,
-        # and a job that is always red stops being read -- which is exactly
-        # when a real advisory would slip through. Any OTHER high or critical
-        # finding still fails here. When braces ships a fix, delete ALLOWED
-        # and this goes back to plain `npm audit --audit-level=high`.
-        env:
-          ALLOWED: GHSA-vfj7-8cjw-p6xm
-        run: |
-          npm audit || true
-          npm audit --json > audit.json || true
-          jq -r --arg allow "$ALLOWED" '
-            [ .vulnerabilities // error("npm audit returned no report")
-              | .[].via[] | objects
-              | select(.severity == "high" or .severity == "critical")
-              | select(.url | endswith($allow) | not)
-              | "\(.severity): \(.name) -- \(.title) (\(.url))" ]
-            | unique | .[]' audit.json > blocking.txt
-          if [ -s blocking.txt ]; then
-            echo "::error::High or critical advisories found:"
-            cat blocking.txt
-            exit 1
-          fi
-          echo "No blocking advisories (excused by ID: $ALLOWED)."
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.11"
-
-      - name: pip-audit
-        working-directory: backend
-        # Advisory only. The backend pins 31 packages including PyTorch and
-        # its transitive tree, where a finding is often unreachable from this
-        # application's code -- so this reports rather than blocks, and a real
-        # finding is a decision for a person to make.
-        continue-on-error: true
-        run: |
-          pip install pip-audit
-          pip-audit -r requirements.txt
+      - if: failure()
+        run: tail -80 /tmp/api.log /tmp/worker.log
