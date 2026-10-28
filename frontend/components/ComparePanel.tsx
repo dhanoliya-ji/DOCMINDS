@@ -1,18 +1,4 @@
-/**
- * ComparePanel.tsx
- * ================
- * The project page's "Compare" tab: pick two documents (and, optionally, a
- * focus such as "termination"), and get a STRUCTURED diff back --
- *
- *     a short summary, then each difference as a card:
- *         [Changed]  Notice period
- *         30 days in the 2023 contract, 60 days in the 2024 one.
- *         A2  B3     <- the passages on each side, expandable
- *
- * The backend pairs the corresponding sections first and only then asks
- * the model what differs (services/compare.py), so every difference points
- * at real passages. Without an API key the pairing itself is shown.
- */
+// The project page's "Compare" tab: pick two documents (and, optionally, a focus such as...
 
 "use client";
 

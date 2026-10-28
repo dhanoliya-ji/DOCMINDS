@@ -1,22 +1,3 @@
-# Dependabot auto-merge -- merges low-risk dependency updates by itself, but
-# only after every required check has passed.
-#
-# WHAT IT MERGES
-#   - patch updates (1.2.3 -> 1.2.4), in any ecosystem
-#   - minor updates to GitHub Actions (pinned by SHA, and they only run in CI)
-# Everything else waits for a person. "The tests pass" is not proof that a
-# minor release changed nothing: SQLAlchemy 2.1 was a minor release, and it
-# broke two of these repositories in ways only a person reading the PR saw.
-#
-# HOW IT STAYS SAFE
-#   `gh pr merge --auto` does not merge now. It asks GitHub to merge once the
-#   branch protection's required checks are green, so a failing test means it
-#   never merges. The bcrypt 5 bump that broke login would have stayed open.
-#
-# One limit worth knowing: a merge made this way does not trigger the
-# workflows that run on pushes to the default branch (a GitHub rule for merges
-# made with the built-in token). The PR's own checks already covered the code,
-# and the next ordinary merge catches the rest up.
 
 name: Dependabot auto-merge
 

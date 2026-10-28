@@ -1,3 +1,4 @@
+// WCAG 2.x contrast for every text/background pair the design tokens in
 /**
  * contrast.mjs
  * ============
@@ -38,7 +39,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const TEXT_MIN = 4.5;
 export const UI_MIN = 3;
 
-/** "#abc", "#aabbcc" or "rgba(r, g, b, a)" -> { r, g, b, a } (0-255, a 0-1). */
 export function parseColor(value) {
   const v = value.trim().toLowerCase();
   if (v === "white" || v === "#fff") return { r: 255, g: 255, b: 255, a: 1 };
@@ -57,7 +57,6 @@ export function parseColor(value) {
   throw new Error(`Unsupported colour: ${value}`);
 }
 
-/** Paint `top` (possibly translucent) over an opaque `bottom`. */
 export function composite(top, bottom) {
   const a = top.a;
   return {
@@ -68,7 +67,6 @@ export function composite(top, bottom) {
   };
 }
 
-/** WCAG relative luminance of an opaque colour. */
 export function luminance({ r, g, b }) {
   const lin = (c) => {
     const s = c / 255;
@@ -77,13 +75,11 @@ export function luminance({ r, g, b }) {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-/** Contrast ratio between two opaque colours, 1 to 21. */
 export function contrastRatio(a, b) {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
 
-/** The custom properties declared directly in the block opening with `selector {`. */
 export function tokenBlock(css, selector) {
   const start = css.indexOf(`${selector} {`);
   if (start === -1) throw new Error(`No ${selector} block in globals.css`);
@@ -93,7 +89,6 @@ export function tokenBlock(css, selector) {
   return tokens;
 }
 
-/** Each `@utility pill-<name>`'s literal background and its colour token. */
 export function pillStyles(css) {
   const pills = {};
   for (const m of css.matchAll(/@utility (pill-\w+) \{([^}]*)\}/g)) {
@@ -104,10 +99,6 @@ export function pillStyles(css) {
   return pills;
 }
 
-/**
- * Every pair to check for one theme. `tokens` is the merged custom
- * properties for that theme. Returns [{ name, fg, bg, min, ratio }].
- */
 export function themePairs(tokens, pills) {
   const c = (name) => {
     if (!(name in tokens)) throw new Error(`Missing token ${name}`);
@@ -150,10 +141,8 @@ export function themePairs(tokens, pills) {
   return pairs.map((p) => ({ ...p, ratio: contrastRatio(p.fg, p.bg) }));
 }
 
-/** Both themes' results, read from globals.css. */
 export function checkGlobals(css) {
   const dark = tokenBlock(css, ":root");
-  // The light block only overrides; anything it omits inherits the dark value.
   const light = { ...dark, ...tokenBlock(css, ':root[data-theme="light"]') };
   const pills = pillStyles(css);
   return { dark: themePairs(dark, pills), light: themePairs(light, pills) };
@@ -164,7 +153,6 @@ export function readGlobals() {
   return readFileSync(join(here, "..", "app", "globals.css"), "utf8");
 }
 
-// ---- CLI ---------------------------------------------------------------
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const results = checkGlobals(readGlobals());
   let failures = 0;

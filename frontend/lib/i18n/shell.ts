@@ -1,7 +1,4 @@
-/**
- * i18n/shell.ts -- the app shell's strings (navigation, sign-out, the
- * language switcher), English and Hindi. See i18n/index.ts.
- */
+// language switcher), English and Hindi.
 
 import type { AreaMessages } from "./index";
 

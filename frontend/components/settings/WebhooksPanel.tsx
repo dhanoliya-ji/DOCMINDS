@@ -1,28 +1,4 @@
-/**
- * WebhooksPanel.tsx
- * =================
- * Settings -> Webhooks (admins only): the outgoing webhooks that tell
- * another system when something happens here -- a document finished
- * processing, a member joined -- using /api/v1/webhooks.
- *
- * WHAT IT OFFERS
- * --------------
- *   * the endpoints: URL, description, subscribed events, active or paused
- *   * a create form: URL, optional description, and the events to send
- *     ("All events" subscribes to "*", which also covers ones added later)
- *   * the signing SECRET, shown exactly once after creating -- the backend
- *     never returns it again, so the receiver must store it now to verify
- *     the X-DocMinds-Signature header
- *   * per endpoint: "Send test" (queues a ping), the recent deliveries with
- *     their status and last error, and a hold-to-delete
- *
- * WHEN IT IS SHOWN
- * ----------------
- * The settings page only shows the tab when GET /webhooks succeeds: while
- * WEBHOOKS_ENABLED is off every webhook route answers 404, as if it did not
- * exist (see webhooksAvailable below). The panel applies the same rule
- * itself, so a 404 renders nothing rather than an error.
- */
+// Settings -> Webhooks (admins only): the outgoing webhooks that tell another system...
 
 "use client";
 
@@ -43,14 +19,8 @@ import {
 } from "@/lib/api";
 import { rich, useT } from "@/lib/i18n";
 
-/** Subscribe to every event, including ones added in later versions. */
 const ALL_EVENTS = "*";
 
-/**
- * Does this deployment have webhooks switched on? True when the list loads,
- * false on a 404 (the feature is off) or any other failure. Used by the
- * settings page to decide whether to show the tab at all.
- */
 export async function webhooksAvailable(): Promise<boolean> {
   try {
     await api.listWebhooks();
@@ -67,7 +37,6 @@ function when(value: string | null | undefined): string {
 export default function WebhooksPanel() {
   const { t } = useT();
   const [hooks, setHooks] = useState<Webhook[] | null>(null);
-  // True once the API has said 404: render nothing at all.
   const [disabled, setDisabled] = useState(false);
   const [events, setEvents] = useState<WebhookEventType[]>([]);
   const [error, setError] = useState("");
@@ -79,7 +48,6 @@ export default function WebhooksPanel() {
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<WebhookCreated | null>(null);
 
-  // Which endpoint's deliveries are open, and what they are.
   const [openId, setOpenId] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<WebhookDelivery[] | null>(null);
 
@@ -90,7 +58,6 @@ export default function WebhooksPanel() {
       if (err instanceof ApiError && err.status === 404) setDisabled(true);
       else setError(getErrorMessage(err, t("webhooks.loadError")));
     }
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

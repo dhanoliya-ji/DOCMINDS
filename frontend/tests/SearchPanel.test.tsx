@@ -1,25 +1,4 @@
-/**
- * SearchPanel.test.tsx
- * ====================
- * WHAT THIS FILE TESTS
- * --------------------
- * `components/SearchPanel.tsx` -- retrieval with no model involved.
- *
- * WHY THIS COMPONENT IS WORTH TESTING CAREFULLY
- * ---------------------------------------------
- * It is the project's debugging instrument. When a chat answer is wrong there
- * are two possible causes with completely different fixes -- the right passage
- * was retrieved and the model misused it, or the right passage was never
- * retrieved. This panel is what distinguishes them, so the score and the
- * source on each result are not decoration; they are the readout.
- *
- * THE DISTINCTION THAT MATTERS MOST
- * ---------------------------------
- * "You have not searched yet" and "your search matched nothing" must look
- * different. Collapsing them is the single most common empty-state bug, and
- * here it would be actively misleading: a user who has just opened the tab
- * would be told their documents contain no match for a query they never ran.
- */
+// `components/SearchPanel.tsx` -- retrieval with no model involved.
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -35,7 +14,6 @@ vi.mock("@/lib/api", () => ({
     error instanceof Error && error.message ? error.message : fallback,
 }));
 
-/** One search result, shaped the way the backend returns them. */
 function result(overrides: Record<string, unknown> = {}) {
   return {
     chunk_id: "c1",
@@ -60,14 +38,9 @@ beforeEach(() => {
   search.mockResolvedValue(response([result()]));
 });
 
-// ======================================================================
-// The two empty states
-// ======================================================================
 
 describe("empty states", () => {
   it("before any search, does not claim nothing matched", async () => {
-    // The bug this guards: telling a user their documents contain no match
-    // for a query they have not typed.
     render(<SearchPanel projectId="p1" />);
 
     expect(screen.queryByText(/nothing matched/i)).not.toBeInTheDocument();
@@ -85,9 +58,6 @@ describe("empty states", () => {
   });
 
   it("explains WHY nothing matched", async () => {
-    // "No results" invites the conclusion that search is broken. Saying that
-    // everything scored below the threshold, deliberately, is the difference
-    // between a dead end and an actionable message.
     search.mockResolvedValue(response([]));
     const user = userEvent.setup();
     render(<SearchPanel projectId="p1" />);
@@ -99,13 +69,9 @@ describe("empty states", () => {
   });
 });
 
-// ======================================================================
-// Running a search
-// ======================================================================
 
 describe("running a search", () => {
   it("scopes the search to this project", async () => {
-    // Why a search in the HR project does not return finance passages.
     const user = userEvent.setup();
     render(<SearchPanel projectId="project-42" />);
 
@@ -128,8 +94,6 @@ describe("running a search", () => {
   });
 
   it("does not search on an empty query", async () => {
-    // An empty search box is a mistake, not a search. Sending it would be
-    // refused by the backend with a 422 and shown to the user as an error.
     const user = userEvent.setup();
     render(<SearchPanel projectId="p1" />);
 
@@ -160,9 +124,6 @@ describe("running a search", () => {
   });
 });
 
-// ======================================================================
-// The readout
-// ======================================================================
 
 describe("displaying results", () => {
   it("shows the passage text", async () => {
@@ -176,8 +137,6 @@ describe("displaying results", () => {
   });
 
   it("shows the source filename and page", async () => {
-    // Without these the panel cannot answer "where did this come from?",
-    // which is most of its purpose.
     const user = userEvent.setup();
     render(<SearchPanel projectId="p1" />);
 
@@ -185,13 +144,10 @@ describe("displaying results", () => {
     await user.keyboard("{Enter}");
 
     expect(await screen.findByText(/handbook\.pdf/)).toBeInTheDocument();
-    // Anchored to the word, not a bare /12/ -- which also matches the "1.75"
-    // and "12" inside the passage text itself.
     expect(screen.getByText(/page 12/i)).toBeInTheDocument();
   });
 
   it("shows the score as a percentage", async () => {
-    // 83% is judgeable at a glance; 0.83 is not.
     const user = userEvent.setup();
     render(<SearchPanel projectId="p1" />);
 
@@ -221,8 +177,6 @@ describe("displaying results", () => {
   });
 
   it("handles a result with no page number", async () => {
-    // A CSV or an email has no pages. This must not render "page null" or
-    // crash on a missing field.
     search.mockResolvedValue(
       response([result({ filename: "data.csv", page_number: null })])
     );
@@ -238,9 +192,6 @@ describe("displaying results", () => {
 });
 
 describe("score bands", () => {
-  // The colour is how match quality reads at a glance. The exact class does
-  // not matter; that the three bands are DISTINGUISHED does -- otherwise a
-  // 20% match looks as confident as a 90% one.
   it.each([
     ["a strong match", 0.83, "83% match"],
     ["a middling match", 0.4, "40% match"],
@@ -276,9 +227,6 @@ describe("score bands", () => {
   });
 });
 
-// ======================================================================
-// Failure
-// ======================================================================
 
 describe("when the search fails", () => {
   it("shows the reason", async () => {
@@ -304,9 +252,6 @@ describe("when the search fails", () => {
   });
 
   it("does not claim nothing matched", async () => {
-    // A failed search and an empty search are different things. Showing
-    // "nothing matched closely enough" after a 500 would send the user off
-    // rephrasing a query that never reached the server.
     search.mockRejectedValue(new Error("Internal server error"));
     const user = userEvent.setup();
     render(<SearchPanel projectId="p1" />);
@@ -338,9 +283,6 @@ describe("when the search fails", () => {
   });
 });
 
-// ======================================================================
-// Batch 2: the document filter and hybrid-search labels
-// ======================================================================
 
 describe("limiting the search to some documents", () => {
   const docs = [

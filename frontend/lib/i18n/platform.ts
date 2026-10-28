@@ -1,19 +1,13 @@
-/**
- * i18n/platform.ts -- cloud imports, billing and the admin dashboard,
- * English and Hindi. See i18n/index.ts. Keys are prefixed "integrations.",
- * "billing." and "admin." so areas never collide.
- */
+// English and Hindi.
 
 import type { AreaMessages } from "./index";
 
 const messages: AreaMessages = {
   en: {
-    // ---- shared ----
     "platform.back": "Back to settings",
     "platform.loading": "Loading",
     "platform.links": "More settings",
 
-    // ---- cloud imports ----
     "integrations.title": "Cloud imports",
     "integrations.intro":
       "Connect your organization's cloud storage, pick files or pages, and import them into a project. Imported documents can stay in sync with their source.",
@@ -74,7 +68,6 @@ const messages: AreaMessages = {
     "integrations.outcome.updated": "A new version was imported and is being re-indexed.",
     "integrations.outcome.busy": "The document is still processing; try again shortly.",
 
-    // ---- billing ----
     "billing.title": "Plan and billing",
     "billing.link": "Plan and billing",
     "billing.badge": "{plan} plan",
@@ -108,7 +101,6 @@ const messages: AreaMessages = {
     "billing.switchHint": "To change plan, cancel the current subscription first, then choose the new plan.",
     "billing.razorpayNote": "You pay on Razorpay's secure page (UPI, cards, net banking). The plan updates here as soon as Razorpay confirms the payment.",
 
-    // ---- admin dashboard ----
     "admin.title": "Admin dashboard",
     "admin.link": "Admin dashboard",
     "admin.off": "The admin dashboard is not enabled on this server.",

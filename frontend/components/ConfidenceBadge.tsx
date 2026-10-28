@@ -1,17 +1,4 @@
-/**
- * ConfidenceBadge.tsx
- * ===================
- * "High / Medium / Low confidence" under an answer, and -- one click away --
- * the reasons, so a rating is never an unexplained label.
- *
- * The verdict is computed by the backend from measurements (how closely the
- * excerpts matched, how much of the answer cites a real source --
- * services/confidence.py), never by asking the model how sure it is. Each
- * reason arrives as a code plus a number and is worded here, so it can be
- * translated.
- *
- * The level is carried by the word and the icon, not colour alone.
- */
+// "High / Medium / Low confidence" under an answer, and -- one click away -- the...
 
 "use client";
 
@@ -29,7 +16,6 @@ const STYLE = {
 
 function reasonValue(code: string, value?: number): string | number | undefined {
   if (value === undefined) return undefined;
-  // Similarities and coverage are 0..1: shown as a percentage.
   if (/_match$|_cited$|^few_citations$/.test(code)) return `${Math.round(value * 100)}%`;
   return value;
 }

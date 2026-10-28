@@ -1,22 +1,4 @@
-/**
- * AuthPages.test.tsx
- * ==================
- * WHAT THIS FILE TESTS
- * --------------------
- * The signed-out screens: /login (sign in, sign up, accept an invite),
- * /forgot-password, /reset-password and /verify-email.
- *
- * THE CONTRACT WORTH PINNING
- * --------------------------
- * The backend's emails link to `/login?invite=`, `/reset-password?token=` and
- * `/verify-email?token=` (backend/app/services/email.py). These tests drive
- * each page through exactly those query parameters, so renaming one side
- * without the other fails here instead of in someone's inbox.
- *
- * `lib/api` is partly mocked: the `api` calls are stubs, but ApiError and
- * getErrorMessage are the REAL ones, because how an error is worded is part of
- * what these pages do.
- */
+// The signed-out screens: /login (sign in, sign up, accept an invite), /forgot-password...
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -51,9 +33,6 @@ beforeEach(() => {
 
 const GOOD_PASSWORD = "a long passphrase";
 
-// ======================================================================
-// /login
-// ======================================================================
 
 describe("sign in", () => {
   it("signs in and goes to the dashboard", async () => {
@@ -127,7 +106,6 @@ describe("sign up (new organization)", () => {
   });
 
   it("treats 'confirm your email first' after signup as success", async () => {
-    // REQUIRE_EMAIL_VERIFICATION on: the account exists but cannot sign in yet.
     mocks.login.mockRejectedValue(new ApiError("Please confirm your email address first.", 403));
     const user = await fillSignup();
     await user.click(screen.getByRole("button", { name: /Create workspace/ }));
@@ -135,7 +113,6 @@ describe("sign up (new organization)", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(/emailed you a link/);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
-    // Back on the sign-in form.
     expect(screen.getByRole("button", { name: /^Sign in/ })).toBeInTheDocument();
   });
 });
@@ -160,7 +137,6 @@ describe("accepting an invite (/login?invite=...)", () => {
     expect(mocks.previewInvite).toHaveBeenCalledWith("inv-token");
     expect(screen.queryByPlaceholderText("Organization name")).not.toBeInTheDocument();
 
-    // The invite is bound to one address: filled in and locked.
     const email = screen.getByPlaceholderText("you@company.com");
     expect(email).toHaveValue("bob@example.com");
     expect(email).toHaveAttribute("readonly");
@@ -181,9 +157,6 @@ describe("accepting an invite (/login?invite=...)", () => {
   });
 });
 
-// ======================================================================
-// /forgot-password
-// ======================================================================
 
 describe("forgot password", () => {
   it("sends the request and shows the same answer whatever the address", async () => {
@@ -201,9 +174,6 @@ describe("forgot password", () => {
   });
 });
 
-// ======================================================================
-// /reset-password?token=...
-// ======================================================================
 
 describe("reset password", () => {
   it("says the link is broken when it has no token", () => {
@@ -257,9 +227,6 @@ describe("reset password", () => {
   });
 });
 
-// ======================================================================
-// /verify-email?token=...
-// ======================================================================
 
 describe("verify email", () => {
   it("confirms the address as soon as the page opens", async () => {
@@ -272,8 +239,6 @@ describe("verify email", () => {
   });
 
   it("sends a single-use token once, even if the page renders twice", async () => {
-    // Strict Mode runs effects twice in development; a second POST would fail
-    // and show an error for a verification that succeeded.
     searchParamsMock.value = new URLSearchParams("token=verify-once");
     mocks.verifyEmail.mockResolvedValue({ detail: "Confirmed." });
     const first = render(<VerifyEmailPage />);

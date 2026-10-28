@@ -1,21 +1,4 @@
-/**
- * Settings.test.tsx
- * =================
- * WHAT THIS FILE TESTS
- * --------------------
- * The /settings admin area and the dashboard's role-aware bits:
- *
- *   * a non-admin sees their account, not four tabs that would each 403
- *   * Members: invite by email + role, change a role, remove; never yourself
- *   * API keys: the new key is shown ONCE, revoke asks first
- *   * Audit log: pages through `total` with limit/offset
- *   * Usage: the token quota is a real, labelled progressbar
- *   * Dashboard: a viewer is not offered "New project"; an unconfirmed email
- *     gets a banner with a working "Resend link"
- *
- * `lib/api` is partly mocked: the `api` calls are stubs, the error helpers
- * are real.
- */
+// The /settings admin area and the dashboard's role-aware bits.
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -77,20 +60,12 @@ beforeEach(() => {
   mocks.health.mockResolvedValue(null);
 });
 
-/**
- * Press and hold a HoldToConfirm button past its 1s threshold, then release.
- * Real timers: one second per call is cheaper than reconciling fake timers
- * with userEvent and the panels' async loads.
- */
 async function hold(button: HTMLElement) {
   fireEvent.pointerDown(button);
   await act(() => new Promise((r) => setTimeout(r, 1100)));
   fireEvent.pointerUp(button);
 }
 
-// ======================================================================
-// Who sees what
-// ======================================================================
 
 describe("settings access", () => {
   it("shows a non-admin their account and no admin tabs", async () => {
@@ -126,9 +101,6 @@ describe("settings access", () => {
   });
 });
 
-// ======================================================================
-// Members
-// ======================================================================
 
 describe("members", () => {
   it("lists members and offers no controls on your own row", async () => {
@@ -177,7 +149,6 @@ describe("members", () => {
     render(<SettingsPage />);
 
     const remove = await screen.findByRole("button", { name: "Remove bob@example.com" });
-    // A plain click is not enough: HoldToConfirm replaced window.confirm().
     await user.click(remove);
     expect(mocks.removeMember).not.toHaveBeenCalled();
 
@@ -196,9 +167,6 @@ describe("members", () => {
   });
 });
 
-// ======================================================================
-// API keys
-// ======================================================================
 
 describe("API keys", () => {
   async function openKeys() {
@@ -237,9 +205,6 @@ describe("API keys", () => {
   });
 });
 
-// ======================================================================
-// Audit log
-// ======================================================================
 
 describe("audit log", () => {
   function pageOf(offset: number, total: number) {
@@ -294,9 +259,6 @@ describe("audit log", () => {
   });
 });
 
-// ======================================================================
-// Usage
-// ======================================================================
 
 describe("usage", () => {
   it("shows tokens against the quota as a progressbar", async () => {
@@ -320,15 +282,11 @@ describe("usage", () => {
     const bar = await screen.findByRole("progressbar", { name: "AI tokens this month" });
     expect(bar).toHaveAttribute("aria-valuenow", "85");
     expect(screen.getByText("$0.2400")).toBeInTheDocument();
-    // An unlimited quota has nothing to fill.
     expect(screen.queryByRole("progressbar", { name: "Documents" })).not.toBeInTheDocument();
     expect(screen.getByText(/no limit/)).toBeInTheDocument();
   });
 });
 
-// ======================================================================
-// Feedback: how people rate the answers
-// ======================================================================
 
 describe("feedback tab", () => {
   const SUMMARY = {
@@ -385,9 +343,6 @@ describe("feedback tab", () => {
   });
 });
 
-// ======================================================================
-// Dashboard: role and verification
-// ======================================================================
 
 describe("dashboard", () => {
   it("offers New project and Settings to an editor or admin", async () => {

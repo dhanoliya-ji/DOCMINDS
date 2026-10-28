@@ -1,18 +1,4 @@
-/**
- * PwaSupport.tsx
- * ==============
- * Two small things that make the web app installable:
- *
- *   1. Registers the service worker (public/sw.js) -- in production builds
- *      only, because a worker caching `next dev`'s constantly changing
- *      output would serve stale code during development.
- *   2. Offers "Install app" when the browser says it can (the
- *      `beforeinstallprompt` event; Chromium-based browsers). Dismissing it
- *      is remembered, so it is offered once, not on every page.
- *
- * Browsers without the event (Safari, Firefox) simply never see the card;
- * they install from their own share / menu instead.
- */
+// Two small things that make the web app installable.
 
 "use client";
 
@@ -23,7 +9,6 @@ import { useT } from "@/lib/i18n";
 
 const DISMISSED_KEY = "docminds-install-dismissed";
 
-/** The non-standard event Chromium fires when the app can be installed. */
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
@@ -76,7 +61,7 @@ export default function PwaSupport() {
     if (!event) return;
     await event.prompt();
     await event.userChoice.catch(() => null);
-    setDeferred(null); // the event can be used only once
+    setDeferred(null);
   }
 
   return (

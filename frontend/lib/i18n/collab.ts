@@ -1,13 +1,9 @@
-/**
- * i18n/collab.ts -- sharing, the prompt library, comparison, confidence and
- * charts. See i18n/index.ts. Keys are prefixed by feature.
- */
+// charts.
 
 import type { AreaMessages } from "./index";
 
 const messages: AreaMessages = {
   en: {
-    // ---- Confidence ----
     "confidence.label": "Confidence",
     "confidence.high": "High confidence",
     "confidence.medium": "Medium confidence",
@@ -28,7 +24,6 @@ const messages: AreaMessages = {
     "confidence.reason.model_error": "The AI service could not answer.",
     "confidence.reason.demo_mode": "Demo mode: this is a raw excerpt, not a written answer.",
 
-    // ---- Sharing ----
     "share.button": "Share",
     "share.answer": "Share this answer",
     "share.conversation": "Share this conversation",
@@ -52,7 +47,6 @@ const messages: AreaMessages = {
     "share.status.expired": "Expired",
     "share.close": "Close",
 
-    // ---- The public page ----
     "public.sharedAnswer": "Shared answer",
     "public.sharedConversation": "Shared conversation",
     "public.sharedProject": "Shared project",
@@ -65,7 +59,6 @@ const messages: AreaMessages = {
     "public.sources": "Sources",
     "public.page": "page {page}",
 
-    // ---- Prompt library ----
     "prompts.button": "Prompts",
     "prompts.title": "Prompt library",
     "prompts.builtin": "Built-in",
@@ -84,7 +77,6 @@ const messages: AreaMessages = {
     "prompts.builtin.compare-clauses.title": "Compare clauses",
     "prompts.builtin.key-figures.title": "Key figures",
 
-    // ---- Comparison ----
     "compare.tab": "Compare",
     "compare.title": "Compare two documents",
     "compare.intro":
@@ -107,14 +99,12 @@ const messages: AreaMessages = {
     "compare.method.lexical": "Sections paired by wording",
     "compare.stats": "{pairs} differing sections, {identical} unchanged",
 
-    // ---- Charts ----
     "chart.showData": "Show the data",
     "chart.series": "Series",
     "chart.label": "Label",
     "chart.invalid": "This chart could not be drawn; its data is shown instead.",
   },
   hi: {
-    // ---- Confidence ----
     "confidence.label": "विश्वसनीयता",
     "confidence.high": "उच्च विश्वसनीयता",
     "confidence.medium": "मध्यम विश्वसनीयता",
@@ -135,7 +125,6 @@ const messages: AreaMessages = {
     "confidence.reason.model_error": "AI सेवा उत्तर नहीं दे सकी।",
     "confidence.reason.demo_mode": "डेमो मोड: यह मूल अंश है, लिखा हुआ उत्तर नहीं।",
 
-    // ---- Sharing ----
     "share.button": "साझा करें",
     "share.answer": "यह उत्तर साझा करें",
     "share.conversation": "यह बातचीत साझा करें",
@@ -159,7 +148,6 @@ const messages: AreaMessages = {
     "share.status.expired": "समाप्त",
     "share.close": "बंद करें",
 
-    // ---- The public page ----
     "public.sharedAnswer": "साझा किया गया उत्तर",
     "public.sharedConversation": "साझा की गई बातचीत",
     "public.sharedProject": "साझा किया गया प्रोजेक्ट",
@@ -172,7 +160,6 @@ const messages: AreaMessages = {
     "public.sources": "स्रोत",
     "public.page": "पेज {page}",
 
-    // ---- Prompt library ----
     "prompts.button": "प्रॉम्प्ट",
     "prompts.title": "प्रॉम्प्ट लाइब्रेरी",
     "prompts.builtin": "पहले से मौजूद",
@@ -191,7 +178,6 @@ const messages: AreaMessages = {
     "prompts.builtin.compare-clauses.title": "क्लॉज़ की तुलना करें",
     "prompts.builtin.key-figures.title": "मुख्य आँकड़े",
 
-    // ---- Comparison ----
     "compare.tab": "तुलना",
     "compare.title": "दो दस्तावेज़ों की तुलना करें",
     "compare.intro":
@@ -214,7 +200,6 @@ const messages: AreaMessages = {
     "compare.method.lexical": "शब्दों के आधार पर जोड़े गए हिस्से",
     "compare.stats": "{pairs} अलग हिस्से, {identical} बिना बदलाव",
 
-    // ---- Charts ----
     "chart.showData": "डेटा दिखाएँ",
     "chart.series": "श्रृंखला",
     "chart.label": "लेबल",

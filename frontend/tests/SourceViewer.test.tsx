@@ -1,20 +1,4 @@
-/**
- * SourceViewer.test.tsx
- * =====================
- * WHAT THIS FILE TESTS
- * --------------------
- * `components/SourceViewer.tsx` -- clicking a citation opens the source.
- *
- *   PDF      the file's bytes are fetched and handed to pdf.js, opened at
- *            the CITED page with the snippet to highlight; prev / next move
- *            through the pages; a PDF that cannot be drawn falls back to text
- *   others   the cited chunk and its neighbours, the passage in a <mark>
- *   dialog   labelled, closes on Escape and on the backdrop
- *
- * pdf.js itself cannot run in jsdom (there is no canvas), so `lib/pdf` is
- * mocked: what is checked is that the viewer asks it for the right page with
- * the right snippet, which is the part this component owns.
- */
+// `components/SourceViewer.tsx` -- clicking a citation opens the source.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -148,7 +132,6 @@ describe("the dialog", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: /close source/i }));
     fireEvent.click(container.firstChild as HTMLElement);
-    // A click INSIDE the dialog must not close it.
     fireEvent.click(screen.getByRole("dialog"));
 
     expect(onClose).toHaveBeenCalledTimes(3);

@@ -1,15 +1,4 @@
-/**
- * StackingCards.tsx  (F16: cards that stack on scroll)
- * ====================================================
- * Each card is `position: sticky` with a slightly larger `top` than the one
- * before, so as the visitor scrolls, cards slide up and pile onto each other
- * like a deck. As a card gets covered it shrinks and dims a little, pushing
- * it visually "back".
- *
- * Sticky positioning does the stacking natively, so even with JavaScript off
- * the deck still stacks; framer-motion only adds the scale/dim. Under reduced
- * motion the cards are a plain vertical list.
- */
+// Cards that stack on scroll
 
 "use client";
 
@@ -37,7 +26,6 @@ function StackCard({
   progress: MotionValue<number>;
   still: boolean;
 }) {
-  // Each later card covers this one; shrink toward the end of the section.
   const start = index / total;
   const scale = useTransform(progress, [start, 1], [1, 1 - (total - index) * 0.04]);
   const brightness = useTransform(progress, [start, 1], [1, 0.7]);

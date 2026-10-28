@@ -1,20 +1,7 @@
-/**
- * progress.ts
- * ===========
- * The line under a large document in the list: how far ingestion has got, or
- * that it is paused for the embedding rate limit and will resume by itself.
- * Kept out of lib/api.ts so screens that mock the API client still get it.
- */
+// The line under a large document in the list: how far ingestion has got, or that it is...
 import { type DocumentItem } from "@/lib/api";
 import { translate, type Locale } from "@/lib/i18n";
 
-/**
- * Where a large document's ingestion has got to: meta_data.progress, written
- * by the backend after every batch (tasks/ingestion.py).
- *   extracting  reading pages      embedding  making vectors
- *   waiting     held by the embedding rate limit, mid-batch
- *   paused      the rate limit outlasted the retries; resumes at resume_at
- */
 export interface DocumentProgress {
   stage:
     | "extracting"
@@ -34,7 +21,6 @@ export interface DocumentProgress {
   reason?: string;
 }
 
-/** The document's progress object, or null when the backend sent none. */
 export function documentProgress(
   doc: Pick<DocumentItem, "meta_data">,
 ): DocumentProgress | null {
@@ -45,7 +31,6 @@ export function documentProgress(
     : null;
 }
 
-/** A wait in whole units, rounded the way lib/api.ts `formatWait` does. */
 function waitText(locale: Locale, seconds: number): string {
   if (seconds < 90)
     return translate(locale, seconds === 1 ? "progress.wait.second" : "progress.wait.seconds", { n: seconds });
@@ -54,11 +39,6 @@ function waitText(locale: Locale, seconds: number): string {
   return translate(locale, "progress.wait.days", { n: Math.ceil(seconds / 86400) });
 }
 
-/**
- * One line for the document list: "Embedding 340 of 1,200 chunks", etc.
- * The strings come from the i18n dictionary (lib/i18n/progress.ts); pass
- * the reader's `locale` from useT(). English is the default.
- */
 export function describeProgress(
   progress: DocumentProgress | null,
   now: Date = new Date(),

@@ -1,32 +1,4 @@
-/**
- * EmbeddingCloud.tsx  (F17)
- * =========================
- * "Show embedding map" on the search page: every chunk of the project as a
- * point in 3D, with the current search's hits lit up.
- *
- * WHAT YOU ARE LOOKING AT
- * -----------------------
- * Each chunk's embedding (hundreds of numbers) is squashed to three by PCA
- * on the server (backend/app/services/embedding_map.py). Chunks about the
- * same thing sit close together, so the cloud shows the SHAPE of a project:
- * a clump per topic, a document that stands apart, and -- after a search --
- * whether the hits come from one neighbourhood or are scattered across it.
- *
- * WHEN THINGS LOAD
- * ----------------
- * Nothing at all until the disclosure is opened: no request, no three.js.
- * Opening it fetches the map and lazy-loads the scene (next/dynamic,
- * ssr:false). The canvas then draws only while on screen (useIsActive).
- *
- * FALLBACKS
- * ---------
- *   * "View as table": the same points as a table -- filename, snippet,
- *     coordinates, and whether each is a search hit. This is what a screen
- *     reader gets (the canvas is aria-hidden), and it is the only view when
- *     the browser has no WebGL.
- *   * prefers-reduced-motion: the scene stays still (no auto-rotate) and
- *     only redraws when dragged.
- */
+// "Show embedding map" on the search page: every chunk of the project as a point in 3D...
 
 "use client";
 
@@ -47,7 +19,6 @@ const Scene = dynamic(() => import("@/components/EmbeddingCloudScene"), {
   ),
 });
 
-/** True when the browser can create a WebGL context. Exported for the tests. */
 export function hasWebGL(): boolean {
   try {
     const canvas = document.createElement("canvas");
@@ -59,7 +30,6 @@ export function hasWebGL(): boolean {
 
 interface Props {
   projectId: string;
-  /** chunk_ids of the current search's results. */
   hitIds?: string[];
 }
 
@@ -70,7 +40,6 @@ export default function EmbeddingCloud({ projectId, hitIds = [] }: Props) {
   const [error, setError] = useState("");
   const [tableView, setTableView] = useState(false);
   const [hovered, setHovered] = useState<EmbeddingPoint | null>(null);
-  // Checked once, on first open (never during render on the server).
   const [webgl, setWebgl] = useState(true);
 
   const reduced = usePrefersReducedMotion();
@@ -78,7 +47,6 @@ export default function EmbeddingCloud({ projectId, hitIds = [] }: Props) {
   const active = useIsActive(frame);
 
   const hits = useMemo(() => new Set(hitIds), [hitIds]);
-  // One colour per document, in order of first appearance.
   const colorIndex = useMemo(() => {
     const index = new Map<string, number>();
     map?.points.forEach((p) => {
@@ -245,7 +213,6 @@ export default function EmbeddingCloud({ projectId, hitIds = [] }: Props) {
                 </div>
               )}
 
-              {/* Colour key: one swatch per document, plus the hit colour. */}
               <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs" aria-label="Colour key" style={{ color: "var(--text-secondary)" }}>
                 {legend.slice(0, DOCUMENT_COLORS.length).map(([id, name], i) => (
                   <li key={id} className="flex items-center gap-1.5">

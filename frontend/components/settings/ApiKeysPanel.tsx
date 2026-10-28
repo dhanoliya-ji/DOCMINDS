@@ -1,22 +1,4 @@
-/**
- * ApiKeysPanel.tsx
- * ================
- * Create, list and revoke API keys -- credentials for scripts and other
- * programs, sent as an `X-API-Key` header instead of signing in.
- *
- * THE KEY IS SHOWN EXACTLY ONCE
- * -----------------------------
- * The backend stores only a hash of each key (like a password), so after the
- * create response there is no way to see it again -- the list shows just a
- * short prefix to tell keys apart. The panel says so plainly next to the key,
- * because "I closed the tab and lost it" is otherwise a surprise.
- *
- * A KEY'S ROLE
- * ------------
- * A request made with a key acts with the LOWER of the key's role and its
- * owner's role. Give a reporting script a viewer key and a leak of it cannot
- * upload or delete anything.
- */
+// Create, list and revoke API keys -- credentials for scripts and other programs, sent...
 
 "use client";
 
@@ -47,7 +29,6 @@ export default function ApiKeysPanel() {
     } catch (err) {
       setError(getErrorMessage(err, t("apiKeys.loadError")));
     }
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -73,7 +54,6 @@ export default function ApiKeysPanel() {
     }
   }
 
-  // Confirmation is the hold itself (see HoldToConfirm), not a dialog.
   async function revoke(key: ApiKey) {
     setError("");
     try {

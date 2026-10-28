@@ -1,13 +1,4 @@
-/**
- * DocumentFilter.tsx
- * ==================
- * "Only search these files." A small multi-select used by both the Search
- * and the Ask AI tabs.
- *
- * Nothing ticked means ALL documents -- the default, and what an empty
- * filter means to the backend too (document_ids omitted). Only documents
- * that finished processing are offered, because only they are searchable.
- */
+// "Only search these files." A small multi-select used by both the Search and the Ask AI...
 
 "use client";
 
@@ -24,11 +15,9 @@ interface Props {
   disabled?: boolean;
 }
 
-/** The button's label: "All documents", "handbook.pdf" or "3 documents". */
 export function filterLabel(
   documents: DocumentItem[],
   selected: string[],
-  // English unless the caller passes the current language's `t`.
   t: (key: string, vars?: Vars) => string = (key, vars) => translate("en", key, vars)
 ): string {
   const chosen = documents.filter((d) => selected.includes(d.id));
@@ -42,7 +31,6 @@ export default function DocumentFilter({ documents, selected, onChange, disabled
   const rootRef = useRef<HTMLDivElement>(null);
   const { t } = useT();
 
-  // A click anywhere else closes the list, like a native <select>.
   useEffect(() => {
     if (!open) return;
     function onDown(event: MouseEvent) {

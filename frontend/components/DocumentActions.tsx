@@ -1,22 +1,4 @@
-/**
- * DocumentActions.tsx
- * ===================
- * The editor-only controls on one row of the document list: rename,
- * re-index and delete.
- *
- *   Rename     inline -- the name becomes a text box; Enter saves, Escape
- *              cancels. The backend keeps the real extension whatever is
- *              typed (a .pdf stays a .pdf).
- *   Re-index   processes the stored file again: after a failure whose cause
- *              is fixed, or after the embedding model changed. The row goes
- *              back to "Queued" and the page's polling picks it up.
- *   Delete     a second click confirms ("Delete?"), then the document, its
- *              searchable chunks and the stored file are all removed.
- *
- * Viewers never see this component; the backend refuses all three with 403
- * regardless (require_editor), so hiding it is about not offering what will
- * be refused.
- */
+// The editor-only controls on one row of the document list: rename, re-index and delete.
 
 "use client";
 
@@ -27,7 +9,6 @@ import { DocumentItem, api, getErrorMessage } from "@/lib/api";
 
 interface Props {
   document: DocumentItem;
-  /** Called after any change, so the page re-reads the list. */
   onChanged: () => void;
   onError: (message: string) => void;
 }
@@ -38,7 +19,6 @@ export default function DocumentActions({ document, onChanged, onError }: Props)
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Re-indexing a document that is already queued or running is refused (409).
   const working = document.status === "pending" || document.status === "processing";
 
   async function run(action: () => Promise<unknown>, fallback: string) {

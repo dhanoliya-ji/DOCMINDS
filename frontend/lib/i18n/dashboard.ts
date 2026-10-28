@@ -1,12 +1,4 @@
-/**
- * i18n/dashboard.ts -- the dashboard, the first-run help (Onboarding.tsx),
- * project cards and the email-confirmation banner, English and Hindi.
- * See i18n/index.ts.
- *
- * Strings that wrap markup (a link, <code>, <strong>) use `{name}` slots
- * filled with elements by `rich()` in i18n/index.ts, so each language can
- * put the link where its grammar wants it.
- */
+// project cards and the email-confirmation banner, English and Hindi.
 
 import type { AreaMessages } from "./index";
 

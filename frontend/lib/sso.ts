@@ -1,22 +1,4 @@
-/**
- * sso.ts
- * ======
- * The three calls behind "Continue with SSO" (backend/app/api/v1/sso.py).
- * Kept apart from lib/api.ts so single sign-on can be read -- and removed --
- * as one piece.
- *
- * THE FLOW, FROM THE BROWSER'S SIDE
- * ---------------------------------
- *   1. /login asks `getSsoConfig()` whether SSO is switched on, and shows the
- *      button only if it is.
- *   2. The button is a plain link to `ssoLoginUrl()`: a full-page navigation
- *      to the API, which redirects on to Google / Microsoft / Okta.
- *   3. After the user signs in there, the API redirects back to
- *      /login/sso#code=...  (or #error=...). The code travels in the URL
- *      FRAGMENT, which browsers never send to any server.
- *   4. /login/sso calls `exchangeSsoCode(code)`, which returns the same
- *      access + refresh tokens a password login does, and saves them.
- */
+// The three calls behind "Continue with SSO" (backend/app/api/v1/sso.py).
 
 import { API_BASE, setRefreshToken, setToken } from "./api";
 
@@ -29,11 +11,6 @@ export interface SsoConfig {
 
 const DISABLED: SsoConfig = { enabled: false, provider_name: "SSO" };
 
-/**
- * Is SSO on? Any failure -- API down, an older backend without the route --
- * simply means "no button": a missing optional feature must never break the
- * login page.
- */
 export async function getSsoConfig(): Promise<SsoConfig> {
   try {
     const response = await fetch(`${SSO_URL}/config`);
@@ -45,14 +22,12 @@ export async function getSsoConfig(): Promise<SsoConfig> {
   }
 }
 
-/** Where the "Continue with SSO" link points. An invite token rides along. */
 export function ssoLoginUrl(inviteToken?: string): string {
   return inviteToken
     ? `${SSO_URL}/login?invite=${encodeURIComponent(inviteToken)}`
     : `${SSO_URL}/login`;
 }
 
-/** Swap the one-time code for tokens, and save them like a normal login. */
 export async function exchangeSsoCode(code: string): Promise<void> {
   const response = await fetch(`${SSO_URL}/exchange`, {
     method: "POST",
@@ -74,7 +49,6 @@ export async function exchangeSsoCode(code: string): Promise<void> {
   if (data.refresh_token) setRefreshToken(data.refresh_token);
 }
 
-/** Read `#code=...` / `#error=...` from a URL fragment. */
 export function parseSsoFragment(hash: string): { code?: string; error?: string } {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
   return {

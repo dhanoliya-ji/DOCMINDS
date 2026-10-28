@@ -1,17 +1,4 @@
-/**
- * VerifyBanner.tsx
- * ================
- * A reminder shown to a signed-in user whose email is not yet confirmed, with
- * a button to send the confirmation link again.
- *
- * WHY IT EXISTS
- * -------------
- * Verification emails get lost, land in spam, or expire (after
- * EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS). Without a way to ask for another, a
- * user's only recourse would be an admin -- or, when
- * REQUIRE_EMAIL_VERIFICATION is on, a locked account. The resend endpoint is
- * rate limited server-side, so the button needs no throttle of its own.
- */
+// A reminder shown to a signed-in user whose email is not yet confirmed, with a button...
 
 "use client";
 

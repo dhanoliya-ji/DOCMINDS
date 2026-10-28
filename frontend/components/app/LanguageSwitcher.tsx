@@ -1,14 +1,4 @@
-/**
- * LanguageSwitcher.tsx
- * ====================
- * Picks the interface language (lib/i18n): English or Hindi.
- *
- * A native <select> rather than a custom menu: it is keyboard- and
- * screen-reader-friendly for free, uses the phone's own picker on mobile, and
- * is narrow enough for the 375px topbar. Each option is written in its own
- * language ("हिन्दी", not "Hindi"), so someone who cannot read the current
- * one can still find theirs. The label is visually hidden but announced.
- */
+// Picks the interface language (lib/i18n): English or Hindi.
 
 "use client";
 

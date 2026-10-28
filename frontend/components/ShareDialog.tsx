@@ -1,18 +1,4 @@
-/**
- * ShareDialog.tsx
- * ===============
- * Make a public read-only link to an answer, a conversation or a project,
- * and manage the links that already exist.
- *
- *     1. pick when it expires (never, 7, 30 or 90 days) -> "Create link"
- *     2. the full link appears ONCE, with a Copy button. The server keeps
- *        only an HMAC of the token, so it cannot be shown again: a lost link
- *        is revoked and replaced.
- *     3. underneath, every link to this target: its prefix, status, views,
- *        and Revoke.
- *
- * The visitor's page is app/share/[token]/page.tsx.
- */
+// Make a public read-only link to an answer, a conversation or a project, and manage the...
 
 "use client";
 
@@ -65,7 +51,6 @@ export default function ShareDialog({ kind, targetId, onClose }: Props) {
       const link = await api.createShareLink(kind, targetId, expiry || null);
       setCreated(shareUrl(link.path));
       setCopied(false);
-      // The list never holds the token itself.
       const listed: ShareLink = { ...link };
       delete (listed as Partial<typeof link>).token;
       delete (listed as Partial<typeof link>).path;

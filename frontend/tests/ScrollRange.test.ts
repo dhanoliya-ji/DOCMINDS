@@ -1,8 +1,4 @@
-/**
- * scrollRange keeps scroll-linked input ranges inside 0..1 and increasing.
- * Without it Chrome threw "Offsets must be monotonically non-decreasing"
- * and the live landing page crashed on load.
- */
+// scrollRange keeps scroll-linked input ranges inside 0..1 and increasing.
 import { describe, expect, it } from "vitest";
 
 import { scrollRange } from "@/components/landing/PipelineScroll";

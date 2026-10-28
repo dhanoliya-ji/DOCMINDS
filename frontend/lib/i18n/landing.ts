@@ -1,12 +1,4 @@
-/**
- * i18n/landing.ts -- the landing page's calls to action and section
- * headings, and the PWA install / offline strings, English and Hindi.
- * See i18n/index.ts.
- *
- * The animated headline (ParticleHeadline) and the long feature copy stay
- * English: the headline is drawn into a canvas shaped around its English
- * line breaks, and the feature cards are marketing copy kept in one place.
- */
+// headings, and the PWA install / offline strings, English and Hindi.
 
 import type { AreaMessages } from "./index";
 

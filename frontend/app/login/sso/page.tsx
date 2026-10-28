@@ -1,18 +1,4 @@
-/**
- * login/sso/page.tsx  (served at "/login/sso")
- * ============================================
- * Where the backend sends the browser back after "Continue with SSO"
- * (backend/app/api/v1/sso.py). The URL looks like one of:
- *
- *     /login/sso#code=<one-time code>
- *     /login/sso#error=<a message to show>
- *
- * The values are in the FRAGMENT (after #), which the browser never sends to
- * any server -- so the code cannot leak into an access log. This page swaps
- * the code for tokens (lib/sso.ts) and continues to the dashboard, exactly
- * like a password sign-in. The code works once and for two minutes, so it is
- * also wiped from the address bar straight away.
- */
+// Page /login/sso -- where the backend sends the browser back after "Continue with SSO"...
 
 "use client";
 
@@ -29,8 +15,6 @@ export default function SsoCallbackPage() {
   const { t } = useT();
   const router = useRouter();
   const [error, setError] = useState("");
-  // React's development mode runs effects twice; the code is single-use, so
-  // a second exchange would fail and show a false error.
   const started = useRef(false);
 
   useEffect(() => {
@@ -38,12 +22,9 @@ export default function SsoCallbackPage() {
     started.current = true;
 
     const { code, error: fragmentError } = parseSsoFragment(window.location.hash);
-    // Remove the code from the address bar (and so from history).
     window.history.replaceState(null, "", window.location.pathname);
 
     if (fragmentError || !code) {
-      // Deferred a tick: setting state synchronously inside an effect makes
-      // React render twice for nothing.
       queueMicrotask(() =>
         setError(fragmentError || "The sign-in response was incomplete. Please try again.")
       );

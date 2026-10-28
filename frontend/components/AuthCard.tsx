@@ -1,19 +1,4 @@
-/**
- * AuthCard.tsx
- * ============
- * The frame shared by every signed-out screen: sign in, forgot password,
- * reset password and verify email. One centred glass card with a heading.
- *
- * Also exports `Notice`, the coloured message box those screens (and the
- * settings area) use for errors and confirmations.
- *
- * ACCESSIBILITY
- * -------------
- * An error is announced with role="alert" (interrupts the screen reader,
- * because the user must act) and a confirmation with role="status" (waits its
- * turn, because it is good news). Without either, a screen-reader user who
- * presses "Send link" hears nothing at all.
- */
+// The frame shared by every signed-out screen: sign in, forgot password, reset password...
 
 "use client";
 
@@ -35,7 +20,6 @@ export function AuthCard({
 }) {
   return (
     <main className="relative flex min-h-screen items-center justify-center px-6 py-12">
-      {/* Signed-out visitors can pick a language too. */}
       <LanguageSwitcher className="absolute right-4 top-4" />
       <motion.div
         initial={{ opacity: 0, y: 24, scale: 0.98 }}
@@ -79,12 +63,6 @@ export function Notice({ tone, children }: { tone: Tone; children: ReactNode }) 
   );
 }
 
-/**
- * Live hints under a password field, from lib/password.ts.
- *
- * Linked to the input with aria-describedby (the caller passes the same `id`),
- * so a screen reader reads the rules when the field gains focus.
- */
 export function PasswordHints({ id, problems, minLength }: { id: string; problems: string[]; minLength: number }) {
   const { t } = useT();
   return (

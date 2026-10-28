@@ -1,19 +1,4 @@
-/**
- * forgot-password/page.tsx  (served at "/forgot-password")
- * ========================================================
- * Ask for a password-reset link by email.
- *
- * THE SAME ANSWER FOR EVERY ADDRESS
- * ---------------------------------
- * POST /auth/password-reset/request replies identically whether or not the
- * address has an account. If it said "no such user", anyone could find out
- * who has an account by typing addresses in. So this page also shows one
- * message for every outcome -- "if an account exists, a link is on its way" --
- * and never hints which case happened.
- *
- * The emailed link points at /reset-password?token=... (see
- * backend/app/services/email.py).
- */
+// Page /forgot-password -- ask for a password-reset link by email.
 
 "use client";
 
@@ -43,7 +28,6 @@ export default function ForgotPasswordPage() {
           "If an account exists for that address, we've emailed it a link to reset the password."
       );
     } catch (err) {
-      // Realistically only a 429 (too many requests) or a network failure.
       setError(getErrorMessage(err, "Could not send the reset link. Please try again."));
     } finally {
       setLoading(false);

@@ -1,20 +1,4 @@
-/**
- * developers/page.tsx  (served at "/developers")
- * ==============================================
- * Public API documentation for people integrating with DocMinds from their
- * own code: how to get an API key, how to send it, the rate limits, the
- * endpoints most programs need, copy-paste examples in curl, Python and
- * TypeScript, and the two SDKs in sdk/.
- *
- * The page needs no sign-in, so it can be linked from anywhere. The full
- * schema is FastAPI's interactive reference at <API_BASE>/docs, generated
- * from the same code that serves the requests, so this page only covers
- * what that reference cannot: the workflow and the rules around it.
- *
- * Prose follows the language switcher (lib/i18n/developers.ts). Code,
- * header names, paths and status codes are the same in every language and
- * stay here.
- */
+// Page /developers -- public API documentation for people integrating with DocMinds from their own code: how...
 
 "use client";
 
@@ -26,7 +10,6 @@ import LanguageSwitcher from "@/components/app/LanguageSwitcher";
 import { API_BASE } from "@/lib/api";
 import { rich, useT } from "@/lib/i18n";
 
-/** The rate limits a default deployment applies (backend/app/core/config.py). */
 const LIMITS = [
   { endpoint: "POST /api/v1/chat/sessions/{id}/messages", limit: "30 / minute", per: "user" },
   { endpoint: "POST /api/v1/search/", limit: "60 / minute", per: "user" },
@@ -53,7 +36,6 @@ const LANGUAGES: { id: Language; label: string }[] = [
   { id: "typescript", label: "TypeScript" },
 ];
 
-/** Every example, per language. `base` is the API's origin. */
 function examples(base: string): Record<Language, { id: string; title: string; code: string }[]> {
   return {
     curl: [
@@ -95,66 +77,79 @@ curl ${base}/api/v1/chat/sessions/$SESSION_ID/messages \\
       {
         id: "list",
         title: "dev.examples.list",
-        code: `import os
-from docminds import DocMinds
+        code: `import os, requests
 
-client = DocMinds("${base}", api_key=os.environ["DOCMINDS_API_KEY"])
-for project in client.list_projects():
+api = requests.Session()
+api.headers["X-API-Key"] = os.environ["DOCMINDS_API_KEY"]
+for project in api.get("${base}/api/v1/projects/").json():
     print(project["id"], project["name"])`,
       },
       {
         id: "upload",
         title: "dev.examples.upload",
-        code: `documents = client.upload(project_id, ["handbook.pdf"])
+        code: `with open("handbook.pdf", "rb") as f:
+    documents = api.post("${base}/api/v1/documents/upload",
+                         data={"project_id": project_id}, files={"files": f}).json()
 print(documents[0]["status"])  # "pending" until the worker finishes`,
       },
       {
         id: "search",
         title: "dev.examples.search",
-        code: `results = client.search("annual leave", project_id=project_id, top_k=5)
-for hit in results["results"]:
+        code: `body = {"query": "annual leave", "project_id": project_id, "top_k": 5}
+for hit in api.post("${base}/api/v1/search/", json=body).json()["results"]:
     print(round(hit["score"], 2), hit["filename"], hit["page_number"])`,
       },
       {
         id: "ask",
         title: "dev.examples.ask",
-        code: `session = client.create_session(project_id)
-reply = client.ask(session["id"], "How many days of leave do I get?")
-print(reply["assistant_message"]["content"])
-for c in reply["citations"]:
-    print(f"[{c['number']}] {c['filename']} p.{c['page_number']}")`,
+        code: `session = api.post("${base}/api/v1/chat/sessions", json={"project_id": project_id}).json()
+reply = api.post(f"${base}/api/v1/chat/sessions/{session['id']}/messages",
+                 json={"message": "How many days of leave do I get?"}).json()
+print(reply["assistant_message"]["content"])`,
       },
     ],
     typescript: [
       {
         id: "list",
         title: "dev.examples.list",
-        code: `import { DocMinds } from "./sdk/typescript/src";
+        code: `const api = (path: string, init: RequestInit = {}) =>
+  fetch("${base}/api/v1" + path, {
+    ...init,
+    headers: { "X-API-Key": process.env.DOCMINDS_API_KEY!, ...init.headers },
+  }).then((r) => r.json());
 
-const client = new DocMinds("${base}", { apiKey: process.env.DOCMINDS_API_KEY! });
-const projects = await client.listProjects();
-console.log(projects.map((p) => p.name));`,
+const projects = await api("/projects/");
+console.log(projects.map((p: { name: string }) => p.name));`,
       },
       {
         id: "upload",
         title: "dev.examples.upload",
         code: `import { readFile } from "node:fs/promises";
 
-const file = new Blob([await readFile("handbook.pdf")], { type: "application/pdf" });
-const [doc] = await client.upload(projectId, [{ name: "handbook.pdf", data: file }]);
+const form = new FormData();
+form.append("project_id", projectId);
+form.append("files", new Blob([await readFile("handbook.pdf")]), "handbook.pdf");
+const [doc] = await api("/documents/upload", { method: "POST", body: form });
 console.log(doc.status); // "pending" until the worker finishes`,
       },
       {
         id: "search",
         title: "dev.examples.search",
-        code: `const { results } = await client.search("annual leave", { projectId, topK: 5 });
-for (const hit of results) console.log(hit.score.toFixed(2), hit.filename, hit.page_number);`,
+        code: `const json = { "Content-Type": "application/json" };
+const { results } = await api("/search/", {
+  method: "POST", headers: json,
+  body: JSON.stringify({ query: "annual leave", project_id: projectId, top_k: 5 }),
+});`,
       },
       {
         id: "ask",
         title: "dev.examples.ask",
-        code: `const session = await client.createSession(projectId);
-const reply = await client.ask(session.id, "How many days of leave do I get?");
+        code: `const session = await api("/chat/sessions", {
+  method: "POST", headers: json, body: JSON.stringify({ project_id: projectId }),
+});
+const reply = await api(\`/chat/sessions/\${session.id}/messages\`, {
+  method: "POST", headers: json, body: JSON.stringify({ message: "How many days of leave do I get?" }),
+});
 console.log(reply.assistant_message.content);`,
       },
     ],
@@ -217,7 +212,6 @@ export default function DevelopersPage() {
     { id: "limits", title: t("dev.limits.title") },
     { id: "endpoints", title: t("dev.endpoints.title") },
     { id: "examples", title: t("dev.examples.title") },
-    { id: "sdks", title: t("dev.sdks.title") },
     { id: "errors", title: t("dev.errors.title") },
   ];
 
@@ -381,14 +375,6 @@ export default function DevelopersPage() {
             <CodeBlock name={t(sample.title)} code={sample.code} />
           </div>
         ))}
-      </Section>
-
-      <Section id="sdks" title={t("dev.sdks.title")}>
-        <p style={muted}>{t("dev.sdks.body")}</p>
-        <ul className="list-disc space-y-1 pl-5 text-sm" style={muted}>
-          <li>{t("dev.sdks.ts")}</li>
-          <li>{t("dev.sdks.py")}</li>
-        </ul>
       </Section>
 
       <Section id="errors" title={t("dev.errors.title")}>

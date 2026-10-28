@@ -1,26 +1,9 @@
-/**
- * streaming.test.ts
- * =================
- * WHAT THIS FILE TESTS
- * --------------------
- * The batch-2 half of `lib/api.ts`:
- *
- *   parseSseBuffer   splitting Server-Sent Events out of arbitrary network
- *                    reads -- an event cut in half by a read boundary must
- *                    wait for its other half, not be dropped or parsed early
- *   streamQuestion   the handlers fire in order, the final response is
- *                    returned, an `error` event becomes a thrown error, a
- *                    refusal before the stream is an ApiError with its status
- *   the new calls    project / document management, the document filter,
- *                    history and feedback -- each hits the right URL with the
- *                    right method and body
- */
+// The batch-2 half of `lib/api.ts`.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, api, parseSseBuffer, setToken } from "@/lib/api";
 
-/** A fetch Response whose body streams `chunks` one read at a time. */
 function streamingReply(chunks: string[], status = 200) {
   const encoder = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
@@ -49,9 +32,6 @@ beforeEach(() => {
   setToken("a-token");
 });
 
-// ======================================================================
-// parseSseBuffer
-// ======================================================================
 
 describe("parseSseBuffer", () => {
   it("splits complete events and keeps the unfinished rest", () => {
@@ -76,9 +56,6 @@ describe("parseSseBuffer", () => {
   });
 });
 
-// ======================================================================
-// streamQuestion
-// ======================================================================
 
 describe("streamQuestion", () => {
   const done = { assistant_message: { id: "a1", content: "Hello world" }, citations: [], model: "m" };
@@ -108,7 +85,6 @@ describe("streamQuestion", () => {
       sse("token", { text: "world" }),
       sse("done", done),
     ].join("");
-    // Split mid-event, as a real network read can.
     const fetchMock = vi.fn().mockResolvedValue(streamingReply([body.slice(0, 37), body.slice(37)]));
     vi.stubGlobal("fetch", fetchMock);
     const calls: string[] = [];
@@ -147,7 +123,6 @@ describe("streamQuestion", () => {
   });
 
   it("sends the document filter only when one is set", async () => {
-    // A fresh stream per call: a body can only be read once.
     const fetchMock = vi.fn().mockImplementation(async () => streamingReply([sse("done", done)]));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -188,9 +163,6 @@ describe("streamQuestion", () => {
   });
 });
 
-// ======================================================================
-// The new endpoints
-// ======================================================================
 
 describe("project and document management", () => {
   it.each([
@@ -261,9 +233,6 @@ describe("project and document management", () => {
   });
 });
 
-// ======================================================================
-// uploadFile: per-file progress over XMLHttpRequest
-// ======================================================================
 
 describe("uploadFile", () => {
   class FakeXhr {

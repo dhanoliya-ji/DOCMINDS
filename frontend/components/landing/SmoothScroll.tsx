@@ -1,16 +1,4 @@
-/**
- * SmoothScroll.tsx  (F7: Lenis smooth scrolling, landing page only)
- * =================================================================
- * Lenis interpolates the native scroll position for an inertial feel. It is
- * mounted by the landing page alone, so the dashboard and project pages keep
- * the browser's plain scrolling -- smoothing there would make dense UIs feel
- * laggy.
- *
- * Lenis drives the real document scroll (it does not fake it with
- * transforms), so framer-motion's useScroll, sticky positioning and anchor
- * links keep working. It is skipped entirely under reduced motion, and the
- * instance is destroyed on unmount so navigating away restores native scroll.
- */
+// Lenis smooth scrolling, landing page only
 
 "use client";
 

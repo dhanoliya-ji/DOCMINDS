@@ -1,22 +1,4 @@
-/**
- * AnswerMarkdown.tsx
- * ==================
- * Renders an assistant answer: Markdown, plus the two things answers about
- * numbers now use (backend services/llm.py, rule 7):
- *
- *     | Quarter | Refunds |      a GitHub-style table (remark-gfm), wrapped
- *     |---------|---------|      so a wide one scrolls inside the bubble
- *                                instead of stretching the page
- *     ```chart                   a chart, drawn by AnswerChart.tsx with its
- *     {"type": "bar", ...}       data table underneath
- *     ```
- *
- * Used by the chat panel and the public share page, so a shared answer
- * looks exactly like the original.
- *
- * Raw HTML in the Markdown is NOT rendered (react-markdown's default): an
- * answer quotes uploaded documents, and those must never inject markup.
- */
+// Renders an assistant answer: Markdown, plus the two things answers about numbers now...
 
 "use client";
 
@@ -35,7 +17,6 @@ const components = {
     </div>
   ),
   code: ({ className, children, ...props }: CodeProps) => {
-    // `node` is react-markdown's syntax-tree node: not a DOM attribute.
     const rest = { ...props };
     delete rest.node;
     if (/\blanguage-chart\b/.test(className ?? "")) {
@@ -47,7 +28,6 @@ const components = {
       </code>
     );
   },
-  // A chart block arrives as <pre><code>; the chart must not sit in a <pre>.
   pre: ({ children }: ComponentProps<"pre">) => {
     const child = Array.isArray(children) ? children[0] : children;
     const className = (child as { props?: { className?: string } })?.props?.className ?? "";

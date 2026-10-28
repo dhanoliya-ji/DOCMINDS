@@ -1,15 +1,4 @@
-/**
- * UsagePanel.tsx
- * ==============
- * This month's AI usage and the organization's quotas (GET /org/usage).
- *
- * WHY SHOW IT
- * -----------
- * When the monthly token quota runs out, chat starts answering 429 until the
- * 1st of next month. An admin should see that coming -- the bar turns amber at
- * 80% -- rather than discover it from a colleague's error message. The cost
- * is an ESTIMATE from LLM_PRICING; the provider's invoice is the real figure.
- */
+// This month's AI usage and the organization's quotas (GET /org/usage).
 
 "use client";
 
@@ -34,7 +23,6 @@ export default function UsagePanel() {
     return () => {
       cancelled = true;
     };
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

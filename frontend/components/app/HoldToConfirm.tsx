@@ -1,39 +1,13 @@
-/**
- * HoldToConfirm.tsx  (F9)
- * =======================
- * A button that fires only after being HELD for `holdMs` -- a calmer
- * replacement for `window.confirm()` on destructive actions.
- *
- * WHY HOLD RATHER THAN A DIALOG
- * -----------------------------
- * A confirm dialog is clicked through on reflex; holding takes a deliberate
- * second and the filling bar shows exactly how close you are. Letting go
- * early cancels, so there is no "undo" to build.
- *
- * ACCESSIBILITY
- * -------------
- * - It is a real <button>, so it is focusable and announced as one.
- * - Keyboard: hold Enter or Space. Releasing early (or Escape) cancels.
- *   Auto-repeated keydowns are ignored so the timer does not restart.
- * - `aria-describedby` points at a hidden hint ("Press and hold for 1
- *   second to confirm"), so the interaction is explained, not discovered.
- * - A polite live region announces "Confirmed".
- * - A plain click does nothing on purpose; that is the safety property.
- * - Reduced motion: the fill bar does not animate (globals.css collapses
- *   transitions), but the hold time still has to elapse.
- */
+// A button that fires only after being HELD for `holdMs` -- a calmer replacement for...
 
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 export interface HoldToConfirmProps {
-  /** Runs once the hold completes. */
   onConfirm: () => void;
   children: ReactNode;
-  /** How long to hold, in milliseconds. */
   holdMs?: number;
-  /** Accessible name, when the visible content is only an icon. */
   "aria-label"?: string;
   className?: string;
   disabled?: boolean;
@@ -70,7 +44,6 @@ export default function HoldToConfirm({
     setHolding(false);
   }
 
-  // Never leave a timer running after unmount.
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
   }, []);
@@ -78,7 +51,6 @@ export default function HoldToConfirm({
   function onKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
     if (e.key === "Escape") return cancel();
     if (e.key !== "Enter" && e.key !== " ") return;
-    // Stop the browser turning the key into a click.
     e.preventDefault();
     if (!e.repeat) start();
   }
@@ -105,7 +77,6 @@ export default function HoldToConfirm({
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
         onBlur={cancel}
-        // Swallow the click a pointer release produces: only the hold counts.
         onClick={(e) => e.preventDefault()}
         onContextMenu={(e) => holding && e.preventDefault()}
       >

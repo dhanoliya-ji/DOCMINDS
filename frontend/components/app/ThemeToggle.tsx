@@ -1,16 +1,4 @@
-/**
- * ThemeToggle.tsx
- * ===============
- * Cycles the theme: system -> light -> dark -> system.
- *
- * One button rather than a three-way menu: it fits the topbar at 375px, and
- * its accessible name always says what it is set to AND what a press does,
- * so a screen-reader user is never guessing.
- *
- * The initial render uses "system" on both server and client (so hydration
- * matches), then reads the stored choice after mount. The inline head script
- * has already painted the right colours, so this causes no visible change.
- */
+// Cycles the theme: system -> light -> dark -> system.
 
 "use client";
 
@@ -32,7 +20,6 @@ export default function ThemeToggle() {
     applyTheme(stored);
   }, []);
 
-  // While on "system", follow the OS live.
   useEffect(() => {
     if (choice !== "system" || !window.matchMedia) return;
     const mql = window.matchMedia("(prefers-color-scheme: light)");

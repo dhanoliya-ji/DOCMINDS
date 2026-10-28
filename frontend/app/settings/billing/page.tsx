@@ -1,29 +1,5 @@
-/**
- * settings/billing/page.tsx  (served at "/settings/billing")
- * ===========================================================
- * The upgrade page: the organization's plan (Free / Pro / Team), what each
- * plan allows, and the way out to the payment provider GET /billing names
- * (`provider`, set by the server's BILLING_PROVIDER):
- *
- *   Stripe
- *   * "Upgrade to Pro"      -> POST /billing/checkout -> Stripe Checkout
- *   * "Manage billing"      -> POST /billing/portal   -> Stripe Customer
- *     Portal (card, invoices, switching plan, cancelling)
- *
- *   Razorpay (India)
- *   * "Upgrade to Pro"      -> POST /billing/checkout -> the Razorpay
- *     subscription page (its short_url; a plain redirect, so the CSP needs
- *     no Razorpay script)
- *   * "Cancel subscription" -> POST /billing/cancel (asks to confirm first;
- *     stops renewal at the end of the paid period)
- *
- * Coming back from Checkout, ?checkout=success shows a thank-you -- but the
- * plan shown is always what the API says, which changes only when the
- * provider's signed webhook arrives (services/billing.py). Everyone may
- * look; only admins get the buttons (the API refuses anyone else regardless).
- */
-
 "use client";
+// Page /settings/billing -- the upgrade page: the organization's plan (Free / Pro / Team), what each plan...
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -112,7 +88,6 @@ function Billing() {
   const planName = (id: string) => t(`billing.plan.${id}`);
   const limit = (value: number, format: (n: number) => string = (n) => n.toLocaleString()) =>
     value === 0 ? t("billing.unlimited") : format(value);
-  // Razorpay cannot swap a running subscription's plan: cancel first.
   const switchBlocked = !!status?.can_cancel && status.plan !== "free";
 
   return (

@@ -1,21 +1,4 @@
-/**
- * platform.ts
- * ===========
- * Typed client for three optional backend features, kept out of lib/api.ts
- * so that file stays small:
- *
- *   * cloud imports   /integrations  (Google Drive, OneDrive / SharePoint,
- *                                     Notion, Confluence; editors and admins)
- *   * billing         /billing       (Stripe or Razorpay plans; admins buy,
- *                                     everyone sees)
- *   * admin dashboard /analytics     (aggregates; admins)
- *
- * Each feature answers 404 while it is switched off on the server, so the
- * `*Available()` probes below are how the UI decides whether to show it at
- * all -- no frontend environment variable is needed to turn them on.
- * Requests go through lib/api.ts `apiFetch`, so a 401 still refreshes the
- * session or signs out exactly as everywhere else.
- */
+// Typed client for three optional backend features, kept out of lib/api.ts so that file...
 
 import { Schema, apiFetch } from "@/lib/api";
 
@@ -42,7 +25,6 @@ function query(params: Record<string, string | number | undefined | null>): stri
 }
 
 export const platformApi = {
-  // ---- cloud imports ----
   listProviders() {
     return apiFetch<Provider[]>("/integrations/providers");
   },
@@ -63,7 +45,6 @@ export const platformApi = {
       `/integrations/connections/${connectionId}/items${query(options)}`
     );
   },
-  /** Starts a BACKGROUND import (202): poll getImport until status is "completed". */
   importItems(connectionId: string, projectId: string, itemIds: string[], autoSync = true) {
     return apiFetch<ImportJob>(`/integrations/connections/${connectionId}/import`, {
       method: "POST",
@@ -94,7 +75,6 @@ export const platformApi = {
     });
   },
 
-  // ---- billing ----
   getBilling() {
     return apiFetch<BillingStatus>("/billing");
   },
@@ -107,18 +87,15 @@ export const platformApi = {
   openPortal() {
     return apiFetch<{ url: string }>("/billing/portal", { method: "POST" });
   },
-  /** Razorpay (and Stripe): stop renewing at the end of the paid period. */
   cancelSubscription() {
     return apiFetch<BillingStatus>("/billing/cancel", { method: "POST" });
   },
 
-  // ---- admin dashboard ----
   getAnalytics(days = 30) {
     return apiFetch<AnalyticsOverview>(`/analytics/overview${query({ days })}`);
   },
 };
 
-/** True when the call succeeds; false on 404 (feature off), 403 or any failure. */
 async function probe(call: () => Promise<unknown>): Promise<boolean> {
   try {
     await call();
@@ -131,7 +108,6 @@ async function probe(call: () => Promise<unknown>): Promise<boolean> {
 export const integrationsAvailable = () => probe(() => platformApi.listProviders());
 export const analyticsAvailable = () => probe(() => platformApi.getAnalytics(1));
 
-/** The browser leaves for a provider's, Stripe's or Razorpay's page. Split out so tests can stub it. */
 export const navigate = {
   to(url: string) {
     window.location.assign(url);

@@ -1,14 +1,4 @@
-/**
- * WebhooksPanel.test.tsx
- * ======================
- * Settings -> Webhooks:
- *
- *   * hidden entirely while the deployment has webhooks off (the API 404s),
- *     both the tab on the settings page and the panel itself
- *   * lists endpoints; creating one shows its signing secret ONCE
- *   * send test, deliveries, hold-to-delete
- *   * only admins get the tab
- */
+// Settings -> Webhooks.
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -68,8 +58,6 @@ beforeEach(() => {
 describe("the settings tab", () => {
   it("appears for an admin when webhooks are on", async () => {
     render(<SettingsPage />);
-    // Generous waits: the settings page now renders every panel through
-    // the i18n hook, and a loaded parallel run can exceed the 1 s default.
     const tab = await screen.findByRole("tab", { name: "Webhooks" }, { timeout: 5000 });
     await userEvent.setup().click(tab);
     expect(await screen.findByText("https://example.com/hook", {}, { timeout: 5000 })).toBeInTheDocument();
@@ -120,7 +108,7 @@ describe("WebhooksPanel", () => {
     await screen.findByText("https://example.com/hook");
 
     await user.type(screen.getByLabelText("Endpoint URL"), "https://other.example/hook");
-    await user.click(screen.getByLabelText("All events")); // off
+    await user.click(screen.getByLabelText("All events"));
     await user.click(await screen.findByLabelText("member.joined"));
     await user.click(screen.getByRole("button", { name: /add webhook/i }));
 

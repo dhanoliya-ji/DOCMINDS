@@ -1,16 +1,4 @@
-/**
- * SsoAnalytics.test.tsx
- * =====================
- * The two optional features of the signed-out shell:
- *
- *   SINGLE SIGN-ON   the "Continue with SSO" button appears only when the
- *                    backend says SSO is on, carries an invite along, and the
- *                    /login/sso page swaps the #code for tokens or shows the
- *                    #error it was given.
- *   ANALYTICS        without NEXT_PUBLIC_POSTHOG_KEY nothing renders and
- *                    nothing starts; URLs are stripped of their query and
- *                    fragment (they carry invite, reset and SSO secrets).
- */
+// The two optional features of the signed-out shell.
 
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -53,8 +41,6 @@ describe("Continue with SSO", () => {
 });
 
 describe("/login/sso", () => {
-  // tests/setup.ts swaps window.location for a plain object, so the fragment
-  // is set the same way, and history.replaceState is watched rather than run.
   let replaceState: ReturnType<typeof vi.spyOn>;
   function arriveWith(hash: string) {
     Object.defineProperty(window, "location", {
@@ -115,7 +101,6 @@ describe("analytics", () => {
   });
 });
 
-// Keep the shared search-params mock in its default state for other files.
 afterEach(() => {
   searchParamsMock.value = new URLSearchParams();
 });

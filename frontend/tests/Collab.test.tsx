@@ -1,17 +1,4 @@
-/**
- * Collab.test.tsx
- * ===============
- * The collaboration batch, in the browser:
- *
- *   charts          parseChartSpec rejects what it cannot draw; AnswerChart
- *                   draws bars / lines / pies with a legend and a data table
- *   markdown        AnswerMarkdown renders GFM tables and ```chart blocks
- *   confidence      the badge names its level and explains it on demand
- *   share dialog    create (token shown once, copied), list, revoke
- *   prompt library  loads on first open, inserts, saves, org scope gated
- *   compare         two documents in, a diff with expandable passages out
- *   public page     an answer, a project, and the one dead-link message
- */
+// The collaboration batch, in the browser.
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -26,7 +13,6 @@ import ShareDialog from "@/components/ShareDialog";
 import SharedPage from "@/app/share/[token]/page";
 import type { DocumentItem } from "@/lib/api";
 
-// vi.hoisted: vi.mock factories run before the module body.
 const { calls, copyText } = vi.hoisted(() => ({
   calls: {
     createShareLink: vi.fn(),
@@ -72,9 +58,6 @@ const BAR = JSON.stringify({
   unit: "%",
 });
 
-// ======================================================================
-// Charts
-// ======================================================================
 
 describe("parseChartSpec", () => {
   it("accepts a well-formed spec", () => {
@@ -100,7 +83,6 @@ describe("AnswerChart", () => {
     expect(screen.getByText("Refunds per quarter")).toBeInTheDocument();
     expect(container.querySelectorAll("path[role='img']")).toHaveLength(4);
     expect(screen.getByRole("img", { name: "2024, Q2: 21%" })).toBeInTheDocument();
-    // Two series -> a legend, so identity is never colour alone.
     expect(screen.getAllByText("2023").length).toBeGreaterThan(0);
 
     await user.click(screen.getByText("Show the data"));
@@ -159,9 +141,6 @@ describe("AnswerMarkdown", () => {
   });
 });
 
-// ======================================================================
-// Confidence
-// ======================================================================
 
 describe("ConfidenceBadge", () => {
   it("names the level and lists the reasons", async () => {
@@ -187,9 +166,6 @@ describe("ConfidenceBadge", () => {
   });
 });
 
-// ======================================================================
-// Share dialog
-// ======================================================================
 
 const link = (over: Record<string, unknown> = {}) => ({
   id: "s1", kind: "message", target_id: "m1", token_prefix: "dms_abcdef", created_by: "u1",
@@ -238,9 +214,6 @@ describe("ShareDialog", () => {
   });
 });
 
-// ======================================================================
-// Prompt library
-// ======================================================================
 
 const prompt = (id: string, scope: string, title: string, over: Record<string, unknown> = {}) => ({
   id, scope, title, body: `${title} body`, editable: scope !== "builtin", key: null, ...over,
@@ -260,7 +233,6 @@ describe("PromptLibrary", () => {
     await user.click(screen.getByRole("button", { name: /prompts/i }));
     await user.click(await screen.findByRole("button", { name: "Summarise risks" }));
     expect(onInsert).toHaveBeenCalledWith("Summarise risks body");
-    // Built-ins cannot be deleted; one's own can.
     await user.click(screen.getByRole("button", { name: /prompts/i }));
     expect(screen.queryByRole("button", { name: /delete summarise risks/i })).toBeNull();
     expect(screen.getByRole("button", { name: /delete my check/i })).toBeInTheDocument();
@@ -283,9 +255,6 @@ describe("PromptLibrary", () => {
   });
 });
 
-// ======================================================================
-// Compare
-// ======================================================================
 
 const doc = (id: string, filename: string) => ({ id, filename, status: "completed" }) as unknown as DocumentItem;
 
@@ -329,13 +298,8 @@ describe("ComparePanel", () => {
   });
 });
 
-// ======================================================================
-// The public page
-// ======================================================================
 
 async function renderShared(token = "dms_tok") {
-  // An already-settled thenable, as Next.js hands a resolved route segment
-  // to `use()` (see ProjectPage.test.tsx for why).
   const params = Object.assign(Promise.resolve({ token }), { status: "fulfilled", value: { token } });
   render(<SharedPage params={params} />);
 }

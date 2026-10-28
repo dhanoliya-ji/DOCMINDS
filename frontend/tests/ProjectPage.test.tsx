@@ -1,31 +1,4 @@
-/**
- * ProjectPage.test.tsx
- * ====================
- * WHAT THIS FILE TESTS
- * --------------------
- * `app/project/[id]/page.tsx` -- the page the three panels live on, and the
- * one that owns the document polling.
- *
- * WHY THE POLLING IS THE POINT
- * ----------------------------
- * Ingestion happens in a Celery worker and finishes whenever it finishes, so
- * the page asks every three seconds until nothing is pending. Two lines make
- * that safe, and BOTH fail silently:
- *
- *   1. The early return when nothing is pending. Without it an idle project
- *      polls forever, every three seconds, for a change that will never come.
- *
- *   2. The `clearInterval` cleanup. Without it every re-render stacks another
- *      timer, and the app escalates into hammering the API. The symptom --
- *      gradually increasing load with no obvious cause -- is genuinely
- *      unpleasant to track down, and it does not reproduce on a short visit.
- *
- * Neither shows up in a screenshot, in a type check, or in a manual test that
- * lasts less than a minute. That is exactly why they are worth pinning.
- *
- * Fake timers throughout, so three seconds costs nothing and the schedule is
- * under the test's control rather than the wall clock's.
- */
+// `app/project/[id]/page.tsx` -- the page the three panels live on, and the one that...
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,7 +14,6 @@ const renameDocument = vi.fn();
 const deleteDocument = vi.fn();
 const reindexDocument = vi.fn();
 const getToken = vi.fn();
-// The signed-in user; drives whether the upload zone is offered.
 const getMe = vi.fn();
 
 vi.mock("@/lib/api", () => ({
@@ -59,7 +31,6 @@ vi.mock("@/lib/api", () => ({
     uploadDocuments: vi.fn().mockResolvedValue([]),
     getMe: (...a: unknown[]) => getMe(...a),
   },
-  // UploadZone checks `instanceof ApiError`; a stand-in class suffices.
   ApiError: class ApiError extends Error {},
   getToken: () => getToken(),
   getErrorMessage: (e: unknown, fallback = "Something went wrong.") =>
@@ -83,30 +54,6 @@ function doc(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/**
- * The route params, in the shape React's `use()` can read synchronously.
- *
- * Next.js 15 made dynamic route params async, so the page unwraps them with
- * `use()`. A test has to hand it a promise rather than a plain object -- which
- * the type system enforces, and which is how this file caught the change
- * during the Next 16 upgrade.
- *
- * WHY THE `status` AND `value` PROPERTIES
- * ---------------------------------------
- * `use()` on an ordinary pending promise SUSPENDS, and getting a suspended
- * render to resume inside a test turns out to be genuinely awkward: awaiting
- * the promise inside `act` is not enough, and it fails under real timers as
- * well as fake ones.
- *
- * React's own protocol offers a way out. A thenable already tagged
- * `status: "fulfilled"` is read straight off `value` with no suspension at
- * all -- which is exactly the state Next.js hands a page in production once
- * the router has resolved the segment. So this is not a trick to dodge
- * suspense; it is the resolved case, which is the one these tests are about.
- *
- * The promise must also be STABLE across renders: `use()` caches on identity,
- * so one built inline in the JSX is new every render and never settles.
- */
 type SettledParams = Promise<{ id: string }> & {
   status: "fulfilled";
   value: { id: string };
@@ -119,7 +66,6 @@ function routeParams(id = "project-1"): SettledParams {
   return params;
 }
 
-/** Render the page with a stable, already-resolved params promise. */
 function renderPage(paramsPromise: SettledParams = routeParams()) {
   return render(<ProjectPage params={paramsPromise} />);
 }
@@ -141,23 +87,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Let pending promises settle without advancing the fake clock. */
 async function settle() {
   await act(async () => {
     await Promise.resolve();
   });
 }
 
-/** Advance the fake clock inside act, so React processes the updates. */
 async function advance(ms: number) {
   await act(async () => {
     vi.advanceTimersByTime(ms);
   });
 }
 
-// ======================================================================
-// THE POLLING LOOP
-// ======================================================================
 
 describe("document polling", () => {
   it("polls while a document is still processing", async () => {
@@ -173,8 +114,6 @@ describe("document polling", () => {
   });
 
   it("polls while a document is still pending", async () => {
-    // "pending" means the worker has not picked the job up yet -- the state a
-    // document sits in forever when no worker is running.
     listDocuments.mockResolvedValue([doc({ status: "pending" })]);
     renderPage();
 
@@ -187,8 +126,6 @@ describe("document polling", () => {
   });
 
   it("STOPS polling once everything has settled", async () => {
-    // The early return. Without it an idle project polls forever for a change
-    // that will never come -- constant background load for nothing.
     listDocuments.mockResolvedValue([doc({ status: "completed" })]);
     renderPage();
 
@@ -196,14 +133,12 @@ describe("document polling", () => {
     await settle();
     const afterSettling = listDocuments.mock.calls.length;
 
-    await advance(15000); // five polling intervals
+    await advance(15000);
 
     expect(listDocuments.mock.calls.length).toBe(afterSettling);
   });
 
   it("does not poll when a document has failed", async () => {
-    // "failed" is a terminal state. Polling it forever would never see a
-    // change, because nothing is going to retry on its own.
     listDocuments.mockResolvedValue([doc({ status: "failed" })]);
     renderPage();
 
@@ -230,13 +165,10 @@ describe("document polling", () => {
   });
 
   it("stops polling after the last document completes", async () => {
-    // The transition that matters: the page must notice work has finished and
-    // wind itself down, not keep asking.
     listDocuments.mockResolvedValue([doc({ status: "processing" })]);
     renderPage();
     await waitFor(() => expect(listDocuments).toHaveBeenCalled());
 
-    // The worker finishes.
     listDocuments.mockResolvedValue([doc({ status: "completed" })]);
     await advance(3500);
     await settle();
@@ -248,9 +180,6 @@ describe("document polling", () => {
   });
 
   it("clears its timer on unmount", async () => {
-    // The cleanup function. Without it the interval survives the component,
-    // and the app quietly escalates into hammering the API with requests
-    // nothing is listening for.
     listDocuments.mockResolvedValue([doc({ status: "processing" })]);
     const { unmount } = renderPage();
 
@@ -265,10 +194,6 @@ describe("document polling", () => {
   });
 
   it("does not stack timers across re-renders", async () => {
-    // The other half of the same bug. The polling effect depends on
-    // `documents`, which changes on every poll -- so the effect re-runs
-    // constantly, and without cleanup each run would leave its timer behind.
-    // Request volume would then grow without bound.
     listDocuments.mockResolvedValue([doc({ status: "processing" })]);
     renderPage();
     await waitFor(() => expect(listDocuments).toHaveBeenCalled());
@@ -281,16 +206,10 @@ describe("document polling", () => {
     await advance(3500);
     const afterAnother = listDocuments.mock.calls.length - beforeSecond;
 
-    // Roughly constant per interval, not doubling. Compared with slack rather
-    // than exact equality, because a poll's own state update can legitimately
-    // schedule one extra tick.
     expect(afterAnother).toBeLessThanOrEqual(afterOneInterval + 1);
   });
 });
 
-// ======================================================================
-// The auth guard
-// ======================================================================
 
 describe("the auth guard", () => {
   it("redirects a signed-out visitor to /login", async () => {
@@ -301,8 +220,6 @@ describe("the auth guard", () => {
   });
 
   it("does not load documents when signed out", async () => {
-    // The redirect returns early. Fetching anyway would produce a 401 and a
-    // pointless request on every page load.
     getToken.mockReturnValue(null);
     renderPage();
 
@@ -318,9 +235,6 @@ describe("the auth guard", () => {
   });
 });
 
-// ======================================================================
-// Loading the page
-// ======================================================================
 
 describe("loading", () => {
   it("scopes the document list to this project", async () => {
@@ -336,8 +250,6 @@ describe("loading", () => {
   });
 
   it("survives a failure to load the project name", async () => {
-    // A missing heading is cosmetic. The documents are the page's purpose and
-    // must still arrive.
     getProject.mockRejectedValue(new Error("Could not load the project"));
     renderPage();
 
@@ -346,8 +258,6 @@ describe("loading", () => {
   });
 
   it("survives a transient failure to load documents", async () => {
-    // Deliberately swallowed: the poll will try again shortly, and an error
-    // banner that clears itself three seconds later is worse than no banner.
     listDocuments.mockRejectedValueOnce(new Error("Network blip"));
     renderPage();
 
@@ -367,9 +277,6 @@ describe("loading", () => {
   });
 });
 
-// ======================================================================
-// Why a document failed, or is being retried
-// ======================================================================
 
 describe("failure reasons", () => {
   it("shows the backend's error_message for a failed document", async () => {
@@ -388,7 +295,6 @@ describe("failure reasons", () => {
   });
 
   it("falls back to meta_data.error from an older backend", async () => {
-    // Before `error_message` existed the reason lived only in meta_data.
     listDocuments.mockResolvedValue([
       doc({ status: "failed", meta_data: { error: "Unsupported file type: xyz" } }),
     ]);
@@ -398,8 +304,6 @@ describe("failure reasons", () => {
   });
 
   it("explains a pending document that is waiting to be retried", async () => {
-    // A transient failure puts the document back on the queue. Without this
-    // note it would just sit on "Queued" with no hint of why.
     listDocuments.mockResolvedValue([
       doc({ status: "pending", error_message: "embedding API unreachable", attempts: 1 }),
     ]);
@@ -420,11 +324,6 @@ describe("failure reasons", () => {
   });
 });
 
-// ======================================================================
-// Role gating
-// ======================================================================
-// Uploading needs the editor role. A viewer is told so instead of being
-// offered a drop zone that can only answer 403.
 
 describe("role gating", () => {
   it("offers the upload zone to an editor", async () => {
@@ -441,9 +340,6 @@ describe("role gating", () => {
   });
 });
 
-// ======================================================================
-// Managing the project and its documents (editor+)
-// ======================================================================
 
 describe("managing documents", () => {
   it("offers no document actions to a viewer", async () => {

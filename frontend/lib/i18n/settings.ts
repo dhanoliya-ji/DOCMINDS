@@ -1,12 +1,4 @@
-/**
- * i18n/settings.ts -- the settings page and its panels (members, API keys,
- * audit log, usage, feedback, webhooks, the quota bar), English and Hindi.
- * See i18n/index.ts.
- *
- * Role names ("Employee", "Manager", "Admin") come from lib/roles.ts and
- * stay as they are: they are the product's role names, shown the same way
- * in invites and emails.
- */
+// audit log, usage, feedback, webhooks, the quota bar), English and Hindi.
 
 import type { AreaMessages } from "./index";
 

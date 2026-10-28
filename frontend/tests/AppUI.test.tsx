@@ -1,19 +1,4 @@
-/**
- * AppUI.test.tsx
- * ==============
- * The signed-in app's shared UI pieces (components/app/* and lib/theme.ts):
- *
- *   * theme       stored choice, system fallback, storage that throws, and
- *                 the no-flash inline script agreeing with the runtime code
- *   * HoldToConfirm  fires only after a full hold, by pointer or keyboard;
- *                 a click, an early release or Escape cancels
- *   * AppShell    nav marks the current page, the mobile drawer opens and
- *                 closes accessibly, sign-out signs out
- *   * Onboarding  the tour steps through, and dismissal is remembered
- *   * Cards / loader  render the F12/F14/F18 hooks the CSS keys off
- *
- * Fake timers for the hold tests, so "one second" costs nothing.
- */
+// The signed-in app's shared UI pieces (components/app/* and lib/theme.ts).
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -41,7 +26,6 @@ vi.mock("@/lib/api", async () => {
   return { ...actual, api: { ...actual.api, logout: () => logout() } };
 });
 
-/** Make `prefers-color-scheme: light` (or nothing) match. */
 function stubColorScheme(light: boolean) {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
     matches: light && query.includes("light"),
@@ -57,9 +41,6 @@ afterEach(() => {
   delete document.documentElement.dataset.theme;
 });
 
-// ======================================================================
-// Theme
-// ======================================================================
 describe("theme", () => {
   it("defaults to system, and system follows the OS", () => {
     expect(readThemeChoice()).toBe("system");
@@ -121,9 +102,6 @@ describe("theme", () => {
   });
 });
 
-// ======================================================================
-// HoldToConfirm (F9)
-// ======================================================================
 describe("HoldToConfirm", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -186,9 +164,6 @@ describe("HoldToConfirm", () => {
   });
 });
 
-// ======================================================================
-// AppShell
-// ======================================================================
 describe("AppShell", () => {
   it("renders the page inside a main landmark with a skip link", () => {
     render(<AppShell>hello</AppShell>);
@@ -220,9 +195,6 @@ describe("AppShell", () => {
   });
 });
 
-// ======================================================================
-// Onboarding
-// ======================================================================
 describe("onboarding", () => {
   const steps = [
     { title: "One", body: "first" },
@@ -264,9 +236,6 @@ describe("onboarding", () => {
   });
 });
 
-// ======================================================================
-// Cards and loader
-// ======================================================================
 describe("cards and loader", () => {
   it("project card links to the workspace with hover preview and blur reveal", () => {
     render(<ProjectCard project={{ id: "p1", name: "HR", created_at: "2026-01-01T00:00:00Z" } as never} />);

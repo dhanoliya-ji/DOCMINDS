@@ -1,11 +1,4 @@
-/**
- * i18n/project.ts -- the project workspace (app/project/[id]/page.tsx),
- * English and Hindi. See i18n/index.ts.
- *
- * Counts come in "one" and "other" forms ("1 document" / "3 documents");
- * the page picks one with `count === 1`. Hindi uses the same word for both
- * here, which is fine -- the lookup just finds two equal strings.
- */
+// English and Hindi.
 
 import type { AreaMessages } from "./index";
 

@@ -1,27 +1,4 @@
-/**
- * SearchPanel.tsx
- * ===============
- * Semantic search with no AI answer — just the matching passages, ranked.
- *
- * THE EMBEDDING MAP (F17)
- * -----------------------
- * Below the results, "Show embedding map" opens a 3D cloud of every chunk in
- * the project (EmbeddingCloud.tsx), with this search's hits lit up -- the
- * same retrieval, seen as geometry.
- *
- * WHY THIS EXISTS ALONGSIDE CHAT
- * ------------------------------
- * It shows you exactly what the retrieval step found, which is valuable twice
- * over:
- *
- *   * As a feature: sometimes you want the source passage itself, not a
- *     summary of it. This is faster, since no LLM is involved at all.
- *
- *   * As a window into the machine: the similarity score on each result makes
- *     the retrieval visible. You can watch "time off" match a section titled
- *     "Annual Leave Entitlement" at 37%, and see an unrelated query return
- *     nothing at all because everything fell below the score threshold.
- */
+// Semantic search with no AI answer — just the matching passages, ranked.
 
 "use client";
 
@@ -37,12 +14,9 @@ import { useT } from "@/lib/i18n";
 
 interface Props {
   projectId: string;
-  /** The project's searchable documents, for the "only these files" filter. */
   documents?: DocumentItem[];
 }
 
-/** What the badge says about which half of hybrid search found a result
-    (i18n keys: search.match.both / vector / keyword). */
 const MATCH_TYPES = new Set(["both", "vector", "keyword"]);
 
 export default function SearchPanel({ projectId, documents = [] }: Props) {
@@ -52,17 +26,11 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // How long the backend took, and whether a search has run at all. The
-  // `searched` flag distinguishes "no results" from "you have not searched
-  // yet" — two states that should look completely different to the user.
-  // "Only these documents"; empty = the whole project.
   const [documentIds, setDocumentIds] = useState<string[]>([]);
-  // The result open in the source viewer.
   const [viewing, setViewing] = useState<SourceRef | null>(null);
 
   const [tookSeconds, setTookSeconds] = useState<number | null>(null);
   const [searched, setSearched] = useState(false);
-  // Memoised so the 3D map re-highlights only when the results change.
   const hitIds = useMemo(() => results.map((r) => r.chunk_id), [results]);
 
   async function runSearch() {
@@ -73,8 +41,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
     setError("");
 
     try {
-      // Ignore filter entries for documents no longer listed (deleted, or
-      // being re-indexed), and send the filter only when it is in use.
       const ids = documentIds.filter((id) => documents.some((d) => d.id === id));
       const response =
         ids.length > 0
@@ -90,11 +56,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
     }
   }
 
-  /**
-   * Pick a colour for the score badge.
-   * Turning a raw number into a colour lets the user judge match quality at a
-   * glance, without having to reason about what 0.37 means.
-   */
   function scoreClass(score: number): string {
     if (score >= 0.5) return "pill-success";
     if (score >= 0.3) return "pill-info";
@@ -103,7 +64,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
 
   return (
     <div>
-      {/* ---- Search box ---- */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search
@@ -140,10 +100,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
         <DocumentFilter documents={documents} selected={documentIds} onChange={setDocumentIds} />
       </div>
 
-      {/* A 429 (rate limit, or the monthly token quota for chat) arrives
-          here already worded with WHEN to try again: getErrorMessage in
-          lib/api.ts appends the Retry-After wait when the backend's text does
-          not include it. role="alert" so a screen reader announces it. */}
       {error && (
         <div
           role="alert"
@@ -154,7 +110,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
         </div>
       )}
 
-      {/* ---- Result count and timing ---- */}
       {searched && !loading && (
         <div
           className="mt-5 flex items-center gap-3 text-xs"
@@ -169,7 +124,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
         </div>
       )}
 
-      {/* ---- Results ---- */}
       <div className="mt-3 space-y-3">
         <AnimatePresence mode="popLayout">
           {results.map((result, index) => (
@@ -222,14 +176,11 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
                 className="text-sm leading-relaxed"
                 style={{ color: "var(--text-secondary)" }}
               >
-                {/* Truncate long chunks so one result cannot dominate the page. */}
                 {result.content.length > 500
                   ? `${result.content.slice(0, 500)}...`
                   : result.content}
               </p>
 
-              {/* Chunk-level detail, useful for understanding how the document
-                  was split up. */}
               <div
                 className="mt-2 flex gap-3 text-xs"
                 style={{ color: "var(--text-muted)" }}
@@ -252,9 +203,6 @@ export default function SearchPanel({ projectId, documents = [] }: Props) {
           ))}
         </AnimatePresence>
 
-        {/* ---- Empty state ----
-            Only shown AFTER a search has actually run, so the panel does not
-            greet a first-time user with "no results found". */}
         {searched && !loading && results.length === 0 && (
           <motion.div
             initial={{ opacity: 0 }}

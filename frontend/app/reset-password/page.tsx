@@ -1,19 +1,4 @@
-/**
- * reset-password/page.tsx  (served at "/reset-password?token=...")
- * ================================================================
- * Choose a new password, using the one-time token from the reset email.
- *
- * WHAT THE BACKEND DOES WITH IT
- * -----------------------------
- * POST /auth/password-reset/confirm checks the token (single use, expires
- * after PASSWORD_RESET_TOKEN_EXPIRE_MINUTES), sets the new password, and signs
- * the account out EVERYWHERE -- every existing session was started with the
- * old password, which may be exactly what leaked. So this page does not log
- * the user in; it sends them to sign in with the new password.
- *
- * The link format (`/reset-password?token=`) is set in
- * backend/app/services/email.py; change both sides together.
- */
+// Page /reset-password?token=... -- choose a new password, using the one-time token from the reset email.
 
 "use client";
 
@@ -27,8 +12,6 @@ import { api, getErrorMessage } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { PASSWORD_MIN_LENGTH, passwordProblems } from "@/lib/password";
 
-// Suspense: required around anything that reads `useSearchParams` (see
-// app/login/page.tsx for why).
 export default function ResetPasswordPage() {
   return (
     <Suspense fallback={null}>
@@ -46,8 +29,6 @@ function ResetPasswordForm() {
   const [done, setDone] = useState("");
   const [error, setError] = useState("");
 
-  // The email is not known on this page, so the "same as your email" rule is
-  // left to the backend; its 422 message is shown if it applies.
   const problems = passwordProblems(password);
 
   async function handleSubmit(event: FormEvent) {

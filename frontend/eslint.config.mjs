@@ -1,3 +1,4 @@
+// ESLint's "flat config", which replaced `.eslintrc.json`.
 /**
  * eslint.config.mjs
  * =================
@@ -29,31 +30,17 @@ import typescriptConfig from "eslint-config-next/typescript";
 
 const config = [
   // The same two rule sets the old .eslintrc.json extended:
-  //   core-web-vitals  Next.js's rules plus the performance ones
-  //                    (an unoptimised <img>, a synchronous script)
-  //   typescript       the TypeScript rules
   ...coreWebVitals,
   ...typescriptConfig,
 
   {
-    // Build output, dependencies, coverage. Linting generated code produces
-    // noise nobody can act on.
     ignores: [".next/**", "node_modules/**", "coverage/**", "next-env.d.ts"],
   },
 
   {
-    // ---- Test files ----
-    // Tests legitimately do things application code should not.
     files: ["tests/**/*.{ts,tsx}"],
     rules: {
-      // Mock factories and fixture builders take deliberately loose shapes.
-      // The point of a fixture is to stand in for anything the API might
-      // send -- including the malformed responses several tests exist to
-      // cover.
       "@typescript-eslint/no-explicit-any": "off",
-      // setup.ts destructures framer-motion's animation props purely to DROP
-      // them before passing the rest to a real DOM element. The unused
-      // bindings are the mechanism, not an oversight.
       "@typescript-eslint/no-unused-vars": "off",
     },
   },
