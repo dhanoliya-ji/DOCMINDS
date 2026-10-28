@@ -1,97 +1,27 @@
-# ======================================================================
-#  RENDER BLUEPRINT  --  Infrastructure as Code
-# ======================================================================
-#  This file describes the API's cloud deployment. Render reads it and
-#  creates the service for you. The database lives on Neon and the
-#  frontend on Vercel, both free and neither expiring.
-#
-#  WHY THIS INSTEAD OF CLICKING THROUGH A DASHBOARD?
-#  The deployment becomes reproducible and reviewable. It lives in git next
-#  to the code, so anyone can see exactly how production is configured, and
-#  the whole stack can be recreated from scratch by pointing Render at this
-#  repository again.
-#
-#  HOW TO DEPLOY   (the full guide, frontend included: docs/DEPLOYMENT.md)
-#  -------------
-#   1. Create a free database at https://neon.tech, open Connect, and copy
-#      the connection string. pgvector is switched on by the first migration
-#      (`CREATE EXTENSION IF NOT EXISTS vector`); Neon allows that.
-#   2. Go to  https://dashboard.render.com/blueprints  and click
-#      "New Blueprint Instance".
-#   3. Select this repository. Render finds this file automatically.
-#   4. It prompts for four values:
-#        DATABASE_URL     the Neon connection string from step 1
-#        GROQ_API_KEY     free, https://console.groq.com/keys (writes answers)
-#        GEMINI_API_KEY   free, https://aistudio.google.com/apikey (embeddings)
-#        FRONTEND_ORIGIN  the Vercel URL; leave blank until the frontend exists
-#   5. Click Apply. The first build takes a few minutes.
-#
-#  NOTE ON THE FREE TIER
-#  Free web services SLEEP after 15 minutes with no traffic, so the first
-#  request after an idle period takes ~50 seconds to wake the container.
-#
-#  THE DATABASE IS ON NEON, NOT RENDER
-#  Render's free Postgres is deleted 30 days after creation (plus a 14-day
-#  grace period), and with it every uploaded document. Neon's free plan does
-#  not expire and includes pgvector, so DATABASE_URL is a Neon connection
-#  string, pasted once (sync: false). The app adapts it for asyncpg itself.
-#
-#  WHY THIS IS ONE SERVICE, NOT THREE
-#  Locally (docker-compose) DocMinds runs an API, a Celery worker, Redis and
-#  a local PyTorch embedding model. Render's free plan cannot host that:
-#  background workers are not free, and a free web service has 512 MB of
-#  RAM, less than PyTorch needs. So the free demo runs a lighter build:
-#  - EMBEDDING_PROVIDER=gemini: embeddings from Google's free API. The image
-#    is built without PyTorch (see the Dockerfile's EMBEDDING_PROVIDER arg).
-#  - INGESTION_MODE=inline: the API processes each upload itself, so there
-#    is no worker and no Redis.
-#  Uploaded files live on the container's disk, which a free service loses
-#  on restart. Their text and embeddings are in Neon and stay searchable;
-#  only the original-file preview is lost -- unless the files go to an
-#  S3-compatible bucket instead (the commented block at the end of envVars).
-# ======================================================================
 
 services:
-  # ==================================================================
-  # THE API  --  what the browser talks to
-  # ==================================================================
   - type: web
     name: docminds-api
     runtime: docker
     plan: free
-    # Where the Dockerfile lives, and which directory is treated as the
-    # build context (everything the Dockerfile can COPY from).
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
 
-    # Render polls this URL to decide whether the service is healthy. If it
-    # stops responding, the deploy is rolled back rather than going live broken.
     healthCheckPath: /api/v1/health
 
     envVars:
-      # ---- Wiring to the other services ----
-      # DATABASE_URL is your Neon string, asked for once. No credentials
-      # are ever committed to this file.
       - key: DATABASE_URL
         sync: false
 
-      # Process uploads inside the API: no worker, no Redis.
       - key: INGESTION_MODE
         value: inline
 
-      # ---- Secrets ----
-      # `generateValue: true` makes Render invent a strong random value and
-      # keep it secret. Exactly right for a JWT signing key: nobody, not even
-      # us, needs to know it.
       - key: SECRET_KEY
         generateValue: true
 
-      # `sync: false` means "prompt me for this in the dashboard and do not
-      # store it in the repository". This is how the Groq key stays private.
       - key: GROQ_API_KEY
         sync: false
 
-      # ---- Application configuration ----
       - key: ENV
         value: production
       - key: DEBUG
@@ -101,21 +31,13 @@ services:
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
 
-      # Embeddings from Google's free Gemini API instead of a local model.
-      # Render passes this to the Docker build too, which then leaves
-      # PyTorch out of the image.
       - key: EMBEDDING_PROVIDER
         value: gemini
-      # Free key: https://aistudio.google.com/apikey
       - key: GEMINI_API_KEY
         sync: false
       - key: EMBEDDING_DIMENSION
         value: "384"
 
-      # Every request reaches the API through Render's proxy, which appends
-      # the real client address to X-Forwarded-For. Trust that one hop, or
-      # the per-IP sign-in and sign-up limits would count every visitor as
-      # the proxy's single address (docs/DEPLOYMENT.md, Production checklist).
       - key: TRUSTED_PROXY_COUNT
         value: "1"
 
@@ -126,117 +48,10 @@ services:
 
       - key: OCR_PROVIDER
         value: tesseract
-      # Installed into the image by the Dockerfile's apt-get step.
       - key: TESSERACT_CMD
         value: tesseract
 
-      # >>> AFTER DEPLOYING THE FRONTEND, SET THIS <<<
-      # Paste the Vercel URL here, otherwise the browser blocks every request
-      # from the frontend with a CORS error.
       - key: FRONTEND_ORIGIN
         sync: false
 
-      # ---- OPTIONAL: keep the original files across restarts ----
-      # Left commented out so a first deploy asks for nothing extra. To keep
-      # uploads when the container restarts, store them in an S3-compatible
-      # bucket (Cloudflare R2 has a free tier): uncomment these, and Render
-      # asks for the `sync: false` values. See docs/DEPLOYMENT.md, "File
-      # storage". The API refuses to start with STORAGE_BACKEND=s3 and no
-      # S3_BUCKET, so a half-finished setup fails loudly, not silently.
-      # - key: STORAGE_BACKEND
-      #   value: s3
-      # - key: S3_BUCKET
-      #   sync: false
-      # - key: S3_REGION
-      #   value: auto
-      # - key: S3_ENDPOINT_URL
-      #   sync: false
-      # - key: S3_ACCESS_KEY_ID
-      #   sync: false
-      # - key: S3_SECRET_ACCESS_KEY
-      #   sync: false
-
-
-      # ---- OPTIONAL: single sign-on (OpenID Connect) ----
-      # "Continue with SSO" through Google, Microsoft, Okta... Commented out
-      # for the same reason as S3: a first deploy should ask for nothing
-      # extra. Uncomment, and Render asks for the `sync: false` values. The
-      # provider must list <this API>/api/v1/auth/sso/callback as an allowed
-      # redirect URI. See docs/DEPLOYMENT.md, "Single sign-on".
-      # - key: OIDC_ENABLED
-      #   value: "true"
-      # - key: OIDC_DISCOVERY_URL
-      #   sync: false
-      # - key: OIDC_CLIENT_ID
-      #   sync: false
-      # - key: OIDC_CLIENT_SECRET
-      #   sync: false
-      # - key: OIDC_PROVIDER_NAME
-      #   value: Google
-      # - key: OIDC_REDIRECT_URI
-      #   sync: false
-
-      # ---- OPTIONAL: webhooks, multilingual search, query cache ----
-      # All off by default. See docs/DEPLOYMENT.md for each.
-      # - key: WEBHOOKS_ENABLED
-      #   value: "true"
-      # - key: EMBEDDING_MULTILINGUAL     # then RE-INDEX every document
-      #   value: "true"
-      # - key: EMBEDDING_CACHE_ENABLED
-      #   value: "true"
-
-      # ---- OPTIONAL: cloud imports, billing, admin dashboard ----
-      # All off by default; see docs/DEPLOYMENT.md, "Cloud imports",
-      # "Billing" and "Admin dashboard". Register
-      # <this API>/api/v1/integrations/callback/<provider> with each provider,
-      # and <this API>/api/v1/billing/webhook as the Stripe (or Razorpay)
-      # webhook endpoint. BILLING_PROVIDER=razorpay for India.
       # INGESTION_MODE=inline runs auto-sync inside the API (no beat needed).
-      # - key: CONNECTORS_ENABLED
-      #   value: "true"
-      # - key: CONNECTOR_ENCRYPTION_KEY
-      #   sync: false
-      # - key: CONNECTOR_GOOGLE_CLIENT_ID
-      #   sync: false
-      # - key: CONNECTOR_GOOGLE_CLIENT_SECRET
-      #   sync: false
-      # - key: CONNECTOR_MICROSOFT_CLIENT_ID
-      #   sync: false
-      # - key: CONNECTOR_MICROSOFT_CLIENT_SECRET
-      #   sync: false
-      # - key: CONNECTOR_NOTION_CLIENT_ID
-      #   sync: false
-      # - key: CONNECTOR_NOTION_CLIENT_SECRET
-      #   sync: false
-      # - key: CONNECTOR_CONFLUENCE_CLIENT_ID
-      #   sync: false
-      # - key: CONNECTOR_CONFLUENCE_CLIENT_SECRET
-      #   sync: false
-      # - key: CONNECTOR_SYNC_ENABLED
-      #   value: "true"
-      # - key: BILLING_ENABLED
-      #   value: "true"
-      # - key: STRIPE_SECRET_KEY
-      #   sync: false
-      # - key: STRIPE_WEBHOOK_SECRET
-      #   sync: false
-      # - key: STRIPE_PRICE_PRO
-      #   sync: false
-      # - key: STRIPE_PRICE_TEAM
-      #   sync: false
-      # - key: BILLING_PROVIDER
-      #   value: razorpay
-      # - key: RAZORPAY_KEY_ID
-      #   sync: false
-      # - key: RAZORPAY_KEY_SECRET
-      #   sync: false
-      # - key: RAZORPAY_WEBHOOK_SECRET
-      #   sync: false
-      # - key: RAZORPAY_PLAN_PRO
-      #   sync: false
-      # - key: RAZORPAY_PLAN_TEAM
-      #   sync: false
-      # - key: BILLING_PRICE_LABELS
-      #   value: '{"free": "₹0", "pro": "₹2,499 / month", "team": "₹7,999 / month"}'
-      # - key: ADMIN_DASHBOARD_ENABLED
-      #   value: "true"

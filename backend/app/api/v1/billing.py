@@ -1,41 +1,12 @@
-"""
-billing.py
-==========
-WHAT THIS FILE DOES
--------------------
-Plans and payment, through Stripe or Razorpay (services/billing.py;
-BILLING_PROVIDER picks which one new subscriptions use).
-
-    GET  /billing              the organization's plan, its limits, the
-                               plans on offer and the provider (any member)
-    POST /billing/checkout     -> the provider's payment page for pro or
-                               team: Stripe Checkout, or a Razorpay
-                               subscription link                    (admin)
-    POST /billing/portal       -> the Stripe Customer Portal URL     (admin)
-    POST /billing/cancel       cancel at the end of the paid period  (admin)
-    POST /billing/webhook      provider -> us: plan changes (signed, no login)
-
-Every route answers 404 while BILLING_ENABLED is off.
-
-THE WEBHOOK IS THE ONLY WRITER
-------------------------------
-Checkout and the portal only hand out provider URLs, and cancel only asks
-the provider to stop renewing. Whatever the customer does reaches us as a
-webhook, verified (Stripe-Signature against STRIPE_WEBHOOK_SECRET, or
-X-Razorpay-Signature against RAZORPAY_WEBHOOK_SECRET) before its body is
-even parsed; an unsigned, wrongly signed or stale request is refused with
-400 and changes nothing. That is why the webhook needs no login -- the
-signature IS its authentication.
-"""
-
+"""Plans and payment, through Stripe or Razorpay (services/billing.py; BILLING_PROVIDER picks which one new..."""
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.organization import Organization
-from app.models.user import User
-from app.schemas.integrations import BillingStatus, CheckoutRequest, RedirectOut
+from app.models import Organization
+from app.models import User
+from app.schemas import BillingStatus, CheckoutRequest, RedirectOut
 from app.services import audit, billing
 
 
@@ -108,10 +79,7 @@ async def cancel(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.require_admin),
 ):
-    """
-    Stop renewing. The plan stays until the end of the paid period, when
-    the provider's signed webhook moves the organization back to free.
-    """
+    """Stop renewing. The plan stays until the end of the paid period, when"""
     org = await _org(db, current_user)
     try:
         await billing.cancel_subscription(db, org)
@@ -128,8 +96,6 @@ async def cancel(
 
 @router.post("/webhook", include_in_schema=False)
 async def billing_webhook(request: Request, db: AsyncSession = Depends(deps.get_db)):
-    # The RAW bytes: the signature covers them exactly, so the body must not
-    # be parsed and re-serialised before checking.
     payload = await request.body()
     provider = billing.webhook_provider(request.headers)
     try:

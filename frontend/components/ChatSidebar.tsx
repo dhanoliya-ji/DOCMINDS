@@ -1,17 +1,4 @@
-/**
- * ChatSidebar.tsx
- * ===============
- * The conversation history for one project: start a new chat, resume an old
- * one, rename it, delete it.
- *
- * Titles are automatic -- the backend names a conversation after its first
- * question (chat.py make_title) -- but a name the user types replaces that
- * for good.
- *
- * Deleting asks for a second click on the same row ("Delete?") rather than
- * a browser confirm() box: it is just as hard to do by accident, and it
- * keeps the user's attention on the row they are about to lose.
- */
+// The conversation history for one project: start a new chat, resume an old one, rename...
 
 "use client";
 

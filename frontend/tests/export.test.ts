@@ -1,14 +1,4 @@
-/**
- * export.test.ts / highlighting
- * =============================
- * WHAT THIS FILE TESTS
- * --------------------
- *   lib/export.ts     the Markdown a copied answer or exported conversation
- *                     becomes -- sources included, numbered as in the answer
- *   lib/highlight.ts  finding a cited passage in text whose whitespace and
- *                     case differ from the snippet, and which PDF text runs
- *                     belong to it
- */
+// becomes -- sources included, numbered as in the answer
 
 import { describe, expect, it } from "vitest";
 

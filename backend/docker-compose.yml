@@ -1,137 +1,55 @@
-# ======================================================================
-#  LOCAL DEVELOPMENT INFRASTRUCTURE
-# ======================================================================
-#  Starts the two servers the application depends on, so you do not have to
-#  install PostgreSQL and Redis natively on your machine.
-#
-#      docker compose up -d      start both, in the background
-#      docker compose down       stop them (data is kept)
-#      docker compose down -v    stop them AND DELETE ALL DATA
-#      docker compose logs -f    watch their output
-#
-#  NOTE this file starts the DEPENDENCIES only, not the application itself.
-#  The API and the Celery worker are run directly with uvicorn and celery
-#  while developing, so that code changes reload instantly instead of
-#  requiring an image rebuild each time.
-#
-#  For deployment everything IS containerised -- see backend/Dockerfile and
-#  render.yaml in the repository root.
-# ======================================================================
 
 services:
-  # ==================================================================
-  # POSTGRESQL -- with the pgvector extension
-  # ==================================================================
   postgres:
-    # >>> THE IMAGE CHOICE MATTERS <<<
-    # This is NOT the standard `postgres` image. `pgvector/pgvector:pg16` is
-    # Postgres 16 with the pgvector extension already compiled in.
-    #
-    # Using plain `postgres:16` would make the migration fail at
-    # `CREATE EXTENSION vector`, because the extension files would not exist
-    # on disk -- and without pgvector there is no vector column and no
-    # semantic search at all.
     image: pgvector/pgvector:pg16
     container_name: docminds_postgres
 
-    # Start again automatically if it crashes, or when Docker itself starts.
     restart: always
 
     environment:
-      # `${VAR:-default}` reads VAR from your shell or .env file and falls
-      # back to the value after `:-` if it is not set. So these match the
-      # application's defaults out of the box, but can be overridden.
       POSTGRES_DB: ${POSTGRES_DB:-document_intelligence}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
 
     ports:
-      # "host:container" -- Postgres listens on 5432 INSIDE the container, and
-      # we expose it as 5433 on your machine.
-      #
-      # WHY 5433 AND NOT 5432: if you already have Postgres installed
-      # natively, it is almost certainly using 5432, and the mapping would
-      # fail with "port is already allocated". Using 5433 sidesteps that
-      # entirely -- which is why POSTGRES_PORT defaults to 5433 in config.py.
       - "5433:5432"
 
     volumes:
-      # A named volume, so the database files live OUTSIDE the container.
-      # Without this, every `docker compose down` would destroy your data,
-      # because a container's own filesystem disappears with it.
       - postgres_data:/var/lib/postgresql/data
 
-    # Docker keeps checking whether the database is genuinely ready to accept
-    # connections, rather than merely running. The distinction matters:
-    # Postgres takes a few seconds to initialise on first start.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ==================================================================
-  # REDIS -- Celery's message queue and result store
-  # ==================================================================
   redis:
-    # `alpine` is a minimal Linux base: around 30 MB instead of 100 MB.
     image: redis:7-alpine
     container_name: docminds_redis
     restart: always
 
     ports:
-      # No conflict risk here, so the standard port is mapped straight through.
       - "6379:6379"
 
     volumes:
-      # Redis is used as a queue rather than as a database, so persistence is
-      # not strictly required -- but keeping it means jobs already queued
-      # survive a restart instead of being silently lost.
       - redis_data:/data
 
     healthcheck:
-      # Redis replies "PONG" to PING when it is ready.
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
 
-  # ==================================================================
-  # CLAMAV -- OPTIONAL malware scanner (MALWARE_SCAN=clamav)
-  # ==================================================================
-  # Not started by a plain `docker compose up`: it sits behind a PROFILE, so
-  # it only runs when asked for:
-  #
-  #     docker compose --profile scan up -d
-  #
-  # and then set MALWARE_SCAN=clamav in backend/.env. The first start
-  # downloads the virus definitions, which takes a minute or two; until then
-  # scans fail and documents are retried (the scan fails CLOSED).
   clamav:
     image: clamav/clamav:stable
     container_name: docminds_clamav
     profiles: ["scan"]
     restart: unless-stopped
-    # NOTE: clamd refuses streams larger than its StreamMaxLength (25 MB
-    # unless clamd.conf says otherwise), and a refused stream counts as "no
-    # verdict", so that document fails. To scan up to the 50 MB upload limit,
-    # mount a clamd.conf with `StreamMaxLength 60M` at /etc/clamav/clamd.conf.
     ports:
-      # clamd's standard port, matching CLAMAV_PORT's default.
       - "3310:3310"
     volumes:
-      # Keep downloaded definitions across restarts.
       - clamav_data:/var/lib/clamav
 
-# ======================================================================
-#  NAMED VOLUMES
-# ----------------------------------------------------------------------
-#  Docker-managed storage that outlives the containers using it. This is
-#  what makes your data survive `docker compose down`.
-#
-#  To wipe everything and start from an empty database:
-#      docker compose down -v
-# ======================================================================
 volumes:
   postgres_data:
   redis_data:

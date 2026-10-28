@@ -1,28 +1,4 @@
-/**
- * MembersPanel.tsx
- * ================
- * The organization's people: who is in it, with what role, and who has been
- * invited. Admin only (every /org endpoint requires the admin role).
- *
- * WHAT AN ADMIN CAN DO HERE
- * -------------------------
- *   * invite someone by email with a role  -> POST   /org/invites
- *   * change a member's role               -> PATCH  /org/members/{id}
- *   * remove a member                      -> DELETE /org/members/{id}
- *   * revoke an invite not yet accepted    -> DELETE /org/invites/{id}
- *
- * WHAT IS DELIBERATELY NOT OFFERED
- * --------------------------------
- * Changing or removing YOURSELF. The backend refuses both (so an admin cannot
- * lock the organization out by demoting the last admin by accident), so the
- * controls are simply not drawn on your own row.
- *
- * THE INVITE LINK
- * ---------------
- * The create response carries the link once. It is emailed when SMTP is set
- * up, but shown here too, so an admin on a deployment without email can copy
- * it into a chat message instead.
- */
+// The organization's people: who is in it, with what role, and who has been invited.
 
 "use client";
 
@@ -54,7 +30,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
     } catch (err) {
       setError(getErrorMessage(err, t("members.loadError")));
     }
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -80,7 +55,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
     }
   }
 
-  /** Run a change, then reload; any refusal is shown in the backend's words. */
   async function act(change: () => Promise<unknown>, fallback: string) {
     setError("");
     try {
@@ -95,7 +69,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
 
   return (
     <div className="space-y-6">
-      {/* ---- Invite form ---- */}
       <form onSubmit={invite} className="glass flex flex-wrap items-end gap-3 p-5">
         <label className="min-w-[14rem] flex-1 text-sm">
           <span className="mb-1 block" style={{ color: "var(--text-secondary)" }}>
@@ -139,7 +112,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
       )}
       {error && <Notice tone="error">{error}</Notice>}
 
-      {/* ---- Members ---- */}
       <section aria-labelledby="members-heading">
         <h2 id="members-heading" className="mb-3 text-lg font-semibold">
           {t("members.heading")}
@@ -199,7 +171,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
                     </td>
                     <td className="py-2 text-right">
                       {!isSelf && (
-                        // Hold to confirm: removing someone is not undoable here.
                         <HoldToConfirm
                           aria-label={t("members.remove", { email: m.email })}
                           onConfirm={() => act(() => api.removeMember(m.id), t("members.removeError"))}
@@ -216,7 +187,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
         )}
       </section>
 
-      {/* ---- Pending invites ---- */}
       {pending.length > 0 && (
         <section aria-labelledby="invites-heading">
           <h2 id="invites-heading" className="mb-3 text-lg font-semibold">
@@ -247,7 +217,6 @@ export default function MembersPanel({ currentUserId }: { currentUserId: string 
   );
 }
 
-/** Copy to the clipboard, confirming in place. Clipboard may be unavailable (http, old browsers). */
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const { t } = useT();

@@ -1,19 +1,4 @@
-/**
- * ParticleHeadline.tsx  (F5: headline that scatters and reforms)
- * ==============================================================
- * The hero <h1> is sampled into a few thousand dots on a canvas. Moving the
- * cursor near the text pushes dots away; each dot springs back to its home
- * position, so the headline "reforms" behind the pointer. On load the dots
- * fly in from random positions.
- *
- * ACCESSIBILITY
- * -------------
- * The real <h1> text stays in the DOM, always. The canvas is aria-hidden and
- * the text is merely made transparent while the canvas draws it, so screen
- * readers, search engines, find-in-page and text selection all still work.
- * Under reduced motion (or with no canvas support) the plain gradient
- * heading is shown and no canvas is created.
- */
+// Headline that scatters and reforms
 
 "use client";
 
@@ -41,8 +26,6 @@ export default function ParticleHeadline({ lines, className = "" }: ParticleHead
   const headingRef = useRef<HTMLHeadingElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const active = useIsActive(wrapRef);
-  // Becomes true once the canvas has successfully drawn, so the DOM text is
-  // only hidden when there is something to replace it visually.
   const [drawing, setDrawing] = useState(false);
 
   useEffect(() => {
@@ -61,12 +44,9 @@ export default function ParticleHeadline({ lines, className = "" }: ParticleHead
     canvas.height = h * dpr;
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
-    // Sit exactly over the heading, which may be centred inside the wrapper.
     canvas.style.left = `${heading.offsetLeft}px`;
     canvas.style.top = `${heading.offsetTop}px`;
 
-    // 1. Rasterise the heading off screen using its computed font, then
-    //    sample opaque pixels on a grid to get each dot's home position.
     const style = getComputedStyle(heading);
     const off = document.createElement("canvas");
     off.width = w;
@@ -101,7 +81,6 @@ export default function ParticleHeadline({ lines, className = "" }: ParticleHead
     grad.addColorStop(0.5, "#c084fc");
     grad.addColorStop(1, "#67e8f9");
 
-    // 2. Pointer position in canvas coordinates; far away when outside.
     const mouse = { x: -9999, y: -9999 };
     const onMove = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
@@ -114,13 +93,11 @@ export default function ParticleHeadline({ lines, className = "" }: ParticleHead
     window.addEventListener("pointermove", onMove);
     document.addEventListener("pointerleave", onLeave);
 
-    // 3. Spring physics: each dot is pulled home and pushed from the cursor.
     let frame = 0;
     let first = true;
     const R = 70;
     const tick = () => {
       if (first) {
-        // Hide the DOM text only once the canvas is really drawing.
         first = false;
         setDrawing(true);
       }
@@ -161,7 +138,6 @@ export default function ParticleHeadline({ lines, className = "" }: ParticleHead
       <h1
         ref={headingRef}
         className={`${className} ${showCanvas && drawing ? "text-transparent" : "text-gradient"}`}
-        // Transparent text stays selectable and readable by assistive tech.
         style={showCanvas && drawing ? { WebkitTextFillColor: "transparent" } : undefined}
       >
         {lines.map((line, i) => (

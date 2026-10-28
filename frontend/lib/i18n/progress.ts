@@ -1,12 +1,4 @@
-/**
- * i18n/progress.ts -- the live ingestion progress line under a large
- * document (lib/progress.ts), English and Hindi. See i18n/index.ts.
- * Keys are prefixed "progress." so areas never collide.
- *
- * The English strings are exactly what lib/progress.ts always produced, so
- * nothing changes for an English reader. `{wait}` is a duration from the
- * "progress.wait.*" keys, already wrapped as " (about 3 minutes)".
- */
+// document (lib/progress.ts), English and Hindi.
 
 import type { AreaMessages } from "./index";
 

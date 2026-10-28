@@ -1,51 +1,4 @@
-/**
- * i18n/index.ts
- * =============
- * A deliberately small translation layer: English (the default) and Hindi
- * for every screen -- the app shell, auth, dashboard, project workspace,
- * search, settings, chat, upload, the landing page, /developers, the
- * platform pages (integrations, billing, admin) and the ingestion progress line.
- *
- * WHY NOT next-intl
- * -----------------
- * next-intl routes by locale (/en/..., /hi/...) and wants a provider and
- * middleware around every page. This app has a handful of client-rendered
- * screens and one language switcher; a dictionary per area and a hook is
- * the whole requirement, with nothing to configure and nothing for the
- * tests to set up -- a component rendered with no provider at all simply
- * speaks English.
- *
- * HOW A STRING IS LOOKED UP
- * -------------------------
- *     const { t } = useT();
- *     t("upload.dropToUpload")                      -> "Drop to upload"
- *     t("upload.summary", { done: 2, total: 5 })    -> "2 of 5 uploaded"
- *
- *   1. the chosen locale's dictionary;
- *   2. if the key is missing there, ENGLISH -- a half-translated screen is
- *      still a usable one;
- *   3. if English lacks it too, the key itself, so a typo is visible
- *      rather than an empty button.
- *
- * `{name}` placeholders are filled from the second argument. When a slot
- * must hold markup (a link, <code>, <strong>), use `rich()` instead, which
- * returns React children with elements in the slots:
- *
- *     rich(t("verify.body"), { email: <strong>{email}</strong> })
- *
- * WHERE THE CHOICE LIVES
- * ----------------------
- * localStorage ("docminds-locale"), read through useSyncExternalStore: the
- * server and the hydrating client both render English (getServerSnapshot),
- * then the client switches to the stored language -- no hydration mismatch.
- * Changing it notifies every mounted component and sets <html lang>, which
- * screen readers use to choose a pronunciation.
- *
- * ADDING A STRING: add the key to the area's file (auth.ts, chat.ts...) in
- * both `en` and `hi`. The English fallback keeps a missing translation from
- * breaking a screen, but tests/I18n.test.tsx fails on any English key
- * without a Hindi one, so the gap is caught before it ships.
- */
+// A deliberately small translation layer: English (the default) and Hindi for every...
 
 import { Fragment, type ReactNode, createElement, useCallback, useSyncExternalStore } from "react";
 
@@ -66,7 +19,6 @@ import upload from "./upload";
 export const LOCALES = ["en", "hi"] as const;
 export type Locale = (typeof LOCALES)[number];
 
-/** Each language's name in that language, for the switcher. */
 export const LOCALE_NAMES: Record<Locale, string> = { en: "English", hi: "हिन्दी" };
 
 export const LOCALE_STORAGE_KEY = "docminds-locale";
@@ -74,7 +26,6 @@ export const LOCALE_STORAGE_KEY = "docminds-locale";
 type Dictionary = Record<string, string>;
 export type AreaMessages = { en: Dictionary; hi: Partial<Dictionary> };
 
-/** Every area's strings, merged per language. */
 const MESSAGES: Record<Locale, Dictionary> = { en: {}, hi: {} };
 for (const area of [auth, chat, collab, dashboard, developers, landing, platform, progress, project, search, settings, shell, upload] as AreaMessages[]) {
   Object.assign(MESSAGES.en, area.en);
@@ -83,7 +34,6 @@ for (const area of [auth, chat, collab, dashboard, developers, landing, platform
 
 export type Vars = Record<string, string | number>;
 
-/** Look `key` up in `locale`, falling back to English, then to the key. */
 export function translate(locale: Locale, key: string, vars?: Vars): string {
   const template = MESSAGES[locale][key] ?? MESSAGES.en[key] ?? key;
   if (!vars) return template;
@@ -92,11 +42,6 @@ export function translate(locale: Locale, key: string, vars?: Vars): string {
   );
 }
 
-/**
- * Fill `{name}` slots in an already-translated string with React nodes.
- * Unknown slots are left as written. Each piece is keyed, so the result can
- * be rendered directly as children.
- */
 export function rich(template: string, parts: Record<string, ReactNode>): ReactNode[] {
   return template
     .split(/(\{\w+\})/g)
@@ -112,7 +57,6 @@ function isLocale(value: unknown): value is Locale {
   return typeof value === "string" && (LOCALES as readonly string[]).includes(value);
 }
 
-/** The stored locale, or English. Storage can throw (private mode). */
 export function readLocale(): Locale {
   try {
     const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
@@ -136,7 +80,6 @@ export function setLocale(locale: Locale): void {
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  // Another tab changing the language changes this one too.
   const onStorage = (event: StorageEvent) => event.key === LOCALE_STORAGE_KEY && listener();
   window.addEventListener("storage", onStorage);
   return () => {
@@ -145,14 +88,12 @@ function subscribe(listener: () => void) {
   };
 }
 
-/** The current locale and a `t` bound to it. Re-renders on a change. */
 export function useT() {
   const locale = useSyncExternalStore(subscribe, readLocale, () => "en" as Locale);
   const t = useCallback((key: string, vars?: Vars) => translate(locale, key, vars), [locale]);
   return { t, locale, setLocale };
 }
 
-/** Exposed for the tests: every key in a locale's dictionary. */
 export function messageKeys(locale: Locale): string[] {
   return Object.keys(MESSAGES[locale]);
 }

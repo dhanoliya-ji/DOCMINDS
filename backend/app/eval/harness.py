@@ -1,70 +1,4 @@
-"""
-harness.py  (evaluation)
-========================
-WHAT THIS FILE DOES
--------------------
-Measures how well the system answers questions, against a GOLDEN SET: a JSON
-file of questions whose right sources (and, optionally, right answers) you
-already know.
-
-    python -m app.eval --golden my_golden.json --project-id <uuid>
-    python -m app.eval --golden my_golden.json --project-id <uuid> --answers
-
-WHY BOTHER
-----------
-Every retrieval setting in this project -- chunk size, top_k, min_score,
-hybrid search, the reranker -- is a trade-off, and "it seemed better when I
-tried two questions" is not evidence. With a golden set, a change becomes a
-number that went up or down:
-
-    hit_rate   0.72 -> 0.86   after turning hybrid search on
-    mrr        0.55 -> 0.71   the right passage moved up the list, too
-
-THE TWO HALVES OF RAG ARE MEASURED SEPARATELY
----------------------------------------------
-A wrong answer is either bad RETRIEVAL (the right passage was never found) or
-bad GENERATION (it was found, and the model misused it). Mixing the two hides
-which one to fix, so:
-
-  RETRIEVAL (always measured, no API key needed)
-    hit_rate   share of questions where at least one of the top_k results is
-               relevant. "Did the right passage reach the model at all?"
-    mrr        mean reciprocal rank: 1/position of the FIRST relevant
-               result, averaged (1.0 = always first, 0.5 = typically second).
-    A result is RELEVANT when it comes from one of `expected_documents`
-    (matched by filename) and -- if `expected_snippets` are given -- contains
-    at least one of them (case-insensitive).
-
-  GENERATION (with --answers)
-    keyword_rate   share of answers containing every `expected_keywords`
-                   entry. Crude, deterministic, free.
-    faithfulness   an LLM JUDGE reads the excerpts and the answer and scores
-                   0..1 how far every claim is supported by the excerpts --
-                   i.e. "did it make anything up?". Needs GROQ_API_KEY; without
-                   one it is reported as null rather than faked.
-
-THE GOLDEN-SET FORMAT  (see golden_example.json)
-------------------------------------------------
-    {
-      "name": "HR handbook",
-      "top_k": 5,                                  # optional default
-      "cases": [
-        {
-          "id": "leave-full-time",
-          "question": "How many days of annual leave do full-time staff get?",
-          "expected_documents": ["handbook.pdf"],
-          "expected_snippets": ["25 days"],        # optional
-          "expected_keywords": ["25"],             # optional, for --answers
-          "reference_answer": "25 days a year."    # optional, for the record
-        }
-      ]
-    }
-
-Good questions to put in it: the ones people downvoted (GET /org/feedback
-lists them), plus a few that should return "not found" -- give those an empty
-`expected_documents` list, and a "hit" then means NOTHING relevant came back.
-"""
-
+"""Measures how well the system answers questions, against a GOLDEN SET: a JSON file of questions whose right..."""
 import json
 import logging
 import re
@@ -75,17 +9,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# search_fn(question, top_k) -> retrieval results (RetrievalService.search shape)
 SearchFn = Callable[[str, int], Awaitable[List[Dict[str, Any]]]]
-# answer_fn(question, chunks) -> answer text
 AnswerFn = Callable[[str, List[Dict[str, Any]]], Awaitable[str]]
-# judge_fn(question, chunks, answer) -> faithfulness 0..1, or None if unavailable
 JudgeFn = Callable[[str, List[Dict[str, Any]], str], Awaitable[Optional[float]]]
-
-
-# ======================================================================
-# THE GOLDEN SET
-# ======================================================================
 
 
 @dataclass
@@ -160,11 +86,6 @@ def load_golden_set(path: str | Path) -> GoldenSet:
     return parse_golden_set(data)
 
 
-# ======================================================================
-# RETRIEVAL METRICS -- pure functions, no I/O
-# ======================================================================
-
-
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
@@ -190,10 +111,7 @@ def first_relevant_rank(case: GoldenCase, results: List[Dict[str, Any]]) -> Opti
 
 
 def retrieval_hit(case: GoldenCase, results: List[Dict[str, Any]]) -> bool:
-    """
-    A HIT is a relevant result in the list -- or, for a question that should
-    find nothing (no expected_documents), an EMPTY list.
-    """
+    """A HIT is a relevant result in the list -- or, for a question that should"""
     if not case.expected_documents:
         return not results
     return first_relevant_rank(case, results) is not None
@@ -207,11 +125,6 @@ def keywords_present(case: GoldenCase, answer: str) -> Optional[bool]:
     return all(_norm(keyword) in text for keyword in case.expected_keywords)
 
 
-# ======================================================================
-# THE RUN
-# ======================================================================
-
-
 @dataclass
 class CaseResult:
     id: str
@@ -219,7 +132,6 @@ class CaseResult:
     hit: bool
     rank: Optional[int]
     retrieved: List[str]
-    # False for a question that should find nothing (no expected_documents).
     expects_source: bool = True
     answer: Optional[str] = None
     keywords_ok: Optional[bool] = None
@@ -250,8 +162,6 @@ def summarise(report: EvalReport) -> EvalReport:
     """Fill in the aggregate numbers from the per-case results."""
     cases = report.cases
     report.hit_rate = _mean([1.0 if c.hit else 0.0 for c in cases]) or 0.0
-    # Questions that should find nothing have no rank; they do not count
-    # towards MRR, which is about WHERE the right passage was found.
     ranked = [c for c in cases if c.expects_source]
     report.mrr = _mean([1.0 / c.rank if c.rank else 0.0 for c in ranked]) or 0.0
     report.keyword_rate = _mean([1.0 if c.keywords_ok else 0.0 for c in cases if c.keywords_ok is not None])
@@ -268,14 +178,7 @@ async def run_evaluation(
     judge_fn: Optional[JudgeFn] = None,
     settings_snapshot: Optional[Dict[str, Any]] = None,
 ) -> EvalReport:
-    """
-    Run every case: retrieve, score retrieval, and -- when `answer_fn` is
-    given -- generate an answer and score it.
-
-    The I/O is passed in as functions, so the harness itself is testable
-    with no database and no model (see tests/test_eval.py), and the CLI
-    plugs in the real RetrievalService and LLMService.
-    """
+    """Run every case: retrieve, score retrieval, and -- when `answer_fn` is"""
     results: List[CaseResult] = []
     for case in golden.cases:
         started = time.perf_counter()
@@ -303,10 +206,6 @@ async def run_evaluation(
         EvalReport(name=golden.name, top_k=top_k, cases=results, settings=settings_snapshot or {})
     )
 
-
-# ======================================================================
-# THE LLM JUDGE
-# ======================================================================
 
 JUDGE_PROMPT = """You grade whether an ANSWER is faithful to the EXCERPTS it was written from.
 Faithful means every factual claim in the answer is supported by the excerpts.
@@ -349,11 +248,6 @@ async def llm_judge(question: str, chunks: List[Dict[str, Any]], answer: str) ->
         return None
     choices = getattr(completion, "choices", None) or []
     return parse_judge_reply(choices[0].message.content if choices else "")
-
-
-# ======================================================================
-# PRINTING
-# ======================================================================
 
 
 def format_report(report: EvalReport) -> str:

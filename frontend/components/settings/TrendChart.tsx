@@ -1,22 +1,4 @@
-/**
- * TrendChart.tsx
- * ==============
- * A small day-by-day bar chart for the admin dashboard: one series, or two
- * shown side by side per day (processed / failed, helpful / not helpful).
- *
- * DESIGN RULES IT FOLLOWS
- * -----------------------
- *   * one y-axis, starting at zero; a recessive baseline and one gridline
- *   * thin bars with rounded tops, a 2px gap between neighbours
- *   * colours are theme tokens (var(--accent), var(--danger) ...), so the
- *     light and dark themes each get their own; text stays in text tokens
- *   * identity is never colour alone: two series get a legend, and every
- *     chart has a real <table> of the same numbers (in a <details>), which
- *     is also what a screen reader is pointed at
- *   * hovering or focusing a day shows its values (a tooltip line above the
- *     chart, announced politely); every day is a hit target the full height
- *     of the plot, wider than its bars
- */
+// A small day-by-day bar chart for the admin dashboard: one series, or two shown side by...
 
 "use client";
 

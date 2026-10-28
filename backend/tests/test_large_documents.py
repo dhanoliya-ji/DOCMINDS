@@ -1,26 +1,3 @@
-"""
-test_large_documents.py
-=======================
-WHAT THIS FILE TESTS
---------------------
-Large-document ingestion (tasks/ingestion.py, services/extractor.py,
-services/chunker.py, services/pacing.py, services/ocr.py, services/vision.py):
-
-    pacing       the rolling one-minute budget waits exactly as long as needed
-    streaming    PDFs a page at a time, CSVs / XLSX a batch of rows at a time,
-                 with the header repeated; chunk numbering continues across
-    limits       too many pages / chunks fail with a clear, permanent message
-    OCR          a huge page is rasterised at a lower DPI
-    resume       a rate limit PAUSES the document, keeps every vector, and the
-                 resumed run embeds only what is left
-    recovery     a paused document is resumed once due, not before
-    inline queue documents are processed one at a time, after the request
-    vision       off by default; on, a caption is added to the indexed text
-
-Database tests reuse the [sqlite] / [postgres] fixtures of
-test_ingestion_durability.py.
-"""
-
 import asyncio
 import csv
 import datetime
@@ -34,7 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.models.chunk import Chunk, ChunkEmbedding
+from app.models import Chunk, ChunkEmbedding
 from app.services import vision
 from app.services.chunker import ChunkerService, StreamingChunker
 from app.services.embedding import EmbeddingRateLimited, EmbeddingService
@@ -46,7 +23,6 @@ from app.tasks.ingestion import async_process_document, recover_stuck_documents
 from tests import test_ingestion_durability as durability
 
 
-# The [sqlite] / [postgres] database fixtures, shared with that file.
 db = durability.db
 local_store = durability.local_store
 
@@ -62,11 +38,6 @@ class FakeClock:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.t += seconds
-
-
-# ======================================================================
-# The pacer
-# ======================================================================
 
 
 class TestPacer:
@@ -123,11 +94,6 @@ class TestPacer:
         pacer.acquire(10, 0, rpm=10, tpm=0)
         with pytest.raises(TimeoutError):
             pacer.acquire(1, 0, rpm=10, tpm=0, max_wait=5)
-
-
-# ======================================================================
-# Streaming extraction and chunking -- no database
-# ======================================================================
 
 
 def _pdf(path, pages: int, text: str = "Page {n}: refunds are available within thirty days.") -> str:
@@ -263,11 +229,6 @@ class TestOcrPageSize:
         assert pixels <= 12_000_000
 
 
-# ======================================================================
-# Vision captions -- no database
-# ======================================================================
-
-
 def _png() -> bytes:
     from PIL import Image
 
@@ -311,10 +272,6 @@ class TestVision:
         monkeypatch.setattr(settings, "VISION_API_KEY", "")
         assert vision.caption_image(_png()) is None
 
-
-# ======================================================================
-# Resumable ingestion -- database
-# ======================================================================
 
 LONG_TEXT = ("Refunds are available within thirty days of purchase. " * 40 + "\n\n") * 12
 
@@ -370,7 +327,6 @@ class TestResume:
         assert await _embedded(db, document_id) == 6
         assert "Waiting for the embedding rate limit" in paused.error_message
 
-        # The quota is back: the resumed run embeds ONLY the rest.
         healthy = FlakyEmbeddings(allow=10_000)
         monkeypatch.setattr(EmbeddingService, "get_embeddings", staticmethod(healthy))
         assert await async_process_document(str(document_id)) == "completed"
@@ -442,11 +398,6 @@ class TestRecoveryOfPausedDocuments:
         assert str(later) not in result["requeued"]
         assert (await db.get(due)).resume_after is None
         assert (await db.get(later)).resume_after is not None
-
-
-# ======================================================================
-# The inline queue
-# ======================================================================
 
 
 class TestInlineQueue:

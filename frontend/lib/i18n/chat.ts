@@ -1,7 +1,4 @@
-/**
- * i18n/chat.ts -- the chat panel's strings, English and Hindi.
- * See i18n/index.ts. Keys are prefixed "chat." so areas never collide.
- */
+// See i18n/index.ts.
 
 import type { AreaMessages } from "./index";
 

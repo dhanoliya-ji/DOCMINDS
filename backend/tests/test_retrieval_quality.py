@@ -1,26 +1,3 @@
-"""
-test_retrieval_quality.py
-=========================
-WHAT THIS FILE TESTS
---------------------
-The pure logic behind the batch-2 answer-quality work, with no database, no
-model and no network:
-
-    fusion     reciprocal rank fusion -- agreement between the vector and the
-               keyword search must beat a lone first place
-    rerank     the optional cross-encoder reorders, and FAILS SAFE: a missing
-               model or a crashing scorer leaves the order alone
-    rewrite    follow-up questions get their missing subject back for the
-               SEARCH; standalone questions and first questions are untouched
-    titles     the automatic conversation title
-    sse        the Server-Sent Event framing the streaming endpoint writes
-    export     the Markdown a conversation is exported as
-    eval       the golden-set loader, the retrieval metrics and the CLI
-
-The Postgres half of hybrid search (the tsvector query and its GIN index) is
-covered in test_retrieval_db.py, which needs a real database.
-"""
-
 import json
 
 import pytest
@@ -32,14 +9,9 @@ from app.eval.__main__ import main as eval_main
 from app.services import export, query_rewrite, reranker
 from app.services.retrieval import match_type, reciprocal_rank_fusion
 
-# ======================================================================
-# Reciprocal rank fusion
-# ======================================================================
-
 
 class TestReciprocalRankFusion:
     def test_agreement_beats_a_single_first_place(self):
-        # "b" is second in both lists; "a" is first in only one.
         scores = reciprocal_rank_fusion([["a", "b"], ["c", "b"]], k=60)
         assert max(scores, key=scores.get) == "b"
 
@@ -65,11 +37,6 @@ class TestReciprocalRankFusion:
     )
     def test_match_type(self, vector, keyword, expected):
         assert match_type(vector, keyword) == expected
-
-
-# ======================================================================
-# Reranker
-# ======================================================================
 
 
 def _matches(*texts):
@@ -114,10 +81,6 @@ class TestReranker:
     def test_off_by_default(self):
         assert settings.RERANKER == "off"
 
-
-# ======================================================================
-# Follow-up query rewriting
-# ======================================================================
 
 HISTORY = [
     {"role": "user", "content": "How many days of annual leave do full-time staff get?"},
@@ -208,11 +171,6 @@ class TestQueryRewrite:
         assert result.method == "heuristic" and "annual leave" in result.query
 
 
-# ======================================================================
-# Titles and the SSE framing
-# ======================================================================
-
-
 class TestTitles:
     def test_whitespace_is_collapsed(self):
         assert make_title("  How many\n days   of leave? ") == "How many days of leave?"
@@ -234,11 +192,6 @@ class TestSse:
     def test_newlines_stay_inside_one_data_line(self):
         frame = sse("token", {"text": "line one\nline two"})
         assert frame.count("\n") == 3  # event line, data line, blank line
-
-
-# ======================================================================
-# Markdown export
-# ======================================================================
 
 
 class TestExport:
@@ -272,10 +225,6 @@ class TestExport:
         assert export.safe_filename("Q3: Leave / Policy?") == "q3-leave-policy.md"
         assert export.safe_filename("") == "conversation.md"
 
-
-# ======================================================================
-# Evaluation harness
-# ======================================================================
 
 GOLDEN = {
     "name": "test",
@@ -375,10 +324,8 @@ class TestRun:
             golden, search, top_k=3, answer_fn=answer, judge_fn=judge
         )
         assert report.hit_rate == pytest.approx(2 / 3, abs=1e-3)
-        # MRR over the two cases that expect a source: 1/2 and 0.
         assert report.mrr == pytest.approx(0.25)
         assert report.keyword_rate == 1.0
-        # The "ticker" case retrieved nothing, so it was not judged.
         assert report.faithfulness == 1.0
         assert "retrieval hit rate" in harness.format_report(report)
 

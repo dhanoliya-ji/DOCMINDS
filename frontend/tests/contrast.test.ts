@@ -1,10 +1,4 @@
-/**
- * contrast.test.ts
- * ================
- * Every text / background pair the design tokens in app/globals.css produce
- * meets WCAG AA in both themes (scripts/contrast.mjs does the measuring), and
- * the measuring itself agrees with known reference ratios.
- */
+// Every text / background pair the design tokens in app/globals.css produce meets WCAG...
 
 import { describe, expect, it } from "vitest";
 

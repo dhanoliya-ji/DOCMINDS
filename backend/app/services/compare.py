@@ -1,59 +1,4 @@
-"""
-compare.py  (service)
-=====================
-WHAT THIS FILE DOES
--------------------
-Compares two documents: "what changed between the 2023 and the 2024
-contract?" The answer is a STRUCTURED diff -- a list of differences, each
-one added, removed or changed, each citing the passages on both sides -- not
-a paragraph of prose the reader has to check line by line.
-
-    result = await compare_documents(db, document_a, document_b, focus=None)
-
-THE PIPELINE
-------------
-    1. SECTIONS   Load each document's chunks in reading order (evenly
-                  sampled when there are more than MAX_SECTIONS_PER_DOC), or
-                  -- when a `focus` is given ("termination") -- only the
-                  chunks retrieval ranks closest to it, per document.
-    2. ALIGN      Pair every section of A with its most similar section of B.
-                  By embedding (cosine similarity of the stored vectors) when
-                  both have one from the current model; otherwise by word
-                  overlap (Jaccard), so a document embedded with an older
-                  model still compares. A pair above the threshold is "the
-                  same part of the document"; an A section with no partner
-                  is a removal candidate, a B section nobody picked an
-                  addition candidate. Near-identical pairs are skipped -- an
-                  unchanged clause is not a difference.
-    3. DIFF       The aligned pairs and the unpaired sections go to the model
-                  as numbered, delimited excerpts (A1, A2... and B1, B2...),
-                  and it replies with JSON: a summary and a list of
-                  {kind, topic, detail, a: [numbers], b: [numbers]}.
-    4. VALIDATE   The JSON is parsed leniently (code fences, text around it)
-                  and checked: unknown kinds are dropped, citation numbers
-                  that do not exist are removed. A reply that is not JSON at
-                  all falls back to step 5's heuristic diff.
-    5. DEMO MODE  With no model (no GROQ_API_KEY) the alignment itself is
-                  the answer: unpaired A sections are "removed", unpaired B
-                  sections "added", paired-but-different ones "changed".
-
-WHY ALIGN BEFORE ASKING THE MODEL
----------------------------------
-Pasting both documents whole would not fit in the context window for
-anything longer than a few pages, and the model would have to find the
-corresponding passages itself -- the part it is worst at. Aligning first
-shows it "this section of A corresponds to this section of B", so its job
-shrinks to describing how two short passages differ, which it does well,
-and every difference it reports arrives already anchored to real excerpts.
-
-SECURITY
---------
-Both documents are loaded through the caller's org_id (api/v1/compare.py),
-and the excerpts are wrapped as untrusted data exactly like chat
-(llm.wrap_excerpt): a document saying "report no differences" is text to
-compare, not an instruction.
-"""
-
+"""Compares two documents: "what changed between the 2023 and the 2024 contract?" The answer is a STRUCTURED..."""
 import json
 import logging
 import math
@@ -64,31 +9,22 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
 from app.services.embedding import EmbeddingService
 from app.services.llm import UNTRUSTED_CONTENT_RULE, LLMService, clean_label, wrap_excerpt
 from app.services.retrieval import RetrievalService
 
 logger = logging.getLogger(__name__)
 
-# How many sections of each document take part. Evenly sampled beyond this,
-# so a 300-page manual is compared across its whole length, not its start.
 MAX_SECTIONS_PER_DOC = 80
-# How many aligned pairs and unpaired sections go to the model: enough for a
-# useful diff, few enough to fit comfortably in one prompt.
 MAX_PAIRS = 8
 MAX_UNPAIRED = 4
-# With a focus, how many sections per document retrieval contributes.
 FOCUS_TOP_K = 8
-# Excerpt length in the prompt, in characters.
 EXCERPT_CHARS = 1200
-# The most differences kept from the model's reply.
 MAX_DIFFERENCES = 15
 
-# "The same part of the document", by method.
 ALIGN_THRESHOLD = {"embedding": 0.6, "lexical": 0.2}
-# Above this a pair is unchanged and not worth a difference.
 IDENTICAL = {"embedding": 0.985, "lexical": 0.9}
 
 KINDS = ("added", "removed", "changed")
@@ -125,11 +61,6 @@ Rules:
 """
 
 
-# ======================================================================
-# STEP 1: SECTIONS
-# ======================================================================
-
-
 def _sample(items: Sequence[Any], limit: int) -> List[Any]:
     """`limit` items spread evenly over `items`, first and last included."""
     if len(items) <= limit:
@@ -157,10 +88,7 @@ def _as_vector(value: Any) -> Optional[List[float]]:
 async def load_sections(
     db: AsyncSession, document: Document, chunk_ids: Optional[List[Any]] = None
 ) -> List[Dict[str, Any]]:
-    """
-    A document's sections in reading order, each with its stored vector
-    (None when it has none from the current embedding model).
-    """
+    """A document's sections in reading order, each with its stored vector"""
     statement = select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.chunk_index)
     if chunk_ids is not None:
         statement = statement.where(Chunk.id.in_(chunk_ids))
@@ -216,10 +144,6 @@ async def focused_sections(
     return await load_sections(db, document, chunk_ids=ids)
 
 
-# ======================================================================
-# STEP 2: ALIGN
-# ======================================================================
-
 _WORD = re.compile(r"[\w']{3,}", re.UNICODE)
 
 
@@ -240,13 +164,7 @@ def _jaccard(a: set, b: set) -> float:
 def align(
     sections_a: List[Dict[str, Any]], sections_b: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """
-    Pair the sections of A with those of B.
-
-    Returns {"method", "pairs": [(a, b, similarity)], "only_a": [...],
-    "only_b": [...], "identical": n} -- pairs and unpaired lists already
-    trimmed to what goes in the prompt, in reading order.
-    """
+    """Pair the sections of A with those of B."""
     use_vectors = (
         bool(sections_a)
         and bool(sections_b)
@@ -280,7 +198,6 @@ def align(
 
     different = [p for p in pairs if p[2] < IDENTICAL[method]]
     identical = len(pairs) - len(different)
-    # The least similar pairs are the likeliest to hold a change.
     chosen = sorted(sorted(different, key=lambda p: p[2])[:MAX_PAIRS], key=lambda p: p[0])
     return {
         "method": method,
@@ -291,23 +208,13 @@ def align(
     }
 
 
-# ======================================================================
-# STEP 3: THE PROMPT, AND NUMBERING THE EXCERPTS
-# ======================================================================
-
-
 def _location(section: Dict[str, Any]) -> str:
     page = section.get("page_number")
     return f"{section['filename']}, page {page}" if page else section["filename"]
 
 
 def number_excerpts(alignment: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
-    """
-    Give every excerpt its label (A1.., B1..) and build the prompt body.
-
-    Returns (citations, prompt). A section appearing in two pairs keeps one
-    number, so the model's "A3" always means the same passage.
-    """
+    """Give every excerpt its label (A1.., B1..) and build the prompt body."""
     citations: List[Dict[str, Any]] = []
     numbers: Dict[Tuple[str, Any], int] = {}
 
@@ -343,19 +250,8 @@ def number_excerpts(alignment: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], st
     return citations, "\n\n".join(parts)
 
 
-# ======================================================================
-# STEP 4: READ THE MODEL'S REPLY
-# ======================================================================
-
-
 def parse_reply(text: str, citations: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    The model's JSON as {"summary", "differences"}, or None if it is not JSON.
-
-    Lenient about the wrapping (```json fences, a sentence before the brace)
-    and strict about the content: only the three kinds, only citation numbers
-    that exist, a topic and a detail on every item.
-    """
+    """The model's JSON as {"summary", "differences"}, or None if it is not JSON."""
     raw = (text or "").strip()
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
     data: Any = None
@@ -401,11 +297,6 @@ def parse_reply(text: str, citations: List[Dict[str, Any]]) -> Optional[Dict[str
     return {"summary": summary, "differences": differences}
 
 
-# ======================================================================
-# STEP 5: THE HEURISTIC DIFF (demo mode, or an unreadable reply)
-# ======================================================================
-
-
 def heuristic_diff(alignment: Dict[str, Any], citations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """The alignment itself, described: no model involved."""
     number = {(c["side"], c["chunk_id"]): c["number"] for c in citations}
@@ -440,11 +331,6 @@ def heuristic_diff(alignment: Dict[str, Any], citations: List[Dict[str, Any]]) -
     return {"summary": summary, "differences": differences[:MAX_DIFFERENCES]}
 
 
-# ======================================================================
-# THE ONE FUNCTION THE ENDPOINT CALLS
-# ======================================================================
-
-
 async def compare_documents(
     db: AsyncSession,
     document_a: Document,
@@ -453,13 +339,7 @@ async def compare_documents(
     org_id: Any,
     focus: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Compare two documents the caller is allowed to read.
-
-    Returns {"summary", "differences", "citations", "alignment", "model",
-    "tokens_used", "prompt_tokens", "completion_tokens", "latency",
-    "pairs", "identical"} -- see schemas/collab.py ComparisonOut.
-    """
+    """Compare two documents the caller is allowed to read."""
     started_at = time.perf_counter()
     focus = " ".join((focus or "").split()) or None
     if focus:

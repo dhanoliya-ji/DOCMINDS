@@ -1,56 +1,4 @@
-"""
-connectors/service.py
-=====================
-WHAT THIS FILE DOES
--------------------
-Everything between the API and the providers:
-
-    make_state / read_state     the signed OAuth `state` parameter
-    save_connection             store (or refresh) a connection, encrypted
-    call                        run a provider call with a fresh token,
-                                refreshing once on a 401
-    create_import / run_import  picker selection -> a BACKGROUND job ->
-                                Documents, queued for ingestion exactly like
-                                an upload; per-item progress on the job
-    resume_imports              re-send jobs orphaned by a restart
-    revoke                      best-effort revocation at the provider when
-                                a connection is removed
-    sync_link / sync_due        has the source changed? re-import + re-index
-
-THE OAUTH STATE
----------------
-The provider sends the browser back to /integrations/callback/<provider>
-with no Authorization header -- the browser does not attach our bearer token
-to a redirect. So the `state` WE sent out carries who started the connect: a
-short-lived JWT (10 minutes) signed with SECRET_KEY, naming the user, the
-organization and the provider, with its own token type so no other JWT the
-app issues can be replayed here. The callback re-checks that the user still
-exists, is active and still an editor of that organization.
-
-IMPORTING USES THE UPLOAD PATH'S RULES
---------------------------------------
-An imported file is held to exactly what an upload is: the extension
-allowlist and content sniffing (services/uploads.py), MAX_UPLOAD_SIZE_BYTES,
-de-duplication by SHA-256 within the project, versioning by name, the
-document and storage quotas (services/usage.py), a server-chosen storage key
-(services/storage.py), an audit entry, and then the SAME ingestion entry
-point the upload endpoint uses (tasks/ingestion.py `dispatch`, after the
-commit). Nothing about extraction, chunking or embedding is specific to
-imports.
-
-SYNC
-----
-A link is "checked" by asking the provider for the item's current revision
-(one small metadata call). Only when it differs is the file downloaded; only
-when the downloaded bytes hash differently is the stored file replaced and
-the document re-indexed -- touching a Google Doc's sharing settings changes
-its version but not its text, and must not cost an embedding run.
-
-Two API processes (or beat firing twice) cannot sync the same link at once:
-each claims it with one conditional UPDATE of `last_checked_at`, the same
-trick tasks/ingestion.py uses to claim documents.
-"""
-
+"""Everything between the API and the providers."""
 import asyncio
 import contextlib
 import datetime
@@ -71,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import roles
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.connector import (
+from app.models import (
     ACTIVE,
     DISCONNECTED,
     ERROR,
@@ -94,9 +42,9 @@ from app.models.connector import (
     ConnectorImport,
     ConnectorItem,
 )
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
+from app.models import Document
+from app.models import Project
+from app.models import User
 from app.services import audit, uploads, usage
 from app.services.connectors import get_provider
 from app.services.connectors.base import Provider, RemoteItem, TokenSet
@@ -126,11 +74,6 @@ def _aware(value: Optional[datetime.datetime]) -> Optional[datetime.datetime]:
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=datetime.timezone.utc)
     return value
-
-
-# ======================================================================
-# 1. THE OAUTH STATE AND REDIRECT
-# ======================================================================
 
 
 def make_state(user: User, provider_id: str) -> str:
@@ -184,11 +127,6 @@ async def state_user(db: AsyncSession, claims: Dict[str, Any]) -> User:
     return user
 
 
-# ======================================================================
-# 2. CONNECTIONS AND TOKENS
-# ======================================================================
-
-
 async def save_connection(
     db: AsyncSession, *, user: User, provider: Provider, tokens: TokenSet, label: str
 ) -> ConnectorConnection:
@@ -225,8 +163,6 @@ async def _refresh(db: AsyncSession, connection: ConnectorConnection, provider: 
     except ConnectorUnavailable:
         raise
     except ConnectorError as exc:
-        # invalid_grant (a revoked or rotated-away refresh token) arrives as
-        # a 400: either way the person has to reconnect.
         _mark_broken(connection, exc.message)
         await db.commit()
         raise ConnectorAuthError("This connection has expired or was revoked. Reconnect it.") from exc
@@ -242,13 +178,7 @@ async def call(
     connection: ConnectorConnection,
     fn: Callable[[Provider, TokenSet], Awaitable[T]],
 ) -> T:
-    """
-    Run `fn(provider, tokens)` with a valid access token.
-
-    Refreshes BEFORE the call when the token is about to expire, and once
-    more AFTER a 401 (a token can be revoked early). A connection whose
-    refresh fails is marked "error" so the page can ask for a reconnect.
-    """
+    """Run `fn(provider, tokens)` with a valid access token."""
     provider = get_provider(connection.provider)
     if provider is None:
         raise ConnectorError("This provider is no longer supported.")
@@ -270,11 +200,6 @@ async def call(
             raise
         tokens = await _refresh(db, connection, provider, tokens)
         return await fn(provider, tokens)
-
-
-# ======================================================================
-# 3. VALIDATING A FETCHED FILE (the upload rules, for a file on disk)
-# ======================================================================
 
 
 @dataclass
@@ -331,23 +256,10 @@ def _queue(document_id: uuid.UUID) -> None:
     try:
         ingestion.dispatch(str(document_id))
     except Exception as exc:
-        # Redis down: the row is "pending", and the recovery sweep re-queues it.
         logger.warning(
             "Could not queue imported document; the recovery sweep will retry",
             extra={"document_id": str(document_id), "error": repr(exc)},
         )
-
-
-# ======================================================================
-# 4. IMPORT (in the background)
-# ======================================================================
-#
-#   POST .../import -> create_import (validate, record "queued") -> 202
-#                   -> dispatch_import: Celery task, or the in-process queue
-#   run_import      -> claim -> each item: pending -> downloading ->
-#                      imported | duplicate | already_imported | skipped
-#                      | failed, saved after every step so the page can poll
-#                      GET /integrations/imports/{id}
 
 
 def _entry(item_id: str) -> Dict[str, Any]:
@@ -386,11 +298,7 @@ async def create_import(
 
 
 def dispatch_import(import_id: uuid.UUID) -> None:
-    """
-    Start the job in whichever way INGESTION_MODE says -- the same split as
-    tasks/ingestion.dispatch. A failure here (Redis down) leaves the job
-    "queued"; the recovery (resume_imports) sends it again.
-    """
+    """Start the job in whichever way INGESTION_MODE says -- the same split as"""
     from app.tasks import connectors as connector_tasks
 
     try:
@@ -447,12 +355,7 @@ async def _import_one(
     storage,
     save: Callable[[], Awaitable[None]],
 ) -> None:
-    """
-    Import one picked item, recording each step in `entry`. The upload
-    path's rules apply (see the module docstring). Refusals raise
-    ConnectorError / QuotaExceeded BEFORE anything is added to the session,
-    so there is nothing to roll back.
-    """
+    """Import one picked item, recording each step in `entry`. The upload"""
     project_id = job.project_id
     still_connected = (
         await db.execute(select(ConnectorConnection.id).where(ConnectorConnection.id == connection.id))
@@ -553,8 +456,6 @@ async def _import_one(
                 last_checked_at=now,
             )
         )
-        # The same action an upload records, so the audit log and the
-        # document.uploaded webhook cover imports with no extra code.
         await audit.record(
             db, "document.upload", org_id=job.org_id, user_id=job.user_id,
             details={
@@ -588,12 +489,7 @@ def _fail_unfinished(items: List[Dict[str, Any]], message: str) -> None:
 
 
 async def run_import(import_id, session_factory=None) -> str:
-    """
-    Work one import job to the end. Returns "completed", or "busy" when
-    another worker holds it (or it is already finished). Every item is
-    committed on its own, so one failure (a file too large, a page that
-    vanished) does not undo the others; a full quota fails the rest.
-    """
+    """Work one import job to the end. Returns "completed", or "busy" when"""
     import_id = uuid.UUID(str(import_id))
     factory = session_factory or SessionLocal
     async with factory() as db:
@@ -632,8 +528,6 @@ async def run_import(import_id, session_factory=None) -> str:
         except _ImportAborted as exc:
             _fail_unfinished(items, str(exc))
         except asyncio.CancelledError:
-            # The API is shutting down: hand the job back, so the next start
-            # resumes it (the items already finished are skipped).
             with contextlib.suppress(Exception):
                 await db.rollback()
             with contextlib.suppress(Exception):
@@ -713,20 +607,8 @@ def import_view(job: ConnectorImport) -> Dict[str, Any]:
     }
 
 
-# ======================================================================
-# 5. DISCONNECT: best-effort revocation at the provider
-# ======================================================================
-
-
 async def revoke(connection: ConnectorConnection) -> Dict[str, Any]:
-    """
-    Ask the provider to revoke DocMinds' grant, when it has an API for it.
-    NEVER raises: the local disconnect has already happened and must not
-    depend on the provider being reachable. Returns
-        {"revoked": bool, "manage_url": str | None, "detail": str | None}
-    where `manage_url` is the provider's own page for removing the app by
-    hand (shown when revocation is unsupported or failed).
-    """
+    """Ask the provider to revoke DocMinds' grant, when it has an API for it."""
     provider = get_provider(connection.provider)
     manage_url = getattr(provider, "manage_access_url", None) if provider else None
     if provider is None:
@@ -753,17 +635,8 @@ async def revoke(connection: ConnectorConnection) -> Dict[str, Any]:
     }
 
 
-# ======================================================================
-# 6. SYNC
-# ======================================================================
-
-
 def effective_status(link: ConnectorItem, document: Optional[Document]) -> str:
-    """
-    The status to SHOW. "syncing" is written when a new revision is queued;
-    once ingestion finishes, the document's own status says how it went --
-    so the sync needs no hook inside the ingestion pipeline.
-    """
+    """The status to SHOW. "syncing" is written when a new revision is queued;"""
     if link.sync_status == SYNCING and document is not None:
         if document.status == "completed":
             return SYNCED
@@ -774,11 +647,7 @@ def effective_status(link: ConnectorItem, document: Optional[Document]) -> str:
 
 async def sync_link(db: AsyncSession, link: ConnectorItem, *, force: bool = False,
                     user_id: Optional[uuid.UUID] = None) -> str:
-    """
-    Check one imported document against its source. Returns the outcome:
-    unchanged | updated | busy | source_deleted | disconnected | error.
-    Commits its own changes.
-    """
+    """Check one imported document against its source. Returns the outcome:"""
     now = utcnow()
     link.last_checked_at = now
     connection = await db.get(ConnectorConnection, link.connection_id) if link.connection_id else None
@@ -799,8 +668,6 @@ async def sync_link(db: AsyncSession, link: ConnectorItem, *, force: bool = Fals
     try:
         item = await call(db, connection, lambda p, t: p.get_item(t, link.external_id))
         if item.revision and item.revision == link.revision and not force:
-            # A finished re-index keeps the outcome it had (a failed one stays
-            # visible); anything else is simply current.
             link.sync_status = effective_status(link, document) if link.sync_status == SYNCING else SYNCED
             link.last_error = None
             await db.commit()
@@ -808,7 +675,6 @@ async def sync_link(db: AsyncSession, link: ConnectorItem, *, force: bool = Fals
 
         path, checked = await _fetch_to_temp(db, connection, item)
         if checked.sha256 == document.duplicate_hash:
-            # A new revision with the same bytes (renamed, re-shared...).
             link.revision = item.revision
             link.external_name = item.name[:512]
             link.sync_status = SYNCED
@@ -830,7 +696,6 @@ async def sync_link(db: AsyncSession, link: ConnectorItem, *, force: bool = Fals
 
         org_id = link.org_id
         allowance = await usage.upload_allowance(db, org_id)
-        # This document is being REPLACED: its old size no longer counts.
         allowance.documents -= 1
         allowance.bytes_used -= document.file_size
         allowance.admit(checked.size)
@@ -869,13 +734,10 @@ async def sync_link(db: AsyncSession, link: ConnectorItem, *, force: bool = Fals
         )
         await db.commit()
         new_stored = None
-        # The old file is no longer referenced by anything.
         with contextlib.suppress(Exception):
             await asyncio.to_thread(get_storage(old_backend).delete, old_key)
         _queue(document.id)
         return "updated"
-    # As in import_items: every refusal happens before the document is
-    # touched, so these only record the outcome on the link.
     except SourceNotFound as exc:
         link.sync_status = SOURCE_DELETED
         link.last_error = exc.message
@@ -911,11 +773,7 @@ async def claim_for_sync(db: AsyncSession, link_id: uuid.UUID, cutoff: datetime.
 
 
 async def sync_due(session_factory=None, *, now: Optional[datetime.datetime] = None) -> Dict[str, int]:
-    """
-    The periodic sweep: every auto-sync link not checked for a whole
-    interval, oldest first, at most CONNECTOR_SYNC_BATCH_SIZE. Returns a
-    count per outcome. Never raises for one bad link.
-    """
+    """The periodic sweep: every auto-sync link not checked for a whole"""
     factory = session_factory or SessionLocal
     now = now or utcnow()
     cutoff = now - datetime.timedelta(minutes=settings.CONNECTOR_SYNC_INTERVAL_MINUTES)

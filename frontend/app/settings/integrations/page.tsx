@@ -1,30 +1,4 @@
-/**
- * settings/integrations/page.tsx  (served at "/settings/integrations")
- * =====================================================================
- * Cloud imports, for editors and admins (/api/v1/integrations):
- *
- *   1. CONNECT a source -- Google Drive, OneDrive & SharePoint, Notion,
- *      Confluence. The button fetches the provider's consent URL and sends
- *      the browser there; the provider returns it to the API, which comes
- *      back here with ?connected=<provider> or ?error=<message>.
- *   2. BROWSE a connection: folders, spaces and pages open in place
- *      (with a trail back up), a name search, "Load more" for long folders.
- *      Importable items have a checkbox.
- *   3. IMPORT the selection into a project, optionally keeping it in sync.
- *      The import runs in the BACKGROUND on the server (the request answers
- *      202 with a job); this page polls the job every POLL_MS and shows each
- *      item's progress -- waiting, downloading, imported, failed (with the
- *      reason) -- until it is complete, then refreshes the documents table.
- *      Leaving and coming back resumes showing the newest unfinished job.
- *   4. The IMPORTED DOCUMENTS table: sync status, last sync, auto-sync on or
- *      off, and "Sync now".
- *
- * Disconnecting also revokes DocMinds' access at the provider where it has
- * an API (Google, Notion); for Microsoft and Confluence the page links to the
- * provider's own page for removing the app.
- *
- * While CONNECTORS_ENABLED is off the API answers 404 and this page says so.
- */
+// Page /settings/integrations -- cloud imports, for editors and admins (/api/v1/integrations).
 
 "use client";
 
@@ -59,7 +33,6 @@ export default function IntegrationsPage() {
 
 type Crumb = { id: string | null; name: string };
 
-/** How often a running import is polled. */
 export const POLL_MS = 1500;
 
 function Integrations() {
@@ -74,7 +47,6 @@ function Integrations() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  // The picker.
   const [open, setOpen] = useState<Connection | null>(null);
   const [trail, setTrail] = useState<Crumb[]>([]);
   const [items, setItems] = useState<RemoteItem[]>([]);
@@ -86,7 +58,6 @@ function Integrations() {
   const [autoSync, setAutoSync] = useState(true);
   const [importing, setImporting] = useState(false);
   const [job, setJob] = useState<ImportJob | null>(null);
-  // Names the picker showed, for items the server has not described yet.
   const [names, setNames] = useState<Record<string, string>>({});
   const [syncing, setSyncing] = useState<string | null>(null);
   const [manageUrl, setManageUrl] = useState<string | null>(null);
@@ -101,7 +72,6 @@ function Integrations() {
     setDocuments(d);
   }, []);
 
-  // Poll a running import until it completes; then refresh the table.
   const jobDone = job?.status === "completed";
   useEffect(() => {
     if (!job || job.status === "completed") return;
@@ -131,7 +101,6 @@ function Integrations() {
         if (cancelled) return;
         setProviders(list);
         await refresh();
-        // An import still running from an earlier visit: keep showing it.
         const recent = await platformApi.listImports().catch(() => [] as ImportJob[]);
         const running = recent.find((j) => j.status !== "completed");
         if (!cancelled && running) setJob(running);
@@ -319,7 +288,6 @@ function Integrations() {
         !error && <LogoLoader label={t("platform.loading")} />
       ) : (
         <div className="mt-6 space-y-8">
-          {/* ---- 1. connect ---- */}
           <section aria-labelledby="providers-heading">
             <h2 id="providers-heading" className="mb-3 text-lg font-semibold">
               {t("integrations.providers")}
@@ -340,7 +308,6 @@ function Integrations() {
             </div>
           </section>
 
-          {/* ---- connections ---- */}
           <section aria-labelledby="connections-heading">
             <h2 id="connections-heading" className="mb-3 text-lg font-semibold">
               {t("integrations.connections")}
@@ -388,7 +355,6 @@ function Integrations() {
             )}
           </section>
 
-          {/* ---- 2 + 3. picker and import ---- */}
           {open && (
             <section aria-labelledby="picker-heading" className="glass space-y-4 p-5">
               <h2 id="picker-heading" className="text-lg font-semibold">
@@ -501,7 +467,6 @@ function Integrations() {
             </section>
           )}
 
-          {/* ---- the background import's progress ---- */}
           {job && (
             <section aria-labelledby="import-heading" className="glass space-y-2 p-5">
               <h2 id="import-heading" className="flex items-center gap-2 text-lg font-semibold">
@@ -537,7 +502,6 @@ function Integrations() {
             </section>
           )}
 
-          {/* ---- 4. imported documents ---- */}
           <section aria-labelledby="documents-heading">
             <h2 id="documents-heading" className="mb-3 text-lg font-semibold">
               {t("integrations.documents")}

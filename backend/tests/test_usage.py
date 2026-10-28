@@ -1,23 +1,4 @@
 # ruff: noqa: F811 -- the fixtures imported from test_upload_hardening are re-used as test arguments
-"""
-test_usage.py
-=============
-WHAT THIS FILE TESTS
---------------------
-Metering and quotas (services/usage.py) through the real endpoints:
-
-    * every chat answer records a usage event -- model, mode, tokens in and
-      out, estimated cost, request id -- in the same transaction as the answer
-    * an organization over its monthly token quota gets 429 + Retry-After,
-      and nothing is saved or sent to a model
-    * uploads that would cross the document or storage quota get 402 and
-      store nothing
-    * per-organization overrides beat the QUOTA_* settings; 0 means unlimited
-    * GET /org/usage summarises the month, admins only
-
-Runs on in-memory SQLite always, and on Postgres too when one is reachable
-(CI) -- the same harness as test_upload_hardening.py, whose fixtures it reuses.
-"""
 
 import datetime
 import uuid
@@ -26,8 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.organization import Organization
-from app.models.usage import UsageEvent
+from app.models import Organization
+from app.models import UsageEvent
 from app.services import usage
 from app.services.retrieval import RetrievalService
 from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
@@ -41,15 +22,9 @@ from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
 API = settings.API_V1_STR
 
 
-# ======================================================================
-# Pure functions
-# ======================================================================
-
-
 class TestPricing:
     def test_cost_uses_separate_input_and_output_prices(self, monkeypatch):
         monkeypatch.setattr(settings, "LLM_PRICING", {"m": {"input": 0.15, "output": 0.60}})
-        # 3,000 x $0.15/1M + 400 x $0.60/1M = $0.00069 (the docstring example)
         assert usage.estimate_cost_usd("m", 3000, 400) == pytest.approx(0.00069)
 
     def test_unpriced_models_cost_zero_and_are_logged_once(self, monkeypatch, caplog):
@@ -83,11 +58,6 @@ class TestPricing:
         with pytest.raises(usage.QuotaExceeded) as refused:
             allowance.admit(4096)
         assert "2.0 KB" in refused.value.message and "1.0 KB" in refused.value.message
-
-
-# ======================================================================
-# Through the API
-# ======================================================================
 
 
 async def _org_id(env) -> uuid.UUID:
@@ -205,7 +175,6 @@ class TestUploadQuotas:
     async def test_duplicates_do_not_count(self, env, queued, monkeypatch):
         monkeypatch.setattr(settings, "QUOTA_MAX_DOCUMENTS", 1)
         assert (await env.upload(("a.txt", TEXT))).status_code == 202
-        # The same bytes again: a duplicate (400), not a quota refusal (402).
         assert (await env.upload(("a-copy.txt", TEXT))).status_code == 400
 
     async def test_per_org_override(self, env, queued, monkeypatch):
@@ -235,7 +204,6 @@ class TestUsageSummary:
         assert body["requests"] == 3
         assert body["prompt_tokens"] == 3010 and body["completion_tokens"] == 510
         assert body["tokens"] == {"used": 3520, "quota": 10_000, "unlimited": False, "remaining": 6480}
-        # (1000 + 2000) x $1/1M + 500 x $2/1M = $0.004; m2 is unpriced.
         assert body["estimated_cost_usd"] == pytest.approx(0.004)
         assert body["by_model"][0]["model"] == "m1"
         assert {row["mode"]: row["requests"] for row in body["by_mode"]} == {"agent": 1, "rag": 2}

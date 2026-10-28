@@ -1,48 +1,16 @@
-"""
-test_schemas.py
-===============
-WHAT THIS FILE TESTS
---------------------
-`schemas/` (Pydantic) and `db/base_class.py` (the table-name rule).
-
-WHY SCHEMAS ARE WORTH TESTING
------------------------------
-They are the backend's outermost guarantee in both directions.
-
-Inbound, they are the only validation there is -- no endpoint hand-checks a
-field, because the schema already refused the request. Outbound, FastAPI
-filters every response THROUGH the schema, which is what makes leaking a
-password hash structurally impossible rather than something to remember.
-
-That second property is the one worth a test. It holds only as long as no
-password field is ever added to `UserOut`, and a well-meaning "let me just
-expose this for debugging" is exactly how it would be lost.
-
-TIER 1: pure object construction. No database.
-"""
-
 import uuid
 
 import pytest
 from pydantic import ValidationError
 
 from app.db.base_class import Base
-from app.schemas.rag import SearchRequest
-from app.schemas.user import UserCreate, UserOut
-
-
-# ======================================================================
-# The property that keeps hashes out of responses
-# ======================================================================
+from app.schemas import SearchRequest
+from app.schemas import UserCreate, UserOut
 
 
 class TestUserOutExposesNoSecrets:
     def test_no_password_field_of_any_kind(self):
-        """
-        Checked by name across the whole schema rather than against a fixed
-        list, so a future field called `password_reset_token` or
-        `hashed_password` fails here instead of shipping.
-        """
+        """Checked by name across the whole schema rather than against a fixed"""
         forbidden = ("password", "hashed", "secret", "token", "salt")
 
         for field_name in UserOut.model_fields:
@@ -52,10 +20,7 @@ class TestUserOutExposesNoSecrets:
             )
 
     def test_a_password_attribute_is_dropped_when_building_from_an_object(self):
-        """
-        The real mechanism, exercised end to end: an ORM row carrying a hash
-        goes in, and the hash does not come out.
-        """
+        """The real mechanism, exercised end to end: an ORM row carrying a hash"""
 
         class FakeUserRow:
             id = uuid.uuid4()
@@ -90,21 +55,13 @@ class TestUserCreate:
         "bad_email", ["not-an-email", "missing-at-sign.com", "@nolocalpart.com", ""]
     )
     def test_a_malformed_email_is_rejected(self, bad_email):
-        """
-        `EmailStr` is why no endpoint contains an email regex. The request is
-        refused with a 422 naming the field, before any code runs.
-        """
+        """`EmailStr` is why no endpoint contains an email regex. The request is"""
         with pytest.raises(ValidationError):
             UserCreate(email=bad_email, password="a-good-password", full_name="X")
 
     def test_a_missing_password_is_rejected(self):
         with pytest.raises(ValidationError):
             UserCreate(email="ada@example.com", full_name="Ada")
-
-
-# ======================================================================
-# SearchRequest -- bounds, so a bad request cannot reach the database
-# ======================================================================
 
 
 class TestSearchRequest:
@@ -122,11 +79,7 @@ class TestSearchRequest:
 
     @pytest.mark.parametrize("top_k", [0, -1, 51, 10000])
     def test_out_of_range_top_k_is_rejected(self, top_k):
-        """
-        The upper bound is the point: without it a client could ask for 10,000
-        chunks and exhaust the server's memory, or overflow the model's
-        context window.
-        """
+        """The upper bound is the point: without it a client could ask for 10,000"""
         with pytest.raises(ValidationError):
             SearchRequest(query="anything", top_k=top_k)
 
@@ -161,17 +114,8 @@ class TestSearchRequest:
         assert SearchRequest(query="anything", project_id=project_id).project_id == project_id
 
 
-# ======================================================================
-# The table-name rule in db/base_class.py
-# ======================================================================
-
-
 class TestTableNameDerivation:
-    """
-    Table names are derived from class names by a regex plus naive
-    pluralisation. It is invisible when it works and confusing when it does
-    not, so the mapping is pinned here.
-    """
+    """Table names are derived from class names by a regex plus naive"""
 
     def make(self, class_name: str) -> str:
         """Build a throwaway model class and read the name it derived."""
@@ -203,30 +147,18 @@ class TestTableNameDerivation:
         assert self.make("Analytics") == "analytics"
 
     def test_the_rule_would_mangle_apikey(self):
-        """
-        Documents WHY `APIKey` overrides `__tablename__` by hand.
-
-        Two branches fire at once. Every consecutive capital gets its own
-        underscore, and "key" ends in y so the pluraliser turns it into "ies".
-        The result is "a_p_i_keies" -- which is worse than the "a_p_i_keys"
-        the source comment predicts, and an even better argument for the
-        explicit override.
-        """
+        """Documents WHY `APIKey` overrides `__tablename__` by hand."""
         assert self.make("APIKey") == "a_p_i_keies"
 
     def test_the_real_model_opted_out(self):
-        from app.models.api_key import APIKey
+        from app.models import APIKey
 
         assert APIKey.__tablename__ == "api_keys"
 
 
 class TestModelRegistry:
     def test_every_model_is_registered(self):
-        """
-        Alembic reads `Base.metadata` to discover tables. A model that is never
-        imported never registers, and autogenerate would silently omit its
-        table -- or write a migration that DROPS it.
-        """
+        """Alembic reads `Base.metadata` to discover tables. A model that is never"""
         import app.models  # noqa: F401  -- the import IS the thing being tested
 
         registered = set(Base.metadata.tables)
@@ -238,8 +170,6 @@ class TestModelRegistry:
         }
 
         missing = {t for t in expected if t not in registered}
-        # Tolerate a differently pluralised name for feedback, but not a
-        # wholesale absence.
         missing.discard("feedbacks")
 
         assert not missing, f"not registered in Base.metadata: {sorted(missing)}"

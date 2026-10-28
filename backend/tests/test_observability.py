@@ -1,19 +1,3 @@
-"""
-test_observability.py
-=====================
-WHAT THIS FILE TESTS
---------------------
-    core/observability.py   JSON log lines carrying the request context;
-                            Sentry staying off (and harmless) without a DSN
-    core/middleware.py      the request id, the access-log line, and the
-                            security headers on every response
-    core/health.py          /health/ready: per-component status, 503 when a
-                            HARD dependency is down, Celery only in celery mode
-
-TIER 1: no database, Redis or Celery. Every dependency check is replaced by a
-fake that succeeds, fails or hangs on demand.
-"""
-
 import asyncio
 import json
 import logging
@@ -40,11 +24,6 @@ def _record(message="hello", **extra) -> logging.LogRecord:
     for key, value in extra.items():
         setattr(record, key, value)
     return record
-
-
-# ======================================================================
-# Structured logging
-# ======================================================================
 
 
 class TestJsonFormatter:
@@ -111,7 +90,6 @@ class TestSentry:
     def test_missing_package_is_a_warning_not_a_crash(self, monkeypatch, caplog):
         monkeypatch.setattr(settings, "SENTRY_DSN", "https://key@example.invalid/1")
         monkeypatch.setattr(observability, "_sentry_enabled", False)
-        # None in sys.modules makes `import sentry_sdk` raise ImportError.
         monkeypatch.setitem(sys.modules, "sentry_sdk", None)
         assert observability.init_sentry("api") is False
         assert "sentry-sdk is not installed" in caplog.text
@@ -137,11 +115,6 @@ class TestSentry:
         monkeypatch.setattr(observability, "_sentry_enabled", False)
 
 
-# ======================================================================
-# Middleware: request id, access log, security headers
-# ======================================================================
-
-
 class TestRequestContext:
     async def test_a_request_id_is_generated_and_returned(self, client):
         response = await client.get(f"{API}/health")
@@ -161,7 +134,6 @@ class TestRequestContext:
         lines = [r for r in caplog.records if r.name == "app.access"]
         assert len(lines) == 1
         line = lines[0]
-        # The TEMPLATE, never the literal URL (which can hold secrets).
         assert line.path == f"{API}/documents/{{document_id}}/preview"
         assert line.status == 401
         assert line.method == "GET"
@@ -189,11 +161,7 @@ class TestSecurityHeaders:
 
 
 class TestCorsExposedHeaders:
-    """
-    A cross-origin browser can only READ response headers the API lists in
-    Access-Control-Expose-Headers. The frontend needs Retry-After to tell a
-    rate-limited user how long to wait (lib/api.ts, getErrorMessage).
-    """
+    """A cross-origin browser can only READ response headers the API lists in"""
 
     async def test_retry_after_and_request_id_are_readable_cross_origin(self, client):
         origin = settings.cors_origins[0]
@@ -201,11 +169,6 @@ class TestCorsExposedHeaders:
         exposed = response.headers.get("Access-Control-Expose-Headers", "").lower()
         assert "retry-after" in exposed
         assert "x-request-id" in exposed
-
-
-# ======================================================================
-# Readiness
-# ======================================================================
 
 
 def fake_checks(monkeypatch, **outcomes):

@@ -1,28 +1,3 @@
-"""Webhooks: endpoints and the delivery log
-
-WHAT THIS MIGRATION ADDS
-------------------------
-Two new tables, for outgoing webhooks (services/webhooks.py):
-
-    webhook_endpoints   an organization's registered receiver URLs, the
-                        events each wants, and its HMAC signing secret.
-    webhook_deliveries  one row per event per endpoint: the payload, the
-                        attempt count, the last HTTP status / error, and
-                        when the next retry is due.
-                        ix_webhook_deliveries_endpoint_created serves the
-                        delivery-log page; ix_webhook_deliveries_status_next
-                        serves the retry sweep.
-
-WHY NOTHING EXISTING IS REWRITTEN
----------------------------------
-Both tables are new and start empty. Webhooks stay off until
-WEBHOOKS_ENABLED=true, so this migration changes no behaviour by itself.
-
-Revision ID: f6a8b0c2d4e7
-Revises: e5f7a9b1c3d6
-Create Date: 2026-10-23
-"""
-
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -36,9 +11,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ------------------------------------------------------------------
-    # 1. webhook_endpoints
-    # ------------------------------------------------------------------
     op.create_table(
         "webhook_endpoints",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -68,9 +40,6 @@ def upgrade() -> None:
         "ix_webhook_endpoints_org_id", "webhook_endpoints", ["org_id"], unique=False
     )
 
-    # ------------------------------------------------------------------
-    # 2. webhook_deliveries
-    # ------------------------------------------------------------------
     op.create_table(
         "webhook_deliveries",
         sa.Column("id", sa.Uuid(), nullable=False),

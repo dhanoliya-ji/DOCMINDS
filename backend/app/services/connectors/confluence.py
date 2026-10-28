@@ -1,23 +1,4 @@
-"""
-connectors/confluence.py
-========================
-Confluence Cloud through Atlassian's OAuth 2.0 (3LO) and the REST API.
-
-    OAuth     auth.atlassian.com, read-only Confluence scopes plus
-              offline_access (Atlassian ROTATES refresh tokens: every refresh
-              returns a new one, which is saved)
-    site      one connection = one Confluence site. The site's "cloud id"
-              comes from accessible-resources and every API call goes to
-              api.atlassian.com/ex/confluence/<cloud id>/... -- never to the
-              site's own hostname, which is what keeps the allowlist to one
-              fixed host.
-    picker    spaces at the top level; a space opens to its top-level
-              pages, a page to its child pages; a title search (CQL)
-    import    the page's `export_view` HTML, saved as .html (the extractor
-              strips it to text)
-    revision  the page's version number
-"""
-
+"""Confluence Cloud through Atlassian's OAuth 2.0 (3LO) and the REST API."""
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
@@ -43,9 +24,6 @@ class Confluence(Provider):
     id = "confluence"
     name = "Confluence"
     allowed_hosts = ("auth.atlassian.com", "api.atlassian.com")
-    # Atlassian's OAuth 2.0 (3LO) documents no token revocation endpoint, so
-    # `revoke` stays the base "unsupported": the person removes the app on
-    # this page. The tokens we held are deleted locally either way.
     manage_access_url = "https://id.atlassian.com/manage-profile/apps"
 
     def configured(self) -> bool:

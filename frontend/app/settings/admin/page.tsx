@@ -1,15 +1,4 @@
-/**
- * settings/admin/page.tsx  (served at "/settings/admin")
- * =======================================================
- * The admin dashboard: usage and estimated cost over time, documents
- * processed and failed, active users, the feedback trend and the questions
- * asked most often -- all from GET /analytics/overview (admins only; 404
- * while ADMIN_DASHBOARD_ENABLED is off, which this page explains rather than
- * failing).
- *
- * Every chart is a <TrendChart>: theme-token colours, a legend when there
- * are two series, and the same numbers as an accessible table.
- */
+// Page /settings/admin -- the admin dashboard: usage and estimated cost over time, documents processed and...
 
 "use client";
 

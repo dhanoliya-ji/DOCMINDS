@@ -1,54 +1,4 @@
-"""
-vision.py
-=========
-WHAT THIS FILE DOES
--------------------
-It describes a PICTURE in a sentence or two, so the picture becomes searchable.
-
-OCR (ocr.py) reads the words printed in an image. That is all it can do. An
-organisation chart, a bar graph, a floor plan or a photo of a damaged part
-carries meaning that is not written anywhere on it -- OCR returns a few stray
-labels, and a question like "which team reports to the CFO?" finds nothing.
-
-A vision model can look at the image and say what it shows:
-
-    "An organisation chart: the CFO oversees Finance, Procurement and Payroll;
-     Payroll has two sub-teams..."
-
-That caption is added to the page's text as
-
-    [Image description] An organisation chart: ...
-
-and from then on it is chunked, embedded and cited exactly like any other text.
-
-OFF BY DEFAULT
---------------
-Every caption is a model call: time, and quota on a free tier. So nothing
-happens unless VISION_PROVIDER is set to "groq" or "gemini". Even then it is
-spent carefully:
-
-    * uploaded image files are captioned;
-    * PDF pages only when pictures cover at least VISION_MIN_IMAGE_COVERAGE of
-      the page (a scan, a chart, a diagram -- not a logo in a letterhead);
-    * at most VISION_MAX_IMAGES_PER_DOCUMENT per document;
-    * paced to VISION_REQUESTS_PER_MINUTE (services/pacing.py).
-
-A caption is a BONUS, never a requirement: any failure -- no key, a timeout, a
-refusal -- is logged and the document carries on without it.
-
-PROVIDERS
----------
-    groq    OpenAI-compatible chat completions with an image_url data URI.
-            Uses GROQ_API_KEY (the key that already writes the answers).
-    gemini  generateContent with inline image data. Uses GEMINI_API_KEY (the
-            key that already makes the embeddings).
-VISION_API_KEY, when set, is used instead -- to keep vision on its own quota.
-
-The image is shrunk to at most 1024 px on its longest side and sent as JPEG
-before it leaves the server: plenty for a description, and a fraction of the
-upload size and memory.
-"""
-
+"""It describes a PICTURE in a sentence or two, so the picture becomes searchable."""
 import base64
 import io
 import logging
@@ -59,8 +9,6 @@ from app.services.pacing import RatePacer
 
 logger = logging.getLogger(__name__)
 
-# The models used when VISION_MODEL is empty. Both are on their provider's
-# free tier at the time of writing; set VISION_MODEL to override.
 DEFAULT_MODELS = {
     "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
     "gemini": "gemini-2.5-flash-lite",
@@ -73,13 +21,10 @@ PROMPT = (
     "Do not speculate beyond what is visible."
 )
 
-# Longest side, in pixels, of the image actually sent to the model.
 _MAX_SIDE = 1024
 
-# Shared by every caption in this process.
 vision_pacer = RatePacer()
 
-# Tests swap in an httpx.MockTransport here; None means the real network.
 _transport = None
 
 
@@ -116,12 +61,7 @@ def _shrink_to_jpeg(image_bytes: bytes) -> bytes:
 
 
 def caption_image(image_bytes: bytes) -> Optional[str]:
-    """
-    A short description of the image, or None.
-
-    None means "no caption": vision is off, no key is configured, or the call
-    failed. Never raises -- the document must not fail over a caption.
-    """
+    """A short description of the image, or None."""
     if not enabled():
         return None
     key = _api_key()
@@ -133,8 +73,6 @@ def caption_image(image_bytes: bytes) -> Optional[str]:
 
         jpeg = _shrink_to_jpeg(image_bytes)
         encoded = base64.b64encode(jpeg).decode("ascii")
-        # A caption is optional, so it never waits long for quota: if the
-        # minute is full for more than a minute, skip this one.
         vision_pacer.acquire(1, 0, settings.VISION_REQUESTS_PER_MINUTE, 0, max_wait=60)
 
         with httpx.Client(timeout=60, transport=_transport) as client:

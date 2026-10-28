@@ -1,10 +1,4 @@
-/**
- * progress.test.ts
- * ================
- * `documentProgress` and `describeProgress` in lib/progress.ts: the line under a
- * large document saying how far ingestion has got, or that it is paused for
- * the embedding rate limit and will resume by itself.
- */
+// `documentProgress` and `describeProgress` in lib/progress.ts: the line under a large...
 import { describe, expect, it } from "vitest";
 
 import type { DocumentItem } from "@/lib/api";

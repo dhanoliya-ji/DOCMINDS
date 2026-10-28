@@ -1,17 +1,4 @@
-/**
- * OrbHero.tsx  (F2: lazy loader and poster for the 3D orb)
- * ========================================================
- * Decides whether the 3D orb is worth loading, and shows a static CSS
- * "poster" orb until it is (or instead of it).
- *
- * WHY next/dynamic WITH ssr:false
- * -------------------------------
- * three.js touches `window` and WebGL at import time, so it cannot run on the
- * server. `ssr: false` keeps it out of the server bundle; `loading` renders
- * the poster while the chunk downloads, so there is never an empty hole.
- *
- * Under prefers-reduced-motion the dynamic import is never even triggered.
- */
+// Lazy loader and poster for the 3D orb
 
 "use client";
 
@@ -20,7 +7,6 @@ import { useRef } from "react";
 
 import { useIsActive, usePrefersReducedMotion } from "./hooks";
 
-/** The static fallback: a layered radial gradient that resembles the orb. */
 function OrbPoster() {
   return (
     <div

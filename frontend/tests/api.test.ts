@@ -1,26 +1,4 @@
-/**
- * api.test.ts
- * ===========
- * WHAT THIS FILE TESTS
- * --------------------
- * `lib/api.ts` -- the single door between this app and the backend.
- *
- * WHY IT IS TESTED FIRST
- * ----------------------
- * Every component depends on it, and it is where the behaviours live that are
- * written once and relied on everywhere: attaching the token, clearing it on a
- * 401, unwrapping FastAPI's error shape, and not calling .json() on an empty
- * body.
- *
- * Each of those fails quietly. A 401 that is not handled centrally does not
- * throw -- it leaves the user on a screen that will not load, with no clue
- * their session expired. An unwrapped error detail does not throw either; it
- * just replaces "Project not found" with "Request failed (404)" at exactly the
- * moment the user needed to be told what went wrong.
- *
- * `fetch` is stubbed, so nothing here touches a network. What is under test is
- * this module's logic, not the backend's.
- */
+// `lib/api.ts` -- the single door between this app and the backend.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,7 +15,6 @@ import {
   API_BASE,
 } from "@/lib/api";
 
-/** Build a Response-shaped object for the stubbed fetch to return. */
 function reply(
   status: number,
   body?: unknown,
@@ -54,7 +31,6 @@ function reply(
   } as unknown as Response;
 }
 
-/** Replace global fetch and hand back the mock for assertions. */
 function stubFetch(...responses: Response[]) {
   const mock = vi.fn();
   responses.forEach((r) => mock.mockResolvedValueOnce(r));
@@ -62,7 +38,6 @@ function stubFetch(...responses: Response[]) {
   return mock;
 }
 
-/** The options object fetch was called with, on call `n`. */
 function callOptions(mock: ReturnType<typeof vi.fn>, n = 0) {
   return mock.mock.calls[n][1] ?? {};
 }
@@ -76,9 +51,6 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-// ======================================================================
-// Token storage
-// ======================================================================
 
 describe("token storage", () => {
   it("round-trips a token through localStorage", () => {
@@ -97,17 +69,11 @@ describe("token storage", () => {
   });
 
   it("does not store the token under an obvious key", () => {
-    // Not security -- localStorage is readable either way. It is about not
-    // advertising the shape of the app's storage to anyone glancing at
-    // devtools on a shared screen.
     setToken("a-token-value");
     expect(Object.keys(localStorage)).not.toContain("password");
   });
 });
 
-// ======================================================================
-// apiFetch: the four behaviours everything depends on
-// ======================================================================
 
 describe("authorization header", () => {
   it("is attached when a token exists", async () => {
@@ -120,8 +86,6 @@ describe("authorization header", () => {
   });
 
   it("is omitted entirely when there is no token", async () => {
-    // The guard that stops login and signup sending "Bearer null" -- which the
-    // backend would try to decode, and reject.
     const mock = stubFetch(reply(200, []));
 
     await api.listProjects();
@@ -156,8 +120,6 @@ describe("a 401 response", () => {
   });
 
   it("redirects to the login page", async () => {
-    // Handled once, centrally. Without it a user whose session expired sits on
-    // a screen that will not load, with nothing saying why.
     setToken("an-expired-token");
     stubFetch(reply(401, { detail: "Not authenticated" }));
 
@@ -167,8 +129,6 @@ describe("a 401 response", () => {
   });
 
   it("does not clear the token on other failures", async () => {
-    // A 404 or a 500 says nothing about whether the session is valid. Clearing
-    // the token there would log the user out over a missing project.
     setToken("a-good-token");
     stubFetch(reply(404, { detail: "Project not found." }));
 
@@ -186,9 +146,6 @@ describe("error messages", () => {
   });
 
   it("unwraps FastAPI's ARRAY detail from a 422", async () => {
-    // The shape that is easy to miss. Validation errors arrive as a list of
-    // problems, not a string -- and handling only the string case turns every
-    // "which field is wrong?" into a bare status code.
     stubFetch(
       reply(422, {
         detail: [{ loc: ["body", "name"], msg: "Field required", type: "missing" }],
@@ -199,8 +156,6 @@ describe("error messages", () => {
   });
 
   it("falls back to a status message when the body is not JSON", async () => {
-    // A proxy timeout or an nginx error page. Calling .json() on it throws,
-    // and that throw must not escape as the user-facing error.
     stubFetch(reply(502, "<html>Bad Gateway</html>", { asText: true }));
 
     await expect(api.listProjects()).rejects.toThrow(/502/);
@@ -215,8 +170,6 @@ describe("error messages", () => {
 
 describe("a 204 No Content response", () => {
   it("resolves instead of throwing", async () => {
-    // .json() on an empty body throws, so deleting a chat session would fail
-    // AFTER succeeding -- the row is gone and the UI shows an error.
     setToken("a-token");
     stubFetch(reply(204, undefined, { asText: true }));
 
@@ -224,9 +177,6 @@ describe("a 204 No Content response", () => {
   });
 });
 
-// ======================================================================
-// getErrorMessage
-// ======================================================================
 
 describe("getErrorMessage", () => {
   it("reads the message from an Error", () => {
@@ -234,8 +184,6 @@ describe("getErrorMessage", () => {
   });
 
   it("falls back for a thrown string", () => {
-    // JavaScript lets you throw anything. Assuming an Error is a real bug
-    // waiting for an unusual failure.
     expect(getErrorMessage("just a string")).toBeTruthy();
   });
 
@@ -259,14 +207,9 @@ describe("getErrorMessage", () => {
   });
 });
 
-// ======================================================================
-// The two methods that deliberately bypass apiFetch
-// ======================================================================
 
 describe("login", () => {
   it("sends form encoding, not JSON", async () => {
-    // OAuth2's password flow specifies this, and FastAPI's
-    // OAuth2PasswordRequestForm reads exactly it. Sending JSON returns a 422.
     const mock = stubFetch(reply(200, { access_token: "t", refresh_token: "r" }));
 
     await api.login("ada@example.com", "a-password");
@@ -277,8 +220,6 @@ describe("login", () => {
   });
 
   it("names the email field `username`", async () => {
-    // The mismatch is in the OAuth2 spec, not in this code -- but a rename
-    // here would break login with a confusing 422, so it is pinned.
     const mock = stubFetch(reply(200, { access_token: "t", refresh_token: "r" }));
 
     await api.login("ada@example.com", "a-password");
@@ -317,9 +258,6 @@ describe("uploadDocuments", () => {
   });
 
   it("does NOT set Content-Type", async () => {
-    // The browser must set it itself, because it appends a boundary parameter
-    // only it knows. Setting it by hand produces a request the server cannot
-    // parse -- and the failure looks like a server bug.
     setToken("a-token");
     const mock = stubFetch(reply(200, []));
 
@@ -339,8 +277,6 @@ describe("uploadDocuments", () => {
   });
 
   it("appends every file under the same field name", async () => {
-    // How one request carries several uploads. The backend reads `files` as a
-    // list; a unique name per file would deliver only the last one.
     setToken("a-token");
     const mock = stubFetch(reply(200, []));
 
@@ -385,7 +321,6 @@ describe("uploadDocuments", () => {
   });
 
   it("unwraps a validation error instead of showing [object Object]", async () => {
-    // FastAPI's 422 carries an ARRAY of problems, not a string.
     setToken("a-token");
     stubFetch(
       reply(422, {
@@ -399,14 +334,9 @@ describe("uploadDocuments", () => {
   });
 });
 
-// ======================================================================
-// URLs -- the contract with the backend
-// ======================================================================
 
 describe("request URLs", () => {
   it("defaults to localhost:8000", () => {
-    // Documented in docs/DEVELOPMENT.md as the default; pinned here so a change is
-    // deliberate rather than accidental.
     expect(API_BASE).toContain("localhost:8000");
   });
 
@@ -424,8 +354,6 @@ describe("request URLs", () => {
   });
 
   it("sends the search query in the body, not the URL", async () => {
-    // POST for a search is deliberate: a question can be long enough to bump
-    // against query-string limits, and filters do not fit comfortably in one.
     setToken("a-token");
     const mock = stubFetch(reply(200, { results: [] }));
 
@@ -439,9 +367,6 @@ describe("request URLs", () => {
   });
 });
 
-// ======================================================================
-// askQuestion -- the chat request and its answer mode
-// ======================================================================
 
 describe("askQuestion", () => {
   it("posts to the session's messages path", async () => {
@@ -455,8 +380,6 @@ describe("askQuestion", () => {
   });
 
   it("sends only the message when no mode is given", async () => {
-    // Exactly the body the backend has always accepted, which it treats as
-    // "rag". A caller that knows nothing about modes changes nothing.
     setToken("a-token");
     const mock = stubFetch(reply(200, {}));
 
@@ -493,9 +416,6 @@ describe("askQuestion", () => {
   });
 });
 
-// ======================================================================
-// Sessions: silent refresh and server-side logout
-// ======================================================================
 
 describe("silent refresh on a 401", () => {
   it("trades the refresh token for a new pair and retries once", async () => {
@@ -542,8 +462,6 @@ describe("silent refresh on a 401", () => {
   });
 
   it("shares ONE refresh between simultaneous 401s", async () => {
-    // The backend treats a refresh token presented twice as stolen and ends
-    // the session, so two parallel refreshes would sign the user out.
     setToken("expired-access");
     setRefreshToken("the-refresh");
     const mock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -642,15 +560,7 @@ describe("account and admin endpoints", () => {
   });
 });
 
-// ======================================================================
-// Status-aware errors: ApiError, Retry-After and the wait hint
-// ======================================================================
-// Rate limits (429), quotas (429/402) and upload refusals (413/415) each need
-// different wording on screen, which is only possible if the status survives
-// the trip from fetch to the component. And a 429 is only useful to the user
-// if it says WHEN to try again.
 
-/** A reply carrying response headers, as a real 429 does. */
 function replyWithHeaders(status: number, body: unknown, headers: Record<string, string>) {
   return { ...reply(status, body), headers: new Headers(headers) } as unknown as Response;
 }

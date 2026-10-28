@@ -1,19 +1,4 @@
-/**
- * PromptLibrary.tsx
- * =================
- * The "Prompts" menu beside the chat box: pick a saved prompt to drop it
- * into the input, or save the question you are typing for next time.
- *
- *     Built-in               summarise risks, extract dates, compare
- *                            clauses, key figures -- every organization has
- *                            them (backend services/prompt_library.py)
- *     Mine                   only you see these
- *     Shared with the team   the organization's library; saving to it needs
- *                            the editor role, which the server enforces
- *
- * Loaded when first opened, not when the chat mounts: most conversations
- * never touch it, and it should cost them nothing.
- */
+// The "Prompts" menu beside the chat box: pick a saved prompt to drop it into the input...
 
 "use client";
 
@@ -24,9 +9,7 @@ import { api, getErrorMessage, type PromptScope, type PromptTemplate } from "@/l
 import { useT } from "@/lib/i18n";
 
 interface Props {
-  /** The text currently in the chat input, offered for saving. */
   draft: string;
-  /** May this user save to the organization's library? */
   canShare: boolean;
   disabled?: boolean;
   onInsert: (body: string) => void;

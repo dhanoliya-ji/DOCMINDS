@@ -1,22 +1,3 @@
-"""
-test_webhooks.py
-================
-Outgoing webhooks (services/webhooks.py, api/v1/webhooks.py):
-
-    signing           the HMAC a receiver checks, and that tampering breaks it
-    SSRF protection   private, loopback, link-local and metadata addresses are
-                      refused; so are http:// and credentials in the URL
-    admin API         off -> 404; admin-only; the secret is shown once;
-                      unknown events and private URLs -> 422; tenant isolation
-    emitting          an audit action becomes an event, staged in the same
-                      transaction and handed to the sender only after commit
-    delivering        signed POST, success / retry with backoff / give up
-
-Runs on SQLite (and Postgres too when reachable), reusing the `env` fixture
-from test_auth_flows.py. No network: DNS is replaced by `_resolve` stubs and
-HTTP by an httpx.MockTransport.
-"""
-
 import json
 import uuid
 
@@ -25,12 +6,10 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.webhook import FAILED, PENDING, SUCCEEDED, WebhookDelivery
+from app.models import FAILED, PENDING, SUCCEEDED, WebhookDelivery
 from app.services import webhooks
 from tests import test_auth_flows as _flows
 
-# The fixtures from test_auth_flows.py, re-exported so pytest finds them here
-# (a fixture is looked up by NAME in the test's module).
 API = _flows.API
 env = _flows.env
 fast_password_hashing = _flows.fast_password_hashing
@@ -49,11 +28,6 @@ def webhooks_on(monkeypatch):
     return sent
 
 
-# ======================================================================
-# Signing
-# ======================================================================
-
-
 class TestSigning:
     def test_a_receiver_can_verify_the_signature(self):
         body = webhooks.encode_body({"type": "ping", "data": {"x": 1}})
@@ -70,11 +44,6 @@ class TestSigning:
     def test_secrets_are_random_and_prefixed(self):
         first, second = webhooks.generate_secret(), webhooks.generate_secret()
         assert first.startswith("whsec_") and first != second
-
-
-# ======================================================================
-# SSRF protection
-# ======================================================================
 
 
 class TestSSRF:
@@ -127,11 +96,6 @@ class TestSSRF:
         monkeypatch.setattr(webhooks, "_resolve", fail)
         with pytest.raises(webhooks.WebhookURLError):
             webhooks.validate_target_url("https://no-such-host.invalid/")
-
-
-# ======================================================================
-# The admin API
-# ======================================================================
 
 
 async def _create(env, admin, **overrides):
@@ -220,11 +184,6 @@ class TestAdminAPI:
         assert [d["event_type"] for d in log.json()] == ["ping"]
 
 
-# ======================================================================
-# Emitting: audit actions become events
-# ======================================================================
-
-
 class TestEmitting:
     async def test_a_member_joining_emits_member_joined(self, env, webhooks_on):
         admin = await env.account()
@@ -235,11 +194,9 @@ class TestEmitting:
             rows = (await session.execute(
                 select(WebhookDelivery).where(WebhookDelivery.org_id == uuid.UUID(admin["user"]["org_id"]))
             )).scalars().all()
-        # The invite.create audit row produced nothing: not subscribed.
         assert [row.event_type for row in rows] == ["member.joined"]
         assert rows[0].payload["data"]["email"] == member["email"]
         assert rows[0].status == PENDING
-        # Handed to the sender -- after the commit, so the row exists.
         assert webhooks_on == [str(rows[0].id)]
 
     async def test_a_wildcard_subscription_gets_everything(self, env, webhooks_on):
@@ -268,11 +225,6 @@ class TestEmitting:
         monkeypatch.setattr(settings, "WEBHOOKS_ENABLED", False)
         await env.member(admin, "Employee")
         assert webhooks_on == []
-
-
-# ======================================================================
-# Delivering
-# ======================================================================
 
 
 async def _pending_delivery(env, admin) -> str:
@@ -312,7 +264,6 @@ class TestDelivering:
             row = await session.get(WebhookDelivery, uuid.UUID(delivery_id))
         assert row.status == SUCCEEDED and row.attempts == 1 and row.last_status_code == 200
 
-        # A second run does nothing: it is already delivered.
         assert (await webhooks.deliver(delivery_id, session_factory=env.factory))[0] == "skipped"
 
     async def test_failures_retry_with_backoff_then_give_up(self, env, webhooks_on, monkeypatch):
@@ -344,7 +295,6 @@ class TestDelivering:
     async def test_a_url_that_now_resolves_privately_is_blocked_at_delivery(self, env, webhooks_on, monkeypatch):
         admin = await env.account()
         delivery_id, _ = await _pending_delivery(env, admin)
-        # DNS rebinding: public at registration, loopback now.
         monkeypatch.setattr(webhooks, "_resolve", lambda host, port: ["127.0.0.1"])
         called = []
         monkeypatch.setattr(webhooks, "_transport", httpx.MockTransport(lambda r: called.append(r) or httpx.Response(200)))

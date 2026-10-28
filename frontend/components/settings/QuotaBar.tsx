@@ -1,15 +1,4 @@
-/**
- * QuotaBar.tsx
- * ============
- * One "used of allowed" bar, e.g. 412,000 of 1,000,000 tokens.
- *
- * It is a real <progressbar> for assistive technology (role + aria-value*),
- * not just a coloured div: a screen-reader user asking "how close are we to
- * the limit?" deserves the same answer a sighted one gets from the bar.
- *
- * A quota of 0 means "unlimited" on the backend; then there is nothing to
- * fill, so only the usage is shown.
- */
+// One "used of allowed" bar, e.g.
 
 "use client";
 
@@ -27,7 +16,6 @@ export default function QuotaBar({
 }) {
   const { t } = useT();
   const percent = usage.unlimited || usage.quota <= 0 ? 0 : Math.min(100, (usage.used / usage.quota) * 100);
-  // Amber from 80%, red at the limit: warn before the 429/402, not after.
   const colour = percent >= 100 ? "var(--danger)" : percent >= 80 ? "var(--warning)" : "var(--accent)";
 
   return (
@@ -58,7 +46,6 @@ export default function QuotaBar({
   );
 }
 
-/** 5368709120 -> "5.0 GB". */
 export function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;

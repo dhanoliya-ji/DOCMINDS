@@ -1,9 +1,4 @@
-/**
- * manifest.ts -- served by Next.js as /manifest.webmanifest and linked from
- * every page's <head>. It is what makes DocMinds installable: its name, the
- * icon, and that it opens standalone at the dashboard. The service worker
- * (public/sw.js) supplies the offline page installability also expects.
- */
+// every page's <head>.
 
 import type { MetadataRoute } from "next";
 

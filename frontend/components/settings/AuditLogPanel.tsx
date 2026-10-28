@@ -1,20 +1,4 @@
-/**
- * AuditLogPanel.tsx
- * =================
- * A paginated table of who did what in the organization (GET /org/audit-logs):
- * sign-ins, failed sign-ins, invites, role changes, API keys, uploads.
- *
- * PAGINATION
- * ----------
- * The log only grows, so it is fetched one page at a time (`limit` + `offset`)
- * and the backend returns the `total` so the panel can say "26–50 of 312" and
- * know when "Next" has nowhere to go.
- *
- * THE FILTER
- * ----------
- * `action` is either an exact action ("user.login") or a prefix ending in "."
- * ("member.") -- the backend's rule, passed through unchanged.
- */
+// A paginated table of who did what in the organization (GET /org/audit-logs): sign-ins...
 
 "use client";
 
@@ -49,7 +33,6 @@ export default function AuditLogPanel() {
     return () => {
       cancelled = true;
     };
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offset, action]);
 

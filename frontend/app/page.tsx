@@ -1,35 +1,4 @@
-/**
- * page.tsx  (the landing page, served at "/")
- * ===========================================
- * The first thing a visitor sees. It explains what the product does and sends
- * them to sign in.
- *
- * WHY "use client"?
- * -----------------
- * Next.js renders components on the SERVER by default, which is faster and
- * better for search engines. But server components cannot use browser-only
- * features -- no hooks, no event handlers, no animation.
- *
- * This page uses Framer Motion and reads localStorage, so it must run in the
- * browser. `"use client"` at the very top of the file is how you say so.
- *
- * HOW THE PAGE IS BUILT
- * ---------------------
- * The heavy visual effects live in components/landing/, one file per effect,
- * each with its own prefers-reduced-motion fallback:
- *
- *     MeshGradient      WebGL colour field behind the hero        (F1)
- *     OrbHero           lazy-loaded 3D orb, static poster first   (F2)
- *     ParticleHeadline  canvas headline over a real <h1>          (F5)
- *     ParallaxCards     depth-layered feature grid                (F6)
- *     SmoothScroll      Lenis, mounted on this page only          (F7)
- *     PipelineScroll    pinned, scroll-driven "how it works"      (F3, F8)
- *     Flashlight        cursor-revealed cited passage             (F4)
- *     StackingCards     sticky cards that pile up on scroll       (F16)
- *
- * Everything 3D is loaded with next/dynamic (ssr:false), DPR is capped and
- * every animation loop pauses when off screen or in a hidden tab (F19).
- */
+// Page / -- the first thing a visitor sees.
 
 "use client";
 
@@ -59,17 +28,8 @@ import StackingCards, { type StackItem } from "@/components/landing/StackingCard
 import { getToken } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
-/**
- * ANIMATION PRESETS
- * -----------------
- * Framer Motion animates between named states. `hidden` is where an element
- * starts, `visible` is where it ends up. Defining them once here keeps the
- * motion consistent across the page.
- */
 const fadeUp = {
-  // Start slightly lower and fully transparent...
   hidden: { opacity: 0, y: 24 },
-  // ...then rise into place and fade in.
   visible: {
     opacity: 1,
     y: 0,
@@ -77,12 +37,6 @@ const fadeUp = {
   },
 };
 
-/**
- * A container that staggers its children.
- * `staggerChildren` delays each child by a fixed amount, so a grid of cards
- * animates in one after another rather than all at once. That reads as
- * deliberate and polished, where a simultaneous fade reads as flat.
- */
 const stagger = {
   hidden: {},
   visible: {
@@ -90,7 +44,6 @@ const stagger = {
   },
 };
 
-/** The capability cards. Kept as data so the JSX below stays a simple loop. */
 const FEATURES = [
   {
     icon: Layers,
@@ -124,7 +77,6 @@ const FEATURES = [
   },
 ];
 
-/** The "why trust it" deck that stacks on scroll (F16). */
 const GUARANTEES: StackItem[] = [
   {
     tag: "Grounded",
@@ -143,10 +95,8 @@ const GUARANTEES: StackItem[] = [
   },
 ];
 
-/** The headline, split into the lines both the <h1> and the canvas render. */
 const HEADLINE = ["Ask your documents", "anything."];
 
-/** Numbers shown in the hero strip; `label` is an i18n key. */
 const STATS = [
   { value: "19", label: "landing.stat.extensions" },
   { value: "384", label: "landing.stat.dimensions" },
@@ -154,53 +104,27 @@ const STATS = [
   { value: "<50ms", label: "landing.stat.search" },
 ];
 
-/**
- * Tell React when the stored token might have changed.
- *
- * The `storage` event fires when ANOTHER tab writes to localStorage, so
- * signing out in one tab updates this page in the others. It does not fire for
- * changes made by this tab -- which is fine here, because signing in navigates
- * away from this page anyway.
- *
- * The returned function unsubscribes, which React calls on unmount.
- */
 function subscribeToTokenChanges(onChange: () => void): () => void {
   window.addEventListener("storage", onChange);
   return () => window.removeEventListener("storage", onChange);
 }
 
 export default function LandingPage() {
-  // Whether the visitor already has a saved login token, so the call to action
-  // can read "Open dashboard" instead of "Get started".
-  //
-  // WHY useSyncExternalStore AND NOT useState + useEffect
-  // -----------------------------------------------------
-  // localStorage is state that lives OUTSIDE React, and this is the hook React
-  // provides for reading exactly that. Its third argument is the value to use
-  // during server rendering: there is no localStorage on the server, so the
-  // server renders `false` and the browser corrects it on hydration.
   const signedIn = useSyncExternalStore(
     subscribeToTokenChanges,
     () => Boolean(getToken()),
     () => false
   );
 
-  // Calls to action and headings follow the language switcher (lib/i18n).
   const { t } = useT();
 
-  // With reduced motion, entrance animations start already "visible".
   const reduced = usePrefersReducedMotion();
   const initial = reduced ? "visible" : "hidden";
 
   return (
-    // `overflow-x-clip`, not `overflow-hidden`: hidden would make <main> a
-    // scroll container and silently break every `position: sticky` below.
     <main className="relative min-h-screen overflow-x-clip">
       <SmoothScroll />
 
-      {/* ============================================================
-          HERO
-          ============================================================ */}
       <section
         aria-label={t("landing.intro")}
         className="relative isolate mx-auto grid max-w-6xl items-center gap-10 px-4 pt-20 pb-16 sm:px-6 md:grid-cols-[1.2fr_1fr] md:pt-28"
@@ -235,7 +159,6 @@ export default function LandingPage() {
             {t("landing.lede")}
           </motion.p>
 
-          {/* Call to action */}
           <motion.div
             variants={fadeUp}
             className="mt-10 flex flex-wrap items-center justify-center gap-3 md:justify-start"
@@ -250,9 +173,6 @@ export default function LandingPage() {
             <a
               href="https://github.com/dhanoliya-ji/DocMinds"
               target="_blank"
-              // `noopener noreferrer` on any target="_blank" link: without it,
-              // the opened page gets a handle back to this one and can
-              // redirect it. This is a standard security precaution.
               rel="noopener noreferrer"
               className="btn-ghost px-6 py-3 text-base focus-visible:outline-2 focus-visible:outline-offset-2"
             >
@@ -269,7 +189,6 @@ export default function LandingPage() {
 
         <OrbHero />
 
-        {/* Stat strip, full width under both columns */}
         <ul className="grid grid-cols-2 gap-4 md:col-span-2 md:grid-cols-4">
           {STATS.map((stat) => (
             <li key={stat.label} className="glass px-4 py-5 text-center">
@@ -284,9 +203,6 @@ export default function LandingPage() {
         </ul>
       </section>
 
-      {/* ============================================================
-          FEATURE GRID (F6)
-          ============================================================ */}
       <section aria-labelledby="features-heading" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <h2 id="features-heading" className="mb-10 text-center text-3xl font-bold md:text-4xl">
           {t("landing.features")}
@@ -294,14 +210,8 @@ export default function LandingPage() {
         <ParallaxCards features={FEATURES} />
       </section>
 
-      {/* ============================================================
-          HOW IT WORKS (F3, F8) -- pinned while it plays
-          ============================================================ */}
       <PipelineScroll />
 
-      {/* ============================================================
-          CITATION DEMO (F4)
-          ============================================================ */}
       <section aria-labelledby="cite-heading" className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <h2 id="cite-heading" className="mb-3 text-center text-3xl font-bold md:text-4xl">
           {t("landing.cite.title")}
@@ -312,9 +222,6 @@ export default function LandingPage() {
         <Flashlight />
       </section>
 
-      {/* ============================================================
-          GUARANTEES (F16) -- cards stack as you scroll
-          ============================================================ */}
       <section aria-labelledby="trust-heading" className="px-4 py-16 sm:px-6">
         <h2 id="trust-heading" className="mb-10 text-center text-3xl font-bold md:text-4xl">
           {t("landing.trust")}
@@ -331,9 +238,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ============================================================
-          FOOTER
-          ============================================================ */}
       <footer
         className="mx-auto max-w-6xl border-t px-4 py-10 text-center text-sm sm:px-6"
         style={{

@@ -1,10 +1,4 @@
-/**
- * i18n/auth.ts -- the sign-in, sign-up, password and verification pages,
- * English and Hindi. See i18n/index.ts.
- *
- * Messages the BACKEND writes (a reply's `detail`) arrive in English and are
- * shown as sent; only the frontend's own words are translated here.
- */
+// English and Hindi.
 
 import type { AreaMessages } from "./index";
 

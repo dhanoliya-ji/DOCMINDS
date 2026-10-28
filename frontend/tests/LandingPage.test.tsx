@@ -1,21 +1,4 @@
-/**
- * LandingPage.test.tsx
- * ====================
- * The landing page and its reduced-motion fallbacks.
- *
- * WHAT IS MOCKED, AND WHY
- * -----------------------
- * - The R3F orb scene and Lenis: jsdom has no WebGL, and these chunks are
- *   lazy/optional anyway. Mocking them also keeps the suite runnable before
- *   three.js is installed.
- * - next/dynamic: renders the `loading` poster, which is exactly what a real
- *   visitor sees before the 3D chunk arrives.
- * - framer-motion is UN-mocked: setup.ts stubs it globally with plain
- *   elements, but these components need its real hooks (useScroll,
- *   useTransform), and the reduced-motion branches are what is under test.
- * - window.matchMedia: jsdom does not implement it, and it is how every
- *   component learns about prefers-reduced-motion and hover support.
- */
+// The landing page and its reduced-motion fallbacks.
 
 import { render, screen, within } from "@testing-library/react";
 import type { ComponentType } from "react";
@@ -37,7 +20,6 @@ import Flashlight from "@/components/landing/Flashlight";
 import PipelineScroll from "@/components/landing/PipelineScroll";
 import { setToken } from "@/lib/api";
 
-/** Stub matchMedia so the given queries match and every other one does not. */
 function mockMedia({ reduced = false, hover = false } = {}) {
   window.matchMedia = vi.fn((query: string) => ({
     matches:
@@ -58,7 +40,6 @@ describe("LandingPage", () => {
     mockMedia();
     render(<LandingPage />);
     const h1 = screen.getByRole("heading", { level: 1 });
-    // Read by screen readers even while the particle canvas draws over it.
     expect(h1).toHaveTextContent("Ask your documents anything.");
     for (const name of [
       "Built for real document piles",

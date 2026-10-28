@@ -1,24 +1,3 @@
-"""
-test_collab.py
-==============
-WHAT THIS FILE TESTS
---------------------
-The collaboration batch:
-
-    confidence     the high / medium / low verdict and its reasons
-    agent stream   Deep research answers stream token by token, with a
-                   reset when streamed text turns out not to be the answer
-    comparison     alignment, the model reply's validation, the heuristic
-                   diff, and POST /compare (tenancy, status, metering)
-    prompts        built-ins + personal + org; who may change what
-    share links    token shown once and stored only as an HMAC; the public
-                   view's allow-list; revoke / expiry / deleted target = 404;
-                   who may share and revoke; audit entries
-
-Tier 1 throughout: the HTTP tests reuse test_product_api.py's harness, so
-they run on in-memory SQLite always and on Postgres when one is reachable.
-"""
-
 # ruff: noqa: F811  -- the harness fixtures are imported, then requested by name.
 import datetime
 import uuid
@@ -27,14 +6,13 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.chat import ChatMessage, ChatSession
-from app.models.share import ShareLink
+from app.models import ChatMessage, ChatSession
+from app.models import ShareLink
 from app.services import compare as compare_module
 from app.services import confidence, sharing
 from app.services.agent import run_agent
 from app.services.llm import NOT_FOUND_ANSWER, LLMService
 
-# The HTTP harness and its fixtures (imported so pytest registers them here).
 from tests.test_product_api import (  # noqa: F401
     API,
     _chunk_result,
@@ -49,11 +27,6 @@ from tests.test_product_api import (  # noqa: F401
 
 def cite(number, score=0.8, document_id="doc-1"):
     return {"number": number, "score": score, "document_id": document_id, "filename": "a.pdf"}
-
-
-# ======================================================================
-# Confidence
-# ======================================================================
 
 
 class TestConfidence:
@@ -102,16 +75,8 @@ class TestConfidence:
         assert any(r["code"] == "read_sections" for r in verdict["reasons"])
 
 
-# ======================================================================
-# Deep research streams its final answer
-# ======================================================================
-
-
 def _streaming_model():
-    """
-    First response: some text, THEN a tool call (so the text was not the
-    answer -> reset). Second response: the final answer, in pieces.
-    """
+    """First response: some text, THEN a tool call (so the text was not the"""
     models_function = pytest.importorskip("pydantic_ai.models.function")
     messages_mod = pytest.importorskip("pydantic_ai.messages")
 
@@ -181,11 +146,6 @@ class TestAgentStreaming:
         assert result["answer"] == "Done."
 
 
-# ======================================================================
-# Comparison (the service)
-# ======================================================================
-
-
 def section(content, index=0, vector=None, side="a"):
     return {"chunk_id": uuid.uuid4(), "document_id": side, "filename": f"{side}.pdf",
             "chunk_index": index, "page_number": index + 1, "content": content, "vector": vector}
@@ -244,18 +204,13 @@ class TestCompareService:
         assert diff["differences"][1]["b"] == [2] and "2 matched" in diff["summary"]
 
 
-# ======================================================================
-# HTTP: comparison, prompts, sharing
-# ======================================================================
-
-
 async def _ready_documents(env, *texts):
     ids = []
     for index, text in enumerate(texts):
         document = await env.upload(name=f"doc{index}.txt", data=text.encode() * 3)
         await env.set_document(document["id"], status="completed")
         async with env.factory() as session:
-            from app.models.chunk import Chunk
+            from app.models import Chunk
 
             session.add(Chunk(document_id=uuid.UUID(document["id"]), content=text,
                               chunk_index=0, page_number=1, meta_data={}))
@@ -296,7 +251,7 @@ class TestCompareApi:
                                           json={"document_a": a, "document_b": b})
         assert response.status_code == 200, response.text
         assert response.json()["summary"] == "Price rose."
-        from app.models.usage import UsageEvent
+        from app.models import UsageEvent
 
         assert await env.count(UsageEvent, UsageEvent.mode == "compare") == 1
 
@@ -381,7 +336,6 @@ class TestSharing:
         token = created.json()["token"]
         assert created.json()["path"] == f"/share/{token}"
 
-        # Only the HMAC is stored.
         async with env.factory() as session:
             link = (await session.execute(select(ShareLink))).scalar_one()
             assert link.token_hash == sharing.token_hash(token) and token not in link.token_hash

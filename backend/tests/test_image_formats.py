@@ -1,30 +1,3 @@
-"""
-test_image_formats.py
-=====================
-WHAT THIS FILE TESTS
---------------------
-`SAFE_IMAGE_FORMATS` and `_open_image` in `services/ocr.py` -- the allowlist
-that limits Pillow to the image formats DocMinds actually accepts.
-
-WHY IT EXISTS
--------------
-Most of Pillow's security advisories are in decoders for formats nobody
-uploads to a document tool. EPS is the worst: Pillow hands it to Ghostscript,
-and a crafted file can inject arguments into that call. The allowlist keeps
-every upload away from those decoders, whatever its file extension claims.
-
-It cuts both ways, and both halves are tested here:
-  * every format the extractor routes to OCR must still OPEN, or scanned
-    images silently stop being read;
-  * everything else must be REFUSED before a decoder runs.
-
-The first half caught a real bug while this was written: listing "MPO" made
-Pillow raise KeyError for every format after it, because MPO has no decoder
-entry of its own -- it is read through the JPEG one.
-
-TIER 1: images are generated in memory. No database, no network, no Tesseract.
-"""
-
 import io
 
 import pytest
@@ -56,10 +29,7 @@ class TestAllowedFormatsOpen:
         assert _open_image(buffer.getvalue()).format == "MPO"
 
     def test_the_allowlist_names_only_registered_decoders(self):
-        """
-        An unregistered name raises KeyError inside Image.open for every file
-        that reaches it -- the MPO bug described above. Guard against it.
-        """
+        """An unregistered name raises KeyError inside Image.open for every file"""
         Image.init()
         for fmt in SAFE_IMAGE_FORMATS:
             assert fmt in Image.OPEN, f"{fmt} has no decoder entry of its own"

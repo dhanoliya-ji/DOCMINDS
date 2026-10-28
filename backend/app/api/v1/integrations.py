@@ -1,73 +1,4 @@
-"""
-integrations.py
-===============
-WHAT THIS FILE DOES
--------------------
-Cloud imports (services/connectors/): connect a provider, browse it, import
-files or pages into a project, and keep them in sync.
-
-    GET    /integrations/providers                      which providers this
-                                                        deployment offers
-    POST   /integrations/{provider}/authorize           -> the provider's
-                                                        consent URL
-    GET    /integrations/callback/{provider}            where the provider
-                                                        sends the browser back
-    GET    /integrations/connections                    the organization's
-                                                        connections
-    DELETE /integrations/connections/{id}               disconnect (imported
-                                                        documents stay), and
-                                                        revoke at the provider
-                                                        where it has an API
-    GET    /integrations/connections/{id}/items         the file/page picker
-    POST   /integrations/connections/{id}/import        import into a project,
-                                                        in the BACKGROUND: 202
-                                                        and a job to poll
-    GET    /integrations/imports?connection_id=         recent import jobs
-    GET    /integrations/imports/{import_id}            one job, per-item
-                                                        progress
-    POST   /integrations/connections/{id}/sync          "Sync now", every
-                                                        document it imported
-    GET    /integrations/documents?project_id=          imported documents and
-                                                        their sync status
-    PATCH  /integrations/documents/{document_id}        auto-sync on / off
-    POST   /integrations/documents/{document_id}/sync   "Sync now", one
-
-WHO MAY
--------
-Editors and admins: importing changes what the whole organization searches,
-exactly like an upload, so viewers get 403. Every route answers 404 while
-CONNECTORS_ENABLED is off. Connecting, disconnecting, importing and syncing
-are audited (connector.connect, connector.disconnect, connector.import,
-document.upload per imported file, document.sync).
-
-IMPORTS RUN IN THE BACKGROUND
------------------------------
-Downloading a dozen files can take minutes -- far longer than a request
-should be held open (or than a proxy allows). The import endpoint only
-checks the request (connection, project, item count and id format), records
-a job and answers 202; the download, the upload rules, storage and the
-ingestion dispatch run in the background (service.run_import: a Celery task,
-or the in-process queue with INGESTION_MODE=inline). The page polls the job:
-each item goes pending -> downloading -> imported (or duplicate,
-already_imported, skipped, failed with the reason).
-
-DISCONNECTING REVOKES WHERE IT CAN
-----------------------------------
-The connection and its tokens are deleted locally FIRST and committed;
-then the provider is asked to revoke the grant (Google, Notion). Microsoft
-and Atlassian have no API for that, so the reply carries `manage_url`, the
-provider's own page for removing the app. A revocation failure is logged and
-reported, never turned into a failed disconnect.
-
-THE CALLBACK
-------------
-It is the one route without a bearer token -- a browser redirect carries
-none -- so it authenticates the signed `state` instead (service.read_state)
-and then sends the browser on to the frontend's /settings/integrations page
-with the outcome in the query string. Errors are shown there, never as a
-raw JSON page on the API's domain.
-"""
-
+"""Cloud imports (services/connectors/): connect a provider, browse it, import files or pages into a project,..."""
 import uuid
 from typing import List, Optional
 from urllib.parse import urlencode
@@ -79,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.connector import DISCONNECTED, ConnectorConnection, ConnectorImport, ConnectorItem
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.integrations import (
+from app.models import DISCONNECTED, ConnectorConnection, ConnectorImport, ConnectorItem
+from app.models import Document
+from app.models import Project
+from app.models import User
+from app.schemas import (
     AuthorizeOut,
     ConnectionOut,
     DisconnectOut,
@@ -135,8 +66,6 @@ def _configured_provider(provider_id: str):
 
 async def _connection(db: AsyncSession, user: User, connection_id: uuid.UUID) -> ConnectorConnection:
     connection = await db.get(ConnectorConnection, connection_id)
-    # Another organization's connection is "not found", never "forbidden":
-    # its existence is none of this caller's business.
     if connection is None or connection.org_id != user.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
     return connection
@@ -149,11 +78,6 @@ async def _link(db: AsyncSession, user: User, document_id: uuid.UUID) -> Connect
     if link is None or link.org_id != user.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This document was not imported from a cloud source.")
     return link
-
-
-# ======================================================================
-# PROVIDERS AND CONNECTING
-# ======================================================================
 
 
 @router.get("/providers", response_model=List[ProviderOut])
@@ -190,7 +114,6 @@ async def oauth_callback(
     if provider is None or not provider.configured():
         return _back_to_frontend(error="This provider is not configured.")
     if error or not code:
-        # The person pressed "Cancel" on the consent screen, or the provider refused.
         return _back_to_frontend(error="The connection was cancelled or refused by the provider.")
     try:
         claims = service.read_state(state or "", provider.id)
@@ -226,14 +149,7 @@ async def disconnect(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.require_editor),
 ):
-    """
-    Remove the connection and its tokens. Documents it imported stay, but
-    stop syncing ("disconnected"). Then, best effort, revoke DocMinds'
-    access at the provider: Google and Notion have an API for it; for
-    Microsoft and Confluence (no such API) `manage_url` links to the page
-    where the person removes the app. A failed revocation never fails the
-    disconnect -- it is logged, and reported here.
-    """
+    """Remove the connection and its tokens. Documents it imported stay, but"""
     connection = await _connection(db, current_user, connection_id)
     links = await db.execute(select(ConnectorItem).where(ConnectorItem.connection_id == connection.id))
     for link in links.scalars().all():
@@ -243,18 +159,12 @@ async def disconnect(
         db, "connector.disconnect", org_id=current_user.org_id, user_id=current_user.id, request=request,
         details={"provider": connection.provider, "account": connection.account_label, "connection_id": connection.id},
     )
-    # Keep what revocation needs; the row (and its ciphertext) is deleted now.
     held = ConnectorConnection(
         id=connection.id, provider=connection.provider, encrypted_tokens=connection.encrypted_tokens
     )
     await db.delete(connection)
     await db.commit()
     return await service.revoke(held)
-
-
-# ======================================================================
-# THE PICKER AND IMPORT
-# ======================================================================
 
 
 @router.get("/connections/{connection_id}/items", response_model=RemoteItemPage)
@@ -281,7 +191,6 @@ async def browse(
     "/connections/{connection_id}/import",
     response_model=ImportJobOut,
     status_code=status.HTTP_202_ACCEPTED,
-    # As heavy as an upload (download, then extraction and embedding).
     dependencies=[Depends(deps.rate_limit_by_user("upload"))],
 )
 async def import_items(
@@ -291,12 +200,7 @@ async def import_items(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.require_editor),
 ):
-    """
-    Import the picked items into a project, in the background. Answers 202
-    with the job at once; poll GET /integrations/imports/{id} for each
-    item's progress. Imported items are queued for ingestion like an upload
-    (document status "pending") and remember their source for sync.
-    """
+    """Import the picked items into a project, in the background. Answers 202"""
     connection = await _connection(db, current_user, connection_id)
     project = await db.get(Project, payload.project_id)
     if project is None or project.org_id != current_user.org_id:
@@ -352,11 +256,6 @@ async def get_import(
     if job is None or job.org_id != current_user.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found.")
     return service.import_view(job)
-
-
-# ======================================================================
-# IMPORTED DOCUMENTS AND SYNC
-# ======================================================================
 
 
 @router.get("/documents", response_model=List[LinkedDocumentOut])
@@ -425,7 +324,7 @@ async def sync_connection(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.require_editor),
 ):
-    """ "Sync now" for every document this connection imported (at most CONNECTOR_SYNC_BATCH_SIZE)."""
+    """"Sync now" for every document this connection imported (at most CONNECTOR_SYNC_BATCH_SIZE)."""
     connection = await _connection(db, current_user, connection_id)
     links = (
         await db.execute(

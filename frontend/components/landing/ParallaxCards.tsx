@@ -1,13 +1,4 @@
-/**
- * ParallaxCards.tsx  (F6: depth-layered parallax feature cards)
- * =============================================================
- * The capability grid. Each card is split into three layers -- a glow
- * backdrop, the card body and the icon -- that move at different rates as
- * the section scrolls, and the whole card tilts toward the cursor on hover.
- * The differing speeds are what read as depth.
- *
- * Under reduced motion the cards render as a plain, still grid.
- */
+// The capability grid.
 
 "use client";
 
@@ -42,13 +33,11 @@ function Card({
   still: boolean;
 }) {
   const Icon = feature.icon;
-  // Alternate columns drift by different amounts so neighbours separate.
   const depth = 30 + (index % 3) * 25;
   const bodyY = useTransform(progress, [0, 1], [depth, -depth]);
   const glowY = useTransform(progress, [0, 1], [depth * 1.8, -depth * 1.8]);
   const iconY = useTransform(progress, [0, 1], [depth * 0.4, -depth * 0.4]);
 
-  // Hover tilt, sprung so it settles rather than snapping.
   const rx = useSpring(useMotionValue(0), { stiffness: 200, damping: 20 });
   const ry = useSpring(useMotionValue(0), { stiffness: 200, damping: 20 });
   const onMove = (e: PointerEvent<HTMLDivElement>) => {

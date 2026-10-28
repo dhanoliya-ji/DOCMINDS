@@ -1,22 +1,3 @@
-"""
-test_security.py
-================
-WHAT THIS FILE TESTS
---------------------
-`core/security.py` -- password hashing and JWT creation.
-
-WHY THIS FILE MATTERS
----------------------
-Security code fails silently. A password comparison that always returns True,
-or a token whose `type` is never checked, breaks nothing visible: the app keeps
-working, logins keep succeeding, and the hole stays open until someone finds
-it. There is no crash to notice and no wrong answer on screen.
-
-So the properties below are asserted directly rather than assumed from reading.
-
-TIER 1: no database, no network.
-"""
-
 import uuid
 from datetime import timedelta
 
@@ -35,11 +16,6 @@ from app.core.security import (
 def decode(token: str) -> dict:
     """Decode a token the same way the API's dependency does."""
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-
-
-# ======================================================================
-# Passwords
-# ======================================================================
 
 
 class TestPasswordHashing:
@@ -70,17 +46,11 @@ class TestPasswordHashing:
         assert verify_password(wrong, hashed) is False
 
     def test_the_same_password_hashes_differently_every_time(self):
-        """
-        Bcrypt salts each hash. Two users who choose the same password must
-        store different values -- otherwise equal hashes in a leaked database
-        would reveal which accounts share a password, and one cracked hash
-        would open all of them at once.
-        """
+        """Bcrypt salts each hash. Two users who choose the same password must"""
         first = get_password_hash("identical")
         second = get_password_hash("identical")
 
         assert first != second
-        # Both still verify, because the salt travels inside the hash.
         assert verify_password("identical", first)
         assert verify_password("identical", second)
 
@@ -93,27 +63,18 @@ class TestPasswordHashing:
         assert verify_password(password, get_password_hash(password))
 
 
-# ======================================================================
-# Tokens
-# ======================================================================
-
-
 class TestAccessToken:
     def test_the_subject_survives_the_round_trip(self):
         user_id = uuid.uuid4()
         payload = decode(create_access_token(subject=user_id))
 
-        # Stored as a string, because JSON has no UUID type.
         assert payload["sub"] == str(user_id)
 
     def test_it_is_marked_as_an_access_token(self):
         assert decode(create_access_token(subject="user-1"))["type"] == "access"
 
     def test_additional_claims_are_embedded(self):
-        """
-        `org_id` and `role` ride along so the API can authorise without a
-        second database lookup on every request.
-        """
+        """`org_id` and `role` ride along so the API can authorise without a"""
         org_id = str(uuid.uuid4())
         token = create_access_token(
             subject="user-1", additional_claims={"org_id": org_id, "role": "Admin"}
@@ -135,10 +96,7 @@ class TestAccessToken:
             decode(token)
 
     def test_a_token_signed_with_another_key_is_rejected(self):
-        """
-        The signature is the whole security model: the server trusts a token
-        because it could only have been signed by something holding the secret.
-        """
+        """The signature is the whole security model: the server trusts a token"""
         forged = jwt.encode(
             {"sub": "attacker", "type": "access"},
             "not-the-real-secret-key",
@@ -152,7 +110,6 @@ class TestAccessToken:
         token = create_access_token(subject="user-1")
         head, body, signature = token.split(".")
 
-        # Change one character of the payload, leave the signature alone.
         tampered = f"{head}.{body[:-2]}XY.{signature}"
 
         with pytest.raises(jwt.InvalidTokenError):
@@ -164,24 +121,14 @@ class TestRefreshToken:
         assert decode(create_refresh_token(subject="user-1"))["type"] == "refresh"
 
     def test_the_two_types_are_distinguishable(self):
-        """
-        Without the `type` claim a 7-day refresh token would be accepted
-        wherever a 30-minute access token is -- silently turning a short-lived
-        credential into a long-lived one. `/auth/refresh` checks this claim,
-        and it can only check it if the two differ.
-        """
+        """Without the `type` claim a 7-day refresh token would be accepted"""
         access = decode(create_access_token(subject="user-1"))
         refresh = decode(create_refresh_token(subject="user-1"))
 
         assert access["type"] != refresh["type"]
 
     def test_it_carries_no_role_and_no_org(self):
-        """
-        Deliberate. A refresh token only proves identity; permissions are
-        re-read from the database when it is exchanged. That is what makes a
-        revoked role take effect within 30 minutes rather than lingering in a
-        token for a week.
-        """
+        """Deliberate. A refresh token only proves identity; permissions are"""
         payload = decode(
             create_refresh_token(
                 subject="user-1", additional_claims={"role": "Admin", "org_id": "x"}
@@ -201,13 +148,7 @@ class TestRefreshToken:
 
 
 def _accepts_claims() -> bool:
-    """
-    Does `create_refresh_token` even take additional claims?
-
-    The test above should hold either way -- whether the function refuses the
-    argument or accepts and ignores it -- so this keeps the assertion about
-    behaviour rather than about the signature.
-    """
+    """Does `create_refresh_token` even take additional claims?"""
     import inspect
 
     return "additional_claims" in inspect.signature(create_refresh_token).parameters

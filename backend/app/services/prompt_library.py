@@ -1,24 +1,4 @@
-"""
-prompt_library.py  (service)
-============================
-WHAT THIS FILE DOES
--------------------
-The BUILT-IN prompt templates every organization starts with. Saved
-templates (personal and org-shared) are rows in prompt_templates
-(models/prompt.py); these are code, so they exist from an organization's
-first minute and improve with an upgrade, no data migration needed.
-
-Each has a stable `key`. The API returns it as the id "builtin:<key>", and
-the frontend uses the key to show a translated title and body
-(lib/i18n/collab.ts) -- falling back to the English text here.
-
-WHAT MAKES A GOOD BUILT-IN
---------------------------
-A task people repeat against business documents, phrased so the answer is
-easy to check: it asks for a list, asks for the citation on every item, and
-says what to do when the documents are silent.
-"""
-
+"""The BUILT-IN prompt templates every organization starts with."""
 from typing import Dict, List
 
 BUILTIN_TEMPLATES: List[Dict[str, str]] = [

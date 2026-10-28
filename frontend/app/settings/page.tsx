@@ -1,36 +1,4 @@
-/**
- * settings/page.tsx  (served at "/settings")
- * ==========================================
- * The organization's admin area: Members, API keys, Audit log, Usage and
- * Feedback (how people rate the answers).
- *
- * WHO SEES WHAT
- * -------------
- * Every /org endpoint requires the admin role, so only an Admin gets the tabs.
- * Anyone else sees their own account details and a sentence explaining that
- * these settings belong to their admin -- rather than four tabs that would
- * each fail with 403. (The backend enforces this regardless; hiding the tabs
- * is about not offering what will be refused.)
- *
- * TABS AND ACCESSIBILITY
- * ----------------------
- * The tab strip follows the WAI-ARIA tabs pattern: role="tablist"/"tab"/
- * "tabpanel", aria-selected on the active tab, and the panel labelled by its
- * tab, so a screen reader announces "Members, tab, 1 of 4, selected". Left
- * and right arrow keys move between tabs, as the pattern expects.
- *
- * The Webhooks tab appears only when the deployment has webhooks switched
- * on: GET /webhooks is probed once for an admin, and a 404 (the feature is
- * off) leaves the tab out entirely rather than showing a dead screen.
- *
- * Cloud imports, Plan and billing, and the Admin dashboard are pages of
- * their own (settings/integrations, settings/billing, settings/admin);
- * <PlatformLinks> links to each only when the server has it switched on,
- * and <PlanBadge> shows the plan next to the account line.
- *
- * Wrapped in <AppShell>, which provides navigation and sign-out; destructive
- * actions in the panels use <HoldToConfirm> rather than window.confirm().
- */
+// Page /settings -- the organization's admin area: Members, API keys, Audit log, Usage and Feedback (how...
 
 "use client";
 
@@ -53,7 +21,6 @@ import { rich, useT } from "@/lib/i18n";
 import { isAdmin, roleLabel } from "@/lib/roles";
 import { useCurrentUser } from "@/lib/useCurrentUser";
 
-// Each tab's label is the i18n key `settings.tab.<id>`.
 const TABS = [
   { id: "members" },
   { id: "api-keys" },
@@ -71,7 +38,6 @@ export default function SettingsPage() {
   const { user, loading, error } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("members");
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  // Whether the Webhooks tab exists: unknown (false) until the probe answers.
   const [webhooksOn, setWebhooksOn] = useState(false);
   const admin = !!user && isAdmin(user.role);
   const tabs = TABS.filter((tab) => tab.id !== "webhooks" || webhooksOn);
@@ -87,7 +53,6 @@ export default function SettingsPage() {
     };
   }, [admin]);
 
-  // Same guard as the other signed-in pages.
   useEffect(() => {
     if (!getToken()) router.push("/login");
   }, [router]);
@@ -113,7 +78,6 @@ export default function SettingsPage() {
         <>
           {!user.is_verified && <VerifyBanner email={user.email} />}
 
-          {/* ---- Your account: shown to everyone ---- */}
           <section className="glass mb-8 p-5 text-sm" aria-label={t("settings.account")}>
             <div className="break-words">
               {rich(t("settings.signedInAs"), {
@@ -129,7 +93,6 @@ export default function SettingsPage() {
             )}
           </section>
 
-          {/* Cloud imports, billing, admin dashboard: each only when on. */}
           <PlatformLinks role={user.role} />
 
           {isAdmin(user.role) && (
@@ -146,8 +109,6 @@ export default function SettingsPage() {
                     type="button"
                     aria-selected={tab === item.id}
                     aria-controls={`panel-${item.id}`}
-                    // Roving tabindex: only the active tab is in the Tab order;
-                    // arrows move between the others.
                     tabIndex={tab === item.id ? 0 : -1}
                     onKeyDown={onTabKey}
                     onClick={() => setTab(item.id)}
@@ -157,8 +118,6 @@ export default function SettingsPage() {
                   </button>
                 ))}
               </div>
-              {/* overflow-x-auto: the member and key tables are wider than a
-                  phone, so they scroll inside the panel, never the page. */}
               <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="min-w-0 overflow-x-auto">
                 {tab === "members" && <MembersPanel currentUserId={user.id} />}
                 {tab === "api-keys" && <ApiKeysPanel />}

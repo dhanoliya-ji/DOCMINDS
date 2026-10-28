@@ -1,18 +1,3 @@
-"""
-test_uploads.py
-===============
-WHAT THIS FILE TESTS
---------------------
-services/uploads.py -- everything checked about a file before it is accepted:
-
-    the filename is made safe          sanitize_filename
-    the extension is on the allowlist  ALLOWED_EXTENSIONS
-    the size is counted while reading  spool_upload  -> 413
-    the bytes match the extension      check_content -> 415
-
-TIER 1: temporary files only. No database, no network.
-"""
-
 import io
 import os
 import zipfile
@@ -59,11 +44,6 @@ def plain_zip() -> bytes:
     return buffer.getvalue()
 
 
-# ======================================================================
-# Filenames
-# ======================================================================
-
-
 class TestSanitizeFilename:
     @pytest.mark.parametrize(
         "raw,expected",
@@ -84,7 +64,7 @@ class TestSanitizeFilename:
         assert sanitize_filename(raw) == expected
 
     def test_a_right_to_left_override_is_removed(self):
-        """'evil\u202efdp.exe' would DISPLAY as 'evilexe.pdf'."""
+        """'evil‮fdp.exe' would DISPLAY as 'evilexe.pdf'."""
         assert sanitize_filename("evil\u202efdp.exe") == "evilfdp.exe"
 
     def test_a_long_name_is_cut_but_keeps_its_extension(self):
@@ -104,11 +84,6 @@ class TestAllowlist:
     @pytest.mark.parametrize("extension", ["exe", "js", "sh", "svg", "dll", ""])
     def test_dangerous_or_unknown_types_are_not_allowed(self, extension):
         assert extension not in ALLOWED_EXTENSIONS
-
-
-# ======================================================================
-# Content sniffing
-# ======================================================================
 
 
 class TestCheckContent:
@@ -164,11 +139,6 @@ class TestCheckContent:
         assert check_content(str(path), extension)
 
 
-# ======================================================================
-# Spooling, with the size limit
-# ======================================================================
-
-
 class TestSpoolUpload:
     async def test_a_good_file_is_spooled_and_hashed(self):
         import hashlib
@@ -199,8 +169,6 @@ class TestSpoolUpload:
             await spool_upload(upload, max_bytes=25)
 
         assert caught.value.status_code == 413
-        # It stopped as soon as the limit was crossed -- the rest of the file
-        # was never read.
         assert upload.reads == 3
 
     async def test_exactly_the_limit_is_fine(self):

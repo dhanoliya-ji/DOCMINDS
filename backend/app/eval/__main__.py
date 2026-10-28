@@ -1,22 +1,4 @@
-"""
-python -m app.eval -- run a golden set against a real project.
-
-    cd backend
-    python -m app.eval --golden app/eval/golden_example.json --project-id <uuid>
-
-    options:
-      --top-k N           results per question (default: the golden set's
-                          "top_k", else RETRIEVAL_TOP_K)
-      --answers           also generate answers and score them (keywords,
-                          and faithfulness by an LLM judge when a key is set)
-      --no-hybrid         vectors only, to compare against hybrid search
-      --output FILE       also write the full report as JSON
-      --min-hit-rate X    exit with status 1 below this (for CI gates)
-
-It talks to the database in DATABASE_URL / POSTGRES_* like the API does, and
-only ever READS: nothing is saved, nothing is metered.
-"""
-
+"""python -m app.eval -- run a golden set against a real project."""
 import argparse
 import asyncio
 import json
@@ -56,10 +38,9 @@ async def main(argv: List[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # Imported after argument parsing so `--help` works without a database.
     from app.core.config import settings
     from app.db.session import SessionLocal
-    from app.models.project import Project
+    from app.models import Project
     from app.services.llm import LLMService
     from app.services.retrieval import RetrievalService
 

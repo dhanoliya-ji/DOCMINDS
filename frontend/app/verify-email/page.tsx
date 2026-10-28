@@ -1,24 +1,4 @@
-/**
- * verify-email/page.tsx  (served at "/verify-email?token=...")
- * ============================================================
- * Confirms an email address using the link from the verification email.
- *
- * NO BUTTON TO PRESS
- * ------------------
- * Clicking the emailed link already says "yes, this is my address", so the
- * page sends the token as soon as it opens and just reports the result.
- *
- * WHY A MODULE-LEVEL CACHE OF REQUESTS
- * ------------------------------------
- * The token is SINGLE USE. In development React deliberately runs every effect
- * twice (Strict Mode) to flush out bugs; two POSTs would mean the second one
- * fails with "invalid or expired" and the page would show an error for a
- * verification that actually succeeded. Remembering the promise per token
- * makes the second run reuse the first request instead of sending another.
- *
- * The link format (`/verify-email?token=`) is set in
- * backend/app/services/email.py; change both sides together.
- */
+// Page /verify-email?token=... -- confirms an email address using the link from the verification email.
 
 "use client";
 
@@ -84,9 +64,6 @@ function VerifyEmail() {
             {!result.ok && " You can ask for a new link from the banner on your projects page."}
           </Notice>
         )}
-        {/* The dashboard sends a signed-out visitor on to /login, so one link
-            serves both cases -- and reading the token during render would
-            differ between the server and the browser (a hydration mismatch). */}
         <Link href="/dashboard" className="btn-primary w-full py-3">
           {t("auth.continue")}
         </Link>

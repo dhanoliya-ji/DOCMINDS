@@ -1,18 +1,4 @@
-/**
- * FeedbackPanel.tsx
- * =================
- * How people rate the organization's answers (GET /org/feedback): the thumbs
- * up / thumbs down from every chat, summarised for an admin.
- *
- * WHAT TO DO WITH IT
- * ------------------
- * The headline number is satisfaction, but the useful part is the list of
- * recent thumbs-down answers with their questions. A cluster of them about
- * one document usually means it chunked or OCR'd badly -- re-index it with
- * different chunking from the project page. And each of those questions is a
- * ready-made case for the evaluation golden set (backend/app/eval), so the
- * fix can be measured instead of hoped for.
- */
+// How people rate the organization's answers (GET /org/feedback): the thumbs up / thumbs...
 
 "use client";
 
@@ -24,7 +10,6 @@ import { useT } from "@/lib/i18n";
 
 const PERIODS = [7, 30, 90] as const;
 
-/** 0.8123 -> "81%", null -> "—". */
 export function formatSatisfaction(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
 }
@@ -48,7 +33,6 @@ export default function FeedbackPanel() {
     return () => {
       cancelled = true;
     };
-    // `t` only words the fallback error; a language switch must not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days]);
 

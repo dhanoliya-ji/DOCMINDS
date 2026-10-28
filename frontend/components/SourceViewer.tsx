@@ -1,27 +1,4 @@
-/**
- * SourceViewer.tsx
- * ================
- * Opens the document a citation came from, at the cited place, with the
- * cited passage highlighted. This is what makes "[2]" checkable in one click
- * instead of "go and find page 12 of handbook.pdf yourself".
- *
- * TWO WAYS TO SHOW A SOURCE
- * -------------------------
- *   PDF        the ORIGINAL page, drawn by pdf.js (lib/pdf.ts) from the bytes
- *              of GET /documents/{id}/preview, with the passage's lines
- *              painted over in yellow. Prev / next move through the file.
- *
- *   anything   DOCX, spreadsheets, emails, slides... a browser cannot draw
- *   else       those, so we show the EXTRACTED TEXT instead: the cited chunk
- *              and its neighbours (GET /documents/{id}/chunks?around=), with
- *              the snippet marked. It is also the fallback when a PDF cannot
- *              be rendered, and a "Show text" toggle offers it for PDFs too.
- *
- * ACCESSIBILITY
- * -------------
- * A modal dialog: role="dialog" with aria-modal and a label, focus moved into
- * it on open and back to whatever opened it on close, and Escape closes it.
- */
+// Opens the document a citation came from, at the cited place, with the cited passage...
 
 "use client";
 
@@ -32,13 +9,11 @@ import { ChunkContext, api, getErrorMessage } from "@/lib/api";
 import { findPassage } from "@/lib/highlight";
 import type { PdfHandle } from "@/lib/pdf";
 
-/** What the viewer needs to know about a source -- a citation or a search hit. */
 export interface SourceRef {
   document_id: string;
   chunk_id: string;
   filename: string;
   page_number: number | null;
-  // The passage to highlight: a citation's snippet or a search hit's text.
   snippet: string;
   number?: number;
 }
@@ -48,7 +23,6 @@ interface Props {
   onClose: () => void;
 }
 
-/** Can a browser draw this file itself? Decided by the stored extension. */
 export function isPdf(filename: string): boolean {
   return /\.pdf$/i.test(filename || "");
 }
@@ -57,7 +31,6 @@ export default function SourceViewer({ source, onClose }: Props) {
   const [view, setView] = useState<"pdf" | "text">(isPdf(source.filename) ? "pdf" : "text");
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Escape closes; focus moves in on open and back out on close.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
@@ -131,9 +104,6 @@ export default function SourceViewer({ source, onClose }: Props) {
   );
 }
 
-// ======================================================================
-// PDF: the original page, highlighted
-// ======================================================================
 
 function PdfView({ source, onUnavailable }: { source: SourceRef; onUnavailable: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -144,14 +114,12 @@ function PdfView({ source, onUnavailable }: { source: SourceRef; onUnavailable: 
   const [error, setError] = useState("");
   const [highlighted, setHighlighted] = useState(0);
 
-  // Fetch and open the file once.
   useEffect(() => {
     let cancelled = false;
     let handle: PdfHandle | null = null;
     (async () => {
       try {
         const bytes = await api.fetchDocumentFile(source.document_id);
-        // Imported here so pdf.js is only downloaded when a PDF is opened.
         const { openPdf } = await import("@/lib/pdf");
         handle = await openPdf(bytes);
         if (cancelled) {
@@ -171,11 +139,9 @@ function PdfView({ source, onUnavailable }: { source: SourceRef; onUnavailable: 
     };
   }, [source.document_id]);
 
-  // Draw the current page whenever it (or the document) changes.
   useEffect(() => {
     if (!pdf || !canvasRef.current) return;
     let cancelled = false;
-    // Highlight only on the cited page: the snippet belongs there.
     const snippet = page === (source.page_number || 1) ? source.snippet : undefined;
     pdf
       .renderPage(page, canvasRef.current, overlayRef.current, snippet)
@@ -260,9 +226,6 @@ function PdfView({ source, onUnavailable }: { source: SourceRef; onUnavailable: 
   );
 }
 
-// ======================================================================
-// Everything else: the extracted text, highlighted
-// ======================================================================
 
 function TextView({ source }: { source: SourceRef }) {
   const [chunks, setChunks] = useState<ChunkContext[] | null>(null);
@@ -280,7 +243,6 @@ function TextView({ source }: { source: SourceRef }) {
     };
   }, [source.document_id, source.chunk_id]);
 
-  // Bring the cited chunk into view once it is on screen.
   useEffect(() => {
     citedRef.current?.scrollIntoView?.({ block: "center" });
   }, [chunks]);
@@ -324,7 +286,6 @@ function TextView({ source }: { source: SourceRef }) {
   );
 }
 
-/** `text` with the part matching `passage` wrapped in <mark>. */
 export function Highlighted({ text, passage }: { text: string; passage: string }) {
   const range = findPassage(text, passage);
   if (!range) return <>{text}</>;

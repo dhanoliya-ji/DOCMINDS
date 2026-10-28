@@ -1,7 +1,4 @@
-/**
- * i18n/upload.ts -- the upload zone's strings, English and Hindi.
- * See i18n/index.ts. Keys are prefixed "upload." so areas never collide.
- */
+// See i18n/index.ts.
 
 import type { AreaMessages } from "./index";
 

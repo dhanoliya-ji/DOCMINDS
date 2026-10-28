@@ -1,31 +1,4 @@
-"""
-connectors/onedrive.py
-======================
-Microsoft OneDrive and SharePoint through Microsoft Graph.
-
-    OAuth     login.microsoftonline.com/<CONNECTOR_MICROSOFT_TENANT>, scopes
-              Files.Read.All + Sites.Read.All + offline_access
-    picker    the signed-in user's OneDrive, plus every SharePoint site they
-              FOLLOW, shown as folders at the top level; a name search
-              covers their OneDrive
-    import    files are downloaded in their own format -- Word, Excel and
-              PowerPoint files already are .docx / .xlsx / .pptx
-    revision  Graph's cTag, which changes only when the CONTENT changes (a
-              rename does not trigger a re-index); eTag when there is none
-
-ITEM IDS
---------
-A Graph item is addressed by (drive id, item id), so the id the picker sees
-is "<drive id>~<item id>"; a SharePoint site is "site~<site id>". Both parts
-pass base.check_id and are percent-encoded into the path.
-
-DOWNLOADS REDIRECT
-------------------
-/content answers 302 with a short-lived, pre-signed URL on SharePoint or the
-OneDrive CDN. http.download follows it only to the hosts in
-`redirect_hosts`, without our token.
-"""
-
+"""Microsoft OneDrive and SharePoint through Microsoft Graph."""
 from typing import List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
@@ -57,13 +30,6 @@ class OneDrive(Provider):
     name = "OneDrive & SharePoint"
     allowed_hosts = ("login.microsoftonline.com", "graph.microsoft.com")
     redirect_hosts = (".sharepoint.com", ".1drv.com", ".onedrive.com", ".livefilestore.com", ".svc.ms")
-    # Microsoft has no endpoint that revokes ONE app's delegated grant with
-    # the app's own token: deleting the oauth2PermissionGrant needs an
-    # admin-consented directory permission, and /me/revokeSignInSessions
-    # would sign the person out of EVERY app. So `revoke` stays the base
-    # "unsupported", and the person is sent here (work or school accounts;
-    # personal accounts: https://account.live.com/consent/Manage). Tokens we
-    # held are deleted locally; the access token expires within the hour.
     manage_access_url = "https://myapps.microsoft.com"
 
     def configured(self) -> bool:
@@ -122,7 +88,6 @@ class OneDrive(Provider):
             revision=raw.get("cTag") or raw.get("eTag"),
             size=raw.get("size"),
             web_url=raw.get("webUrl"),
-            # OneNote notebooks and other "packages" have no single file.
             importable=bool(file_facet) and "package" not in raw,
         )
 
@@ -137,7 +102,6 @@ class OneDrive(Provider):
 
     async def list_items(self, tokens, parent=None, query=None, cursor=None) -> Tuple[List[RemoteItem], Optional[str]]:
         if cursor:
-            # Graph's own next-page link. Only ever one of OUR Graph URLs.
             if not cursor.startswith(GRAPH + "/"):
                 raise ConnectorError("Invalid page cursor.", 400)
             return await self._children(tokens, cursor)
@@ -157,8 +121,6 @@ class OneDrive(Provider):
             )
 
         items, next_link = await self._children(tokens, f"{GRAPH}/me/drive/root/children", params)
-        # SharePoint sites the user follows, as folders. Personal accounts
-        # have none and may refuse the call: that is not an error here.
         try:
             sites = await request(
                 "GET", f"{GRAPH}/me/followedSites", allowed=self.allowed_hosts,

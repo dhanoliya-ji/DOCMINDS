@@ -1,50 +1,4 @@
-"""
-org.py
-======
-WHAT THIS FILE DOES
--------------------
-Everything an organization's ADMINS manage about who can get in, and the
-record of what they did once inside:
-
-    GET    /org/members                 list members
-    PATCH  /org/members/{user_id}       change role, deactivate / reactivate
-    DELETE /org/members/{user_id}       remove a member entirely
-
-    POST   /org/invites                 invite an email address with a role
-    GET    /org/invites                 list invites and their status
-    DELETE /org/invites/{invite_id}     revoke an invite that is still pending
-
-    POST   /org/api-keys                create an API key (shown ONCE)
-    GET    /org/api-keys                list keys (prefix only)
-    DELETE /org/api-keys/{key_id}       revoke a key
-
-    GET    /org/audit-logs              the audit trail, paginated and filtered
-
-    GET    /org/usage                   this month's AI usage, estimated cost
-    GET    /org/feedback                thumbs up / down on answers, summarised
-                                        and quotas (services/usage.py)
-
-EVERY ENDPOINT IS ADMIN-ONLY, AND SAYS SO ONCE
-----------------------------------------------
-The router is created with `dependencies=[Depends(deps.require_admin)]`, so the
-role check runs before ANY handler in this file. A new endpoint added here
-later is protected without anyone remembering to protect it -- the same
-"cannot be forgotten" idea as authentication itself in api/deps.py.
-
-EVERY QUERY IS SCOPED TO THE CALLER'S ORGANIZATION
---------------------------------------------------
-Each lookup filters on `current_user.org_id` as well as the id from the URL.
-An Admin of company A who guesses the id of a member of company B gets a 404,
-exactly as if that id did not exist -- not a 403 that would confirm it does.
-
-THE TWO GUARD RAILS ON MEMBERS
-------------------------------
-    * You cannot demote, deactivate or remove YOURSELF here. It is too easy
-      to lock yourself out by accident; another Admin can do it.
-    * An organization can never lose its LAST active Admin, or nobody would
-      be left who could manage it.
-"""
-
+"""Everything an organization's ADMINS manage about who can get in, and the record of what they did once inside."""
 import datetime
 import uuid
 from typing import List, Optional
@@ -56,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core import roles, security
 from app.core.config import settings
-from app.models.api_key import APIKey
-from app.models.audit import AuditLog
-from app.models.invite import Invite
-from app.models.organization import Organization
-from app.models.user import User
-from app.schemas.account import (
+from app.models import APIKey
+from app.models import AuditLog
+from app.models import Invite
+from app.models import Organization
+from app.models import User
+from app.schemas import (
     APIKeyCreate,
     APIKeyCreated,
     APIKeyOut,
@@ -73,8 +27,8 @@ from app.schemas.account import (
     MemberOut,
     MemberUpdate,
 )
-from app.schemas.rag import FeedbackSummary
-from app.schemas.usage import UsageSummary
+from app.schemas import FeedbackSummary
+from app.schemas import UsageSummary
 from app.services import audit, email, feedback, sessions, usage
 
 router = APIRouter(dependencies=[Depends(deps.require_admin)])
@@ -120,11 +74,6 @@ def _refuse_self(current_user: User, member: User, verb: str) -> None:
         )
 
 
-# ======================================================================
-# MEMBERS
-# ======================================================================
-
-
 @router.get("/members", response_model=List[MemberOut])
 async def list_members(
     db: AsyncSession = Depends(deps.get_db),
@@ -145,13 +94,7 @@ async def update_member(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Change a member's role and/or deactivate or reactivate them.
-
-    Deactivation takes effect IMMEDIATELY: `get_current_active_user` checks
-    the flag on every request, and their refresh tokens are revoked so they
-    cannot mint new access tokens either.
-    """
+    """Change a member's role and/or deactivate or reactivate them."""
     member = await _get_member(db, current_user.org_id, user_id)
 
     if payload.role is not None:
@@ -195,14 +138,7 @@ async def remove_member(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Remove a member from the organization permanently.
-
-    Their account, API keys, chat history and sessions go with them. Their
-    AUDIT entries do not: `audit_logs.user_id` is ON DELETE SET NULL, so the
-    record of what they did survives with the email kept in `details` below.
-    Prefer deactivation when there is any chance they come back.
-    """
+    """Remove a member from the organization permanently."""
     member = await _get_member(db, current_user.org_id, user_id)
     _refuse_self(current_user, member, "remove")
     await _ensure_not_last_admin(db, member)
@@ -214,11 +150,6 @@ async def remove_member(
     await db.delete(member)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-# ======================================================================
-# INVITES
-# ======================================================================
 
 
 def _invite_out(invite: Invite) -> dict:
@@ -236,19 +167,12 @@ async def create_invite(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Invite an email address to join this organization with a given role.
-
-    The token is emailed AND returned here, once. Any earlier pending invite
-    for the same address is revoked, so only the newest link works.
-    """
+    """Invite an email address to join this organization with a given role."""
     target_email = payload.email.lower()
     role = roles.normalize_role(payload.role)
 
     existing = await db.execute(select(User).where(func.lower(User.email) == target_email))
     if existing.scalar_one_or_none() is not None:
-        # Accounts belong to exactly one organization, so an existing account
-        # cannot accept. Saying so is fine here: only an Admin can ask.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A user with this email already has an account.",
@@ -341,11 +265,6 @@ async def revoke_invite(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# ======================================================================
-# API KEYS
-# ======================================================================
-
-
 @router.post("/api-keys", response_model=APIKeyCreated, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     payload: APIKeyCreate,
@@ -353,16 +272,7 @@ async def create_api_key(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Create an API key for programs to call this API with `X-API-Key`.
-
-    THE FULL KEY IS IN THIS RESPONSE AND NOWHERE ELSE, EVER. Only its hash and
-    a short prefix are stored, so a lost key cannot be shown again -- revoke
-    it and create another.
-
-    The key's role is capped at the creator's own role, so a key can never do
-    more than the person who made it.
-    """
+    """Create an API key for programs to call this API with `X-API-Key`."""
     role = roles.normalize_role(payload.role)
     if roles.rank(role) > roles.rank(deps.effective_role(current_user)):
         raise HTTPException(
@@ -419,12 +329,7 @@ async def revoke_api_key(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Revoke a key. Requests using it fail from the very next one.
-
-    The row is kept (inactive) rather than deleted, so the audit trail and
-    the keys list still say which key it was and when it stopped working.
-    """
+    """Revoke a key. Requests using it fail from the very next one."""
     result = await db.execute(
         select(APIKey).where(APIKey.id == key_id, APIKey.org_id == current_user.org_id)
     )
@@ -444,11 +349,6 @@ async def revoke_api_key(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# ======================================================================
-# AUDIT LOG
-# ======================================================================
-
-
 @router.get("/audit-logs", response_model=AuditLogPage)
 async def list_audit_logs(
     limit: int = Query(50, ge=1, le=200),
@@ -464,12 +364,7 @@ async def list_audit_logs(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    The organization's audit trail, newest first, one page at a time.
-
-    LIMIT/OFFSET pagination: simple and fine for a screen a person pages
-    through. The composite index on (org_id, created_at) keeps each page fast.
-    """
+    """The organization's audit trail, newest first, one page at a time."""
     filters = [AuditLog.org_id == current_user.org_id]
     if action:
         if action.endswith("."):
@@ -489,8 +384,6 @@ async def list_audit_logs(
     result = await db.execute(
         select(AuditLog)
         .where(*filters)
-        # `id` breaks ties between entries written in the same instant, so
-        # paging never shows a row twice or skips one.
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
         .limit(limit)
         .offset(offset)
@@ -499,31 +392,13 @@ async def list_audit_logs(
     return AuditLogPage(items=items, total=total, limit=limit, offset=offset)
 
 
-# ======================================================================
-# USAGE
-# ======================================================================
-
-
 @router.get("/usage", response_model=UsageSummary)
 async def get_usage(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    This calendar month's AI usage for the organization: chat answers,
-    tokens in and out, estimated cost (by model and by mode), and how much
-    of each quota -- tokens, documents, storage -- is used.
-
-    The month is UTC, and resets at midnight UTC on the 1st, which is also
-    when a used-up token quota starts working again. Cost is an estimate from
-    the LLM_PRICING setting; the model provider's invoice is the real figure.
-    """
+    """This calendar month's AI usage for the organization: chat answers,"""
     return await usage.usage_summary(db, current_user.org_id)
-
-
-# ======================================================================
-# ANSWER QUALITY: FEEDBACK
-# ======================================================================
 
 
 @router.get("/feedback", response_model=FeedbackSummary)
@@ -532,10 +407,6 @@ async def get_feedback_summary(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    How people rated the organization's answers over the last `days` days:
-    totals, satisfaction, a split by mode and by model, and the most recent
-    thumbs-down answers with their questions. See services/feedback.py.
-    """
+    """How people rated the organization's answers over the last `days` days:"""
     since = sessions.utcnow() - datetime.timedelta(days=days)
     return await feedback.summarise(db, current_user.org_id, since=since)

@@ -1,20 +1,4 @@
-"""
-test_storage.py
-===============
-WHAT THIS FILE TESTS
---------------------
-services/storage.py -- the one interface for keeping original files:
-
-    LocalStorage   against pytest's tmp_path
-    S3Storage      against a FAKE boto3 client, so no bucket, credentials or
-                   network are needed. What is under test is OUR code: the
-                   key prefixing, the temp-file cleanup, and above all the
-                   translation of botocore errors into "missing" (permanent)
-                   versus "unavailable" (retry).
-
-TIER 1: no database, no network.
-"""
-
+from urllib.parse import urlparse
 import os
 import uuid
 
@@ -39,11 +23,6 @@ def source_file(tmp_path, data: bytes = b"hello world") -> str:
     return str(path)
 
 
-# ======================================================================
-# Keys
-# ======================================================================
-
-
 class TestKeys:
     def test_the_key_never_contains_the_client_filename(self):
         project = uuid.uuid4()
@@ -51,17 +30,11 @@ class TestKeys:
         folder, name = key.split("/")
         assert folder == str(project)
         assert name.endswith(".pdf")
-        # 32 hex characters of uuid, then the extension: nothing else.
         assert len(name) == len("x" * 32 + ".pdf")
 
     def test_keys_are_unique(self):
         project = uuid.uuid4()
         assert new_key(project, "txt") != new_key(project, "txt")
-
-
-# ======================================================================
-# Local disk
-# ======================================================================
 
 
 class TestLocalStorage:
@@ -101,11 +74,6 @@ class TestLocalStorage:
         assert store.exists(legacy)
         with store.local_copy(legacy) as path:
             assert path == legacy
-
-
-# ======================================================================
-# S3, against a fake client
-# ======================================================================
 
 
 class ClientError(Exception):
@@ -232,11 +200,6 @@ class TestS3Storage:
         store.delete("never/there.txt")
 
 
-# ======================================================================
-# Choosing a backend
-# ======================================================================
-
-
 class TestGetStorage:
     @pytest.fixture(autouse=True)
     def fresh_cache(self):
@@ -275,16 +238,8 @@ class TestGetStorage:
         assert settings.local_storage_dir.replace("\\", "/").endswith("backend/uploads")
 
 
-# ======================================================================
-# The real boto3 client's configuration (built, never used: no network)
-# ======================================================================
-
-
 class TestS3ClientConfiguration:
-    """
-    Creating a boto3 client makes no network call, so the configuration
-    `_make_client` produces can be inspected directly.
-    """
+    """Creating a boto3 client makes no network call, so the configuration"""
 
     @pytest.fixture
     def s3_settings(self, monkeypatch):
@@ -295,11 +250,7 @@ class TestS3ClientConfiguration:
         return monkeypatch
 
     def test_an_s3_compatible_endpoint_only_sends_required_checksums(self, s3_settings):
-        """
-        boto3 1.36+ adds a CRC checksum to every upload by default, which
-        several S3-compatible stores reject. A custom endpoint means "not
-        AWS", so the old behaviour is restored there.
-        """
+        """boto3 1.36+ adds a CRC checksum to every upload by default, which"""
         s3_settings.setattr(settings, "S3_ENDPOINT_URL", "http://localhost:9000")
         s3_settings.setattr(settings, "S3_REGION", "auto")
 
@@ -316,7 +267,7 @@ class TestS3ClientConfiguration:
 
         client = S3Storage._make_client()
 
-        assert "amazonaws.com" in client.meta.endpoint_url
+        assert urlparse(client.meta.endpoint_url).hostname.endswith(".amazonaws.com")
         assert client.meta.config.request_checksum_calculation == "when_supported"
 
     def test_boto3_retries_throttling_itself(self, s3_settings):

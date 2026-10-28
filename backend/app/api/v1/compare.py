@@ -1,26 +1,4 @@
-"""
-compare.py  (endpoint)
-======================
-WHAT THIS FILE DOES
--------------------
-    POST /compare   {"document_a", "document_b", "focus"?}
-                    -> a structured diff: summary, differences (added /
-                       removed / changed), each citing excerpts on both sides
-
-The work is in services/compare.py. This file does what an endpoint must:
-
-    * both documents must be in the caller's organization (404 otherwise,
-      the same answer as for an id that does not exist), finished processing
-      (409 otherwise) and different from each other (422);
-    * the organization's monthly token quota is checked first, and the
-      model's tokens are metered afterwards (mode "compare"), exactly like a
-      chat answer;
-    * per-user rate limit "compare" (RATE_LIMIT_COMPARE): one comparison is
-      one large model call.
-
-Viewer and above: comparing changes nothing, like asking a question.
-"""
-
+"""POST /compare   {"document_a", "document_b", "focus"?} -> a structured diff: summary, differences (added /..."""
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -29,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core import observability
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.collab import ComparedDocument, ComparisonOut, ComparisonRequest
+from app.models import Document
+from app.models import Project
+from app.models import User
+from app.schemas import ComparedDocument, ComparisonOut, ComparisonRequest
 from app.services import usage
 from app.services.compare import compare_documents
 

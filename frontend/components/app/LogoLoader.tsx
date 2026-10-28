@@ -1,18 +1,4 @@
-/**
- * LogoLoader.tsx  (F18)
- * =====================
- * The logo-morph loader shown while the app boots or a page waits on data.
- *
- * The mark is a document page whose outline morphs into a circle (the "mind")
- * and back, while a gradient sweeps its stroke. The morph is pure CSS: the
- * SVG path's `d` is animated with keyframes (supported in Chromium and
- * Firefox; Safari simply shows the static page shape, which is still a fine
- * loading mark). No JavaScript runs per frame.
- *
- * It is a `role="status"` with a label, so assistive tech hears "Loading
- * projects" rather than nothing. Under reduced motion the shape holds still
- * and only the label conveys progress.
- */
+// The logo-morph loader shown while the app boots or a page waits on data.
 
 export default function LogoLoader({
   label = "Loading",
@@ -21,7 +7,6 @@ export default function LogoLoader({
 }: {
   label?: string;
   size?: number;
-  /** Centre in the viewport -- for app boot rather than inline sections. */
   fullscreen?: boolean;
 }) {
   return (

@@ -1,7 +1,4 @@
-/**
- * i18n/search.ts -- the search panel and its document filter, English and
- * Hindi. See i18n/index.ts.
- */
+// Hindi.
 
 import type { AreaMessages } from "./index";
 

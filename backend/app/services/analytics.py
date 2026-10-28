@@ -1,34 +1,4 @@
-"""
-analytics.py  (service)
-=======================
-WHAT THIS FILE DOES
--------------------
-The numbers behind Settings -> Admin dashboard, for ONE organization over
-the last N days, each as a day-by-day series with every day present (a day
-with nothing in it is a zero, not a gap, so a chart's x-axis is honest):
-
-    usage_daily       chat answers, tokens and estimated cost per day
-    documents_daily   documents that finished processing / failed, per day
-    users_daily       distinct members active per day (asked a question, or
-                      anything else the audit log records)
-    feedback_daily    thumbs up / down per day
-    top_questions     the questions asked most often, compared after
-                      trimming and lower-casing
-
-TENANT ISOLATION
-----------------
-Every query filters on the caller's org_id -- directly where the table has
-one (usage_events, audit_logs), otherwise through project -> organization,
-exactly as services/feedback.py does.
-
-PORTABLE SQL
-------------
-Days are grouped with `date(created_at)`, which both Postgres and SQLite
-understand (the tests run on SQLite). Postgres returns a date, SQLite a
-string; `_day` turns either into "YYYY-MM-DD". Days are UTC, as the usage
-month is (services/usage.py).
-"""
-
+"""The numbers behind Settings -> Admin dashboard, for ONE organization over the last N days, each as a..."""
 import datetime
 import uuid
 from typing import Any, Dict, List
@@ -36,11 +6,11 @@ from typing import Any, Dict, List
 from sqlalchemy import case, distinct, func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.audit import AuditLog
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.document import Document
-from app.models.project import Project
-from app.models.usage import UsageEvent
+from app.models import AuditLog
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Document
+from app.models import Project
+from app.models import UsageEvent
 
 TOP_QUESTIONS = 10
 
@@ -82,8 +52,6 @@ async def usage_daily(db: AsyncSession, org_id: uuid.UUID, since, days: List[str
 
 
 async def documents_daily(db: AsyncSession, org_id: uuid.UUID, since, days: List[str]):
-    # Counted on the day the document last changed, which for a finished
-    # document is the day it finished.
     day = func.date(Document.updated_at)
     rows = await db.execute(
         select(

@@ -1,21 +1,4 @@
-"""
-analytics.py
-============
-WHAT THIS FILE DOES
--------------------
-The admin dashboard's aggregates (services/analytics.py), for org admins:
-
-    GET /analytics/overview?days=30        everything below, in one request
-    GET /analytics/usage?days=30           answers, tokens, cost per day
-    GET /analytics/documents?days=30       processed / failed per day
-    GET /analytics/active-users?days=30    distinct active members per day
-    GET /analytics/feedback?days=30        thumbs up / down per day
-    GET /analytics/top-questions?days=30   the most-asked questions
-
-`days` is 1-365 and always includes today (UTC). Every route answers 404
-while ADMIN_DASHBOARD_ENABLED is off. Read-only: nothing here is audited.
-"""
-
+"""The admin dashboard's aggregates (services/analytics.py), for org admins."""
 import datetime
 from typing import List
 
@@ -24,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.user import User
-from app.schemas.integrations import (
+from app.models import User
+from app.schemas import (
     AnalyticsOverview,
     DailyDocuments,
     DailyFeedback,

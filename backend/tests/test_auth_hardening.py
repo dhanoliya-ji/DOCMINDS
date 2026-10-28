@@ -1,12 +1,3 @@
-"""
-Tier-1 tests for login/refresh hardening (no database needed).
-
-    * refresh claims the token with a CONDITIONAL update, so of two requests
-      racing with the same token only one wins; the loser is treated as reuse
-    * login runs bcrypt even for an unknown email (no timing oracle)
-    * login matches the email case-insensitively, like signup and reset
-"""
-
 import uuid
 from types import SimpleNamespace
 
@@ -80,13 +71,10 @@ class TestRefreshRace:
         tokens = await auth.refresh_token(auth.TokenRefreshRequest(refresh_token=_refresh_token()), db)
         assert tokens["access_token"] == "a"
         assert revoked == []
-        # The claim is a conditional UPDATE on revoked_at IS NULL.
         sql = str(db.statements[-1])
         assert "UPDATE refresh_tokens" in sql and "revoked_at IS NULL" in sql
 
     async def test_loser_of_the_race_is_treated_as_reuse(self, stored_token):
-        # The Python-side check saw revoked_at=None, but another request
-        # claimed the row first: rowcount 0.
         row, revoked = stored_token
         db = FakeDB(rowcount=0, user=SimpleNamespace(is_active=True))
         with pytest.raises(HTTPException) as exc:

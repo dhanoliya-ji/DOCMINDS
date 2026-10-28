@@ -1,18 +1,4 @@
-/**
- * policy.test.ts
- * ==============
- * WHAT THIS FILE TESTS
- * --------------------
- * The three small rule modules the screens lean on:
- *
- *   lib/password.ts        the password policy, which must agree with the
- *                          backend's `password_problems` word for word, or
- *                          the form will pass a password the API refuses
- *   lib/roles.ts           who may do what, for both role spellings
- *   security-headers.mjs   the CSP and friends served on every page
- *
- * Each is pure logic, so these tests need no DOM and no mocks.
- */
+// The three small rule modules the screens lean on.
 
 import { describe, expect, it } from "vitest";
 
@@ -128,7 +114,6 @@ describe("security headers", () => {
   });
 
   it("upgrades insecure requests only when the API is HTTPS", () => {
-    // Upgrading http://localhost:8000 would break local runs and the e2e job.
     const local = header(securityHeaders({ apiUrl: "http://localhost:8000" }), "Content-Security-Policy")!;
     const live = header(securityHeaders({ apiUrl: "https://api.example.com" }), "Content-Security-Policy")!;
     expect(local).not.toContain("upgrade-insecure-requests");

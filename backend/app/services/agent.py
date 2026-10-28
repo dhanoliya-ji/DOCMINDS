@@ -81,9 +81,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.chunk import Chunk
-from app.models.document import Document
-from app.models.project import Project
+from app.models import Chunk
+from app.models import Document
+from app.models import Project
 from app.services.llm import (
     TABLES_AND_CHARTS_RULE,
     UNTRUSTED_CONTENT_RULE,
@@ -93,32 +93,14 @@ from app.services.llm import (
 )
 from app.services.retrieval import RetrievalService
 
-# The exact sentence llm.SYSTEM_PROMPT tells the model to use when the
-# documents do not contain the answer. Kept identical in both modes so the
-# frontend (and anyone grepping logs) sees one consistent "not found" message.
 NOT_FOUND_ANSWER = "I could not find that information in the uploaded documents."
 
 logger = logging.getLogger(__name__)
 
-# The most chunks read_document_section may return in one call. Ten chunks is
-# roughly 5,000 tokens -- plenty for "summarise this section", while stopping
-# the model from pulling a whole 300-page manual into its context in one go.
 MAX_SECTION_CHUNKS = 10
 
-# How many documents list_documents shows. A project with hundreds of files
-# would otherwise flood the context window with a filename list.
 MAX_LISTED_DOCUMENTS = 50
 
-# ----------------------------------------------------------------------
-# THE AGENT'S SYSTEM PROMPT
-# ----------------------------------------------------------------------
-# Rules 1-7 are the same rules as llm.SYSTEM_PROMPT -- grounding, rule 6,
-# the prompt-injection guard (tool output is DATA), and rule 7, tables and
-# charts for numeric answers -- so the agent is
-# held to exactly the same honesty standard as the fixed pipeline. The extra
-# section teaches it WHEN to reach for each tool, which is what an agent needs
-# that a fixed pipeline does not.
-# ----------------------------------------------------------------------
 AGENT_SYSTEM_PROMPT = f"""You are a precise enterprise document analyst with
 tools for searching a company's internal documents.
 
@@ -157,11 +139,6 @@ How to use your tools:
 """
 
 
-# ======================================================================
-# STEP 1: THE PER-QUESTION STATE ("deps")
-# ======================================================================
-
-
 @dataclass
 class AgentDeps:
     """
@@ -172,51 +149,23 @@ class AgentDeps:
     between users or between questions.
     """
 
-    # The open database session for this request.
     db: AsyncSession
-    # THE SECURITY BOUNDARY. Taken from the logged-in user, never from the model.
     org_id: uuid.UUID
-    # The chat session's project. Every tool is restricted to it.
     project_id: uuid.UUID
-    # How many excerpts each search returns.
     top_k: int
 
-    # Pydantic AI may run several tool calls from ONE model reply at the same
-    # time (asyncio concurrency). A SQLAlchemy AsyncSession must never be used
-    # by two coroutines at once -- it raises "This session is provisioning a
-    # new connection; concurrent operations are not permitted". Every tool
-    # therefore takes this lock around its database work, so the calls queue
-    # up instead of colliding.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    # The citation registry: chunk_id -> {"number": n, "chunk": {...}}.
-    # An OrderedDict remembers insertion order, so iterating it later gives the
-    # chunks in the order the agent first saw them -- which is exactly the
-    # order of their global numbers.
     citations: "OrderedDict[Any, Dict[str, Any]]" = field(default_factory=OrderedDict)
 
-    # The trace of tool calls, returned to the UI as AgentStep objects.
     steps: List[Dict[str, Any]] = field(default_factory=list)
 
-    # OPTIONAL: restrict every tool to these documents -- the "only search
-    # the files I ticked" filter. None (or empty) means the whole project.
-    # Like org_id, it comes from the request, never from the model, so the
-    # model cannot widen it.
     document_ids: Optional[List[uuid.UUID]] = None
 
-    # OPTIONAL: called with each step the moment it is recorded. The
-    # streaming endpoint uses it to send "searched for X" to the browser
-    # WHILE the agent is still working, instead of all at once at the end.
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None
 
-    # OPTIONAL: called with each piece of the FINAL answer as the model writes
-    # it, and `on_reset` when text already sent turns out not to be the
-    # answer after all (see "STREAMING THE FINAL ANSWER" below run_agent).
     on_token: Optional[Callable[[str], None]] = None
     on_reset: Optional[Callable[[], None]] = None
-    # OPTIONAL: called with the citation chunks gathered so far just before
-    # the first piece of answer text, so the sources reach the browser
-    # BEFORE the text that cites them -- the same order as rag mode.
     on_citations: Optional[Callable[[List[Dict[str, Any]]], None]] = None
     citations_sent: bool = False
 
@@ -231,8 +180,6 @@ class AgentDeps:
                 logger.warning("Agent token listener failed", exc_info=True)
 
     def emit_reset(self) -> None:
-        # More tools will run, so more sources may follow: send them again
-        # before the next text.
         self.citations_sent = False
         if self.on_reset is not None:
             try:
@@ -270,26 +217,10 @@ class AgentDeps:
         step = {"tool": tool, "args": args, "summary": summary}
         self.steps.append(step)
         if self.on_step is not None:
-            # A broken listener must never break the answer itself.
             try:
                 self.on_step(dict(step))
             except Exception:  # pragma: no cover - defensive
                 logger.warning("Agent step listener failed", exc_info=True)
-
-
-# ======================================================================
-# STEP 2: THE TOOLS
-# ----------------------------------------------------------------------
-# These are plain async functions that take `deps` as their first argument.
-# They are registered with Pydantic AI further down, but keeping them as
-# ordinary functions means the tests (and the keyless demo fallback) can call
-# them directly without any AI framework involved.
-#
-# Every tool returns a STRING, because that is what the model reads. Errors
-# (bad id, unknown document) are returned as readable sentences rather than
-# raised: the model can then correct itself on the next step, whereas an
-# exception would abort the whole answer.
-# ======================================================================
 
 
 def _format_excerpt(number: int, chunk: Dict[str, Any]) -> str:
@@ -303,11 +234,6 @@ def _format_excerpt(number: int, chunk: Dict[str, Any]) -> str:
     filename = chunk.get("filename") or "unknown file"
     page = chunk.get("page_number")
     location = f"{filename}, page {page}" if page else filename
-    # The number, id and chunk position are OURS, so they sit outside the
-    # tag. The text and filename were written by the uploader, so they go
-    # inside it -- the same untrusted-content block llm.py uses, which is
-    # what the system prompt's rule 6 refers to. See "PROMPT INJECTION" in
-    # services/llm.py.
     return (
         f"EXCERPT [{number}] (document_id={chunk.get('document_id')}; "
         f"chunk {chunk.get('chunk_index')}):\n"
@@ -315,8 +241,6 @@ def _format_excerpt(number: int, chunk: Dict[str, Any]) -> str:
     )
 
 
-# What the model reads when a tool's database query fails. Phrased so the
-# model can carry on (retry, or answer from what it already has).
 DB_ERROR_MESSAGE = (
     "The database query for this tool failed. Try the call again once, "
     "or answer from the excerpts you already have."
@@ -378,8 +302,6 @@ async def search_documents_tool(
                 "Call list_documents to see the real ids."
             )
 
-    # RetrievalService.search already enforces org_id (the tenant filter) and
-    # supports project_id and document_id narrowing, so we reuse it as-is.
     try:
         async with _tool_db(deps):
             chunks = await RetrievalService.search(
@@ -418,15 +340,12 @@ async def list_documents_tool(deps: AgentDeps) -> str:
     statement = (
         select(Document)
         .join(Project, Document.project_id == Project.id)
-        # The same tenant filter as retrieval.py: org first, then project.
         .where(Project.org_id == deps.org_id)
         .where(Document.project_id == deps.project_id)
         .order_by(Document.created_at.desc())
         .limit(MAX_LISTED_DOCUMENTS)
     )
     if deps.document_ids:
-        # The user limited this question to some files: the agent should not
-        # even learn that the others exist.
         statement = statement.where(Document.id.in_(deps.document_ids))
     try:
         async with _tool_db(deps):
@@ -447,8 +366,6 @@ async def list_documents_tool(deps: AgentDeps) -> str:
         pages = meta.get("page_count")
         page_text = f", {pages} pages" if pages else ""
         lines.append(
-            # The filename is uploader-controlled text: cleaned to one short
-            # line with no markup, so it cannot pose as an instruction.
             f"- {clean_label(document.filename)} (document_id={document.id}; "
             f"type {document.file_type}{page_text}; status {document.status})"
         )
@@ -468,7 +385,6 @@ async def read_document_section_tool(
     deps: AgentDeps, document_id: str, start_chunk: int = 0, count: int = 5
 ) -> str:
     """Read `count` consecutive chunks of one document, starting at `start_chunk`."""
-    # Clamp whatever the model asked for into a sane range.
     start_chunk = max(0, int(start_chunk))
     count = max(1, min(int(count), MAX_SECTION_CHUNKS))
     args = {"document_id": document_id, "start_chunk": start_chunk, "count": count}
@@ -483,9 +399,6 @@ async def read_document_section_tool(
 
     try:
         async with _tool_db(deps):
-            # First confirm the document is inside THIS org and THIS project. A
-            # model that guessed (or was tricked into) another tenant's id gets
-            # the same answer as for an id that does not exist at all.
             doc_statement = (
                 select(Document)
                 .join(Project, Document.project_id == Project.id)
@@ -494,7 +407,6 @@ async def read_document_section_tool(
                 .where(Document.project_id == deps.project_id)
             )
             if deps.document_ids:
-                # Outside the user's document filter reads as "not found".
                 doc_statement = doc_statement.where(Document.id.in_(deps.document_ids))
             doc_result = await deps.db.execute(doc_statement)
             document = doc_result.scalar_one_or_none()
@@ -532,8 +444,6 @@ async def read_document_section_tool(
             "page_number": row.page_number,
             "chunk_index": row.chunk_index,
             "content": row.content,
-            # These chunks were READ, not ranked by a search, so there is no
-            # similarity score. 0.0 marks them as "not from a search".
             "score": 0.0,
             "meta_data": row.meta_data,
         }
@@ -549,11 +459,6 @@ async def read_document_section_tool(
     return "\n\n".join(
         _format_excerpt(number, chunk) for number, chunk in zip(numbers, chunks, strict=True)
     )
-
-
-# ======================================================================
-# STEP 3: BUILD THE PYDANTIC AI AGENT  (once, lazily)
-# ======================================================================
 
 
 @lru_cache(maxsize=1)
@@ -577,18 +482,10 @@ def get_agent():
     agent = Agent(
         deps_type=AgentDeps,
         output_type=str,
-        # `instructions` (not `system_prompt`) because Pydantic AI re-sends
-        # instructions on every run even when we pass earlier conversation
-        # turns as message_history; a system_prompt would be skipped then.
         instructions=AGENT_SYSTEM_PROMPT,
-        # If the model sends malformed tool arguments, let it try again once
-        # instead of failing the whole answer.
         retries=1,
     )
 
-    # Each wrapper's DOCSTRING is what the model reads as the tool's
-    # description, and its type hints become the argument schema. Write them
-    # for the model, not for a human developer.
 
     @agent.tool
     async def search_documents(
@@ -669,7 +566,6 @@ def to_model_messages(history: Optional[List[Dict[str, str]]], question: str) ->
     if turns and turns[-1].get("role") == "user" and turns[-1].get("content") == question:
         turns = turns[:-1]
 
-    # Same window as llm.py: the last 6 messages (3 exchanges).
     turns = turns[-6:]
     while turns and turns[0].get("role") != "user":
         turns = turns[1:]
@@ -684,27 +580,6 @@ def to_model_messages(history: Optional[List[Dict[str, str]]], question: str) ->
     return messages
 
 
-# ======================================================================
-# STEP 3b: STREAMING THE FINAL ANSWER
-# ----------------------------------------------------------------------
-# Pydantic AI can stream every model response of the run as EVENTS: a text
-# part starts, a text part grows by a delta, a tool call starts... We pass a
-# handler to `agent.run(event_stream_handler=...)` and forward each piece of
-# TEXT to the chat stream the moment it arrives, so a Deep research answer
-# types itself out exactly like a Quick answer -- instead of appearing all at
-# once after twenty seconds of research.
-#
-# THE ONE SUBTLETY: text that was not the answer. A model may write a line
-# ("Let me search for that.") and THEN ask for a tool in the same response.
-# That text is not the final answer -- the run goes on. The moment a tool
-# call appears in a response that already streamed text, we emit a RESET:
-# the browser discards the draft and the real answer streams afresh later.
-# chat.py also compares what was streamed with the final output and, should
-# they ever differ, resets and resends the final text, so the screen always
-# ends up showing exactly what was saved.
-# ======================================================================
-
-
 def _stream_handler(deps: AgentDeps):
     """The event_stream_handler for one run: text out, resets on tool calls."""
     from pydantic_ai.messages import (
@@ -716,7 +591,6 @@ def _stream_handler(deps: AgentDeps):
     )
 
     async def handler(_ctx: Any, events: Any) -> None:
-        # One call per model response (and one per batch of tool results).
         streamed_text = False
         async for event in events:
             if isinstance(event, PartStartEvent):
@@ -733,11 +607,6 @@ def _stream_handler(deps: AgentDeps):
                     deps.emit_token(event.delta.content_delta)
 
     return handler
-
-
-# ======================================================================
-# STEP 4: RUN IT -- the one function chat.py calls
-# ======================================================================
 
 
 def _result(
@@ -811,7 +680,6 @@ async def run_agent(
         on_citations=on_citations,
     )
 
-    # ---- Is the agent framework available at all? --------------------
     try:
         import pydantic_ai  # noqa: F401
         framework_available = True
@@ -821,10 +689,6 @@ async def run_agent(
 
     keyless = settings.LLM_PROVIDER == "mock" or not settings.GROQ_API_KEY
     if model is None and (keyless or not framework_available):
-        # ---- DEMO FALLBACK -------------------------------------------
-        # No model to drive the loop, so we play the agent's most likely first
-        # move ourselves: one search with the question. The UI still gets a
-        # real step and real citations, just like rag mode's demo answer.
         await search_documents_tool(deps, question)
         chunks = deps.citation_chunks()
         mock = LLMService._mock_answer(question, chunks, started_at)
@@ -835,10 +699,6 @@ async def run_agent(
 
         agent = get_agent()
         run_model = model if model is not None else _groq_model()
-        # Streaming is switched on only when someone is listening: with an
-        # event_stream_handler Pydantic AI makes STREAMING model requests,
-        # which every real model supports but a non-streaming test model
-        # (FunctionModel without stream_function) does not.
         stream_kwargs = (
             {"event_stream_handler": _stream_handler(deps)} if on_token is not None else {}
         )
@@ -847,7 +707,6 @@ async def run_agent(
             deps=deps,
             model=run_model,
             message_history=to_model_messages(history, question) or None,
-            # The runaway-loop guard: at most AGENT_MAX_STEPS model calls.
             usage_limits=UsageLimits(request_limit=settings.AGENT_MAX_STEPS),
             model_settings={
                 "temperature": settings.LLM_TEMPERATURE,
@@ -857,14 +716,9 @@ async def run_agent(
         )
 
         answer = (run.output or "").strip() or NOT_FOUND_ANSWER
-        # Recent Pydantic AI releases expose `usage` as a property; older 1.x
-        # releases made it a method. Accept either so a version bump in
-        # requirements.txt cannot silently break the token count.
         usage = run.usage
         if not hasattr(usage, "total_tokens") and callable(usage):
             usage = usage()
-        # Tokens IN and OUT, summed over every model call of the run. Newer
-        # releases name them input/output_tokens, older ones request/response.
         prompt_tokens = int(
             getattr(usage, "input_tokens", None) or getattr(usage, "request_tokens", 0) or 0
         )
@@ -882,15 +736,8 @@ async def run_agent(
         )
 
     except SQLAlchemyError:
-        # The tools catch their own query errors inside a SAVEPOINT, so this
-        # only happens if the session itself is broken. Pretending we can
-        # still save an answer would fail at commit time anyway, so let the
-        # endpoint's normal error handling (rollback, 500) deal with it.
         raise
     except Exception as exc:
-        # Rate limit, UsageLimitExceeded, network failure, bad key... Surface a
-        # readable message instead of a 500, and keep whatever the tools had
-        # already found so the user still sees the sources.
         logger.error("Agent run failed", extra={"error": f"{type(exc).__name__}: {exc}"})
         return _result(
             deps,

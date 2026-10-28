@@ -1,10 +1,4 @@
-/**
- * i18n/developers.ts -- the public API documentation page (/developers),
- * English and Hindi. See i18n/index.ts.
- *
- * Code samples, header names, paths and status codes are NOT here: they are
- * the same in every language and live in app/developers/page.tsx.
- */
+// English and Hindi.
 
 import type { AreaMessages } from "./index";
 
@@ -79,14 +73,6 @@ const messages: AreaMessages = {
     "dev.copied": "Copied",
     "dev.copyLabel": "Copy the {name} example",
 
-    "dev.sdks.title": "6. SDKs",
-    "dev.sdks.body":
-      "Two small clients live in the repository, generated from and typed against the same OpenAPI schema as this page.",
-    "dev.sdks.ts":
-      "TypeScript (sdk/typescript): types generated with openapi-typescript and a thin fetch client. Works in Node 18+, Deno, Bun and edge runtimes.",
-    "dev.sdks.py":
-      "Python (sdk/python): a small httpx client with typed responses, for Python 3.9+.",
-
     "dev.errors.title": "Errors",
     "dev.errors.body":
       "Errors are JSON with a detail field: a sentence, or for 422 a list of the fields that failed validation. Every response carries an X-Request-ID; quote it when reporting a problem.",
@@ -160,13 +146,6 @@ const messages: AreaMessages = {
     "dev.copy": "कॉपी करें",
     "dev.copied": "कॉपी हो गया",
     "dev.copyLabel": "{name} उदाहरण कॉपी करें",
-
-    "dev.sdks.title": "6. SDK",
-    "dev.sdks.body":
-      "रिपॉज़िटरी में दो छोटे क्लाइंट हैं, जो इसी पेज वाले OpenAPI स्कीमा से बने और उसी से टाइप किए गए हैं।",
-    "dev.sdks.ts":
-      "TypeScript (sdk/typescript): openapi-typescript से बने टाइप और एक पतला fetch क्लाइंट। Node 18+, Deno, Bun और एज रनटाइम में चलता है।",
-    "dev.sdks.py": "Python (sdk/python): टाइप किए गए जवाबों वाला एक छोटा httpx क्लाइंट, Python 3.9+ के लिए।",
 
     "dev.errors.title": "त्रुटियाँ",
     "dev.errors.body":

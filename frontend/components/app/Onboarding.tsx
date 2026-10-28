@@ -1,17 +1,4 @@
-/**
- * Onboarding.tsx
- * ==============
- * First-run help for the signed-in app:
- *
- *   FirstRunEmpty  an empty state that does more than say "nothing here" --
- *                  it offers sample starting points the user can click.
- *   GuidedTour     a short, dismissible, step-by-step tour card. Finishing
- *                  or skipping it is remembered in localStorage, so it shows
- *                  once per browser rather than on every visit.
- *
- * The tour is a plain region in the page, not a modal: it never traps focus
- * or blocks the UI it is describing, and it can be ignored entirely.
- */
+// First-run help for the signed-in app.
 
 "use client";
 
@@ -20,9 +7,6 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { useT } from "@/lib/i18n";
 
-// ----------------------------------------------------------------------
-// Remembering dismissal
-// ----------------------------------------------------------------------
 const TOUR_PREFIX = "docminds-tour-done:";
 
 export function isTourDone(id: string): boolean {
@@ -41,17 +25,12 @@ export function markTourDone(id: string): void {
   }
 }
 
-// ----------------------------------------------------------------------
-// GuidedTour
-// ----------------------------------------------------------------------
 export interface TourStep {
   title: string;
   body: string;
 }
 
 export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
-  // Hidden until mounted: the server cannot read localStorage, and showing
-  // then hiding it would flash for returning users.
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const { t } = useT();
@@ -93,7 +72,6 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
         {current.body}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-        {/* Progress dots: decorative, the text above already says "step 2 of 3". */}
         <div className="flex gap-1.5" aria-hidden="true">
           {steps.map((_, i) => (
             <span
@@ -125,9 +103,6 @@ export function GuidedTour({ id, steps }: { id: string; steps: TourStep[] }) {
   );
 }
 
-// ----------------------------------------------------------------------
-// FirstRunEmpty
-// ----------------------------------------------------------------------
 export function FirstRunEmpty({
   icon,
   title,
@@ -140,10 +115,8 @@ export function FirstRunEmpty({
   icon: ReactNode;
   title: string;
   body: string;
-  /** Heading for the sample list, e.g. "Try one of these". */
   suggestionsLabel?: string;
   suggestions?: string[];
-  /** Omit to render the suggestions as plain (non-clickable) examples. */
   onSuggestion?: (s: string) => void;
   action?: ReactNode;
 }) {

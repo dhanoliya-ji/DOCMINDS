@@ -1,13 +1,4 @@
-/**
- * AnalyticsConsent.tsx
- * ====================
- * The small "may we count page views?" banner, and the switch that starts
- * PostHog once the visitor says yes (lib/analytics.ts).
- *
- * Renders NOTHING at all when NEXT_PUBLIC_POSTHOG_KEY is not set -- the
- * default -- so a deployment without analytics never shows the banner.
- * Once answered, the choice is remembered and the banner does not return.
- */
+// The small "may we count page views?" banner, and the switch that starts PostHog once...
 
 "use client";
 
@@ -24,9 +15,6 @@ import {
 } from "@/lib/analytics";
 
 export default function AnalyticsConsent() {
-  // null until mounted: localStorage does not exist during server rendering,
-  // and rendering the banner there would flash it at people who already
-  // answered.
   const [choice, setChoice] = useState<Consent | null | "unknown">("unknown");
 
   useEffect(() => {

@@ -1,37 +1,3 @@
-"""
-test_auth_flows.py
-==================
-WHAT THIS FILE TESTS
---------------------
-The account and access-control system end to end, over real HTTP requests:
-
-    signup (new org / by invite)   password policy        email verification
-    login, refresh rotation        logout + denylist      password reset
-    roles on real endpoints        members admin          invites
-    API keys (X-API-Key)           audit log              debug-endpoint lockdown
-
-HOW IT RUNS WITHOUT POSTGRES -- AND WHY THAT IS ACCEPTABLE HERE
----------------------------------------------------------------
-conftest.py explains why retrieval tests refuse SQLite: they test pgvector and
-JSONB queries that SQLite does not have, so a SQLite run would be a different
-test. None of THAT is under test here. These flows are plain rows -- users,
-hashes, timestamps, foreign keys -- which SQLite stores faithfully. So every
-test below runs twice:
-
-    [sqlite]     always. An in-memory database built from the models, so the
-                 whole auth system is checked on every run, no Docker needed.
-    [postgres]   when a database is reachable (CI), against the real schema
-                 that `alembic upgrade head` built. This is the run that
-                 proves the MIGRATION matches the models.
-
-Two stand-ins keep the SQLite run honest and fast:
-
-    * JSONB is rendered as SQLite's JSON for the audit table.
-    * Password hashing is swapped for SHA-256. Bcrypt is deliberately slow
-      (and the local bcrypt 5 / passlib pairing is broken), and nothing here
-      is testing the hash function -- test_security.py does that.
-"""
-
 import datetime
 import hashlib
 import re
@@ -51,9 +17,9 @@ from app.core import security
 from app.core.config import settings
 from app.main import app
 from app.models import Base
-from app.models.audit import AuditLog
-from app.models.organization import Organization
-from app.models.user import User
+from app.models import AuditLog
+from app.models import Organization
+from app.models import User
 from app.services import email as email_service
 from tests.conftest import database_available
 
@@ -65,11 +31,6 @@ PASSWORD = "a-perfectly-fine-password"
 def _jsonb_on_sqlite(element, compiler, **kw):
     """Render the audit table's JSONB column as SQLite's JSON."""
     return "JSON"
-
-
-# ======================================================================
-# Fixtures
-# ======================================================================
 
 
 def _backends():
@@ -108,28 +69,19 @@ def console_email(monkeypatch):
 
 @pytest_asyncio.fixture(params=_backends())
 async def env(request):
-    """
-    A client wired to the app, plus a session factory for direct checks.
-
-    For SQLite the app's `get_db` is overridden to use an in-memory database
-    built from the models. For Postgres the app runs unmodified, and every
-    organization a test created is deleted afterwards (everything cascades).
-    """
+    """A client wired to the app, plus a session factory for direct checks."""
     backend = request.param
     created_orgs: list[str] = []
 
     if backend == "sqlite":
         engine = create_async_engine(
             "sqlite+aiosqlite://",
-            # One shared connection: an in-memory SQLite database exists only
-            # inside the connection that created it.
             poolclass=StaticPool,
             connect_args={"check_same_thread": False},
         )
 
         @event.listens_for(engine.sync_engine, "connect")
         def _foreign_keys_on(dbapi_connection, _record):
-            # SQLite ignores ON DELETE CASCADE / SET NULL unless asked.
             dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
         async with engine.begin() as connection:
@@ -236,11 +188,6 @@ def token_from(outbox, kind: str) -> str:
     raise AssertionError(f"no {kind} email in the outbox")
 
 
-# ======================================================================
-# Signup -- the tenant hole, closed
-# ======================================================================
-
-
 class TestSignup:
     async def test_without_an_invite_it_creates_a_new_org_and_an_admin(self, env):
         response = await env.signup(org_name="Acme")
@@ -251,8 +198,7 @@ class TestSignup:
         assert (await env.signup()).status_code == 201
 
     async def test_a_client_sent_role_is_ignored(self, env):
-        """Asking to be an Employee of your own new org still makes you its Admin,
-        and -- more importantly -- asking for Admin anywhere else gets nothing."""
+        """Asking to be an Employee of your own new org still makes you its Admin,"""
         response = await env.signup(role="Employee", org_name="Mine")
         assert response.json()["role"] == "Admin"
 
@@ -290,11 +236,6 @@ class TestSignup:
     async def test_signup_is_audited(self, env):
         account = await env.account()
         assert "user.signup" in await env.audit_actions(account["user"]["org_id"])
-
-
-# ======================================================================
-# Email verification
-# ======================================================================
 
 
 class TestEmailVerification:
@@ -335,11 +276,6 @@ class TestEmailVerification:
         assert (await env.login(email)).status_code == 403
 
 
-# ======================================================================
-# Sessions: refresh rotation, reuse detection, logout
-# ======================================================================
-
-
 class TestSessions:
     async def test_access_tokens_carry_a_jti(self, env):
         import jwt  # PyJWT
@@ -360,8 +296,7 @@ class TestSessions:
         assert response.json()["refresh_token"] != old
 
     async def test_reusing_a_rotated_token_ends_the_whole_session(self, env):
-        """The theft signal: an already-rotated token comes back. Both the old
-        token AND the one it was rotated into must stop working."""
+        """The theft signal: an already-rotated token comes back. Both the old"""
         account = await env.account()
         old = account["tokens"]["refresh_token"]
         new = (await env.client.post(f"{API}/auth/refresh", json={"refresh_token": old})).json()[
@@ -375,8 +310,7 @@ class TestSessions:
         assert after.status_code == 401
 
     async def test_an_unrecorded_refresh_token_is_refused(self, env):
-        """Correctly signed but never issued by a login -- e.g. from before
-        server-side sessions existed."""
+        """Correctly signed but never issued by a login -- e.g. from before"""
         account = await env.account()
         forged = security.create_refresh_token(subject=account["user"]["id"])
         response = await env.client.post(f"{API}/auth/refresh", json={"refresh_token": forged})
@@ -421,11 +355,6 @@ class TestSessions:
         assert "user.login_failed" in await env.audit_actions(account["user"]["org_id"])
 
 
-# ======================================================================
-# Password reset
-# ======================================================================
-
-
 class TestPasswordReset:
     async def test_the_response_does_not_reveal_whether_the_email_exists(self, env, console_email):
         account = await env.account()
@@ -440,7 +369,6 @@ class TestPasswordReset:
 
         assert known.status_code == unknown.status_code == 202
         assert known.json() == unknown.json()
-        # ...but only the real account was actually emailed.
         assert [m.to for m in console_email] == [account["email"]]
 
     async def test_a_reset_changes_the_password_and_ends_every_session(self, env, console_email):
@@ -457,10 +385,8 @@ class TestPasswordReset:
         assert (await env.login(account["email"])).status_code == 401
         assert (await env.login(account["email"], "a-brand-new-password")).status_code == 200
 
-        # The old access token is refused (iat before password_changed_at)...
         old_me = await env.client.get(f"{API}/users/me", headers=account["headers"])
         assert old_me.status_code == 401
-        # ...and so is the old refresh token.
         old_refresh = await env.client.post(
             f"{API}/auth/refresh", json={"refresh_token": account["tokens"]["refresh_token"]}
         )
@@ -500,11 +426,6 @@ class TestPasswordReset:
         assert response.status_code == 400
 
 
-# ======================================================================
-# Invites
-# ======================================================================
-
-
 class TestInvites:
     async def test_an_invite_puts_the_user_in_the_org_with_the_invited_role(self, env):
         admin = await env.account()
@@ -512,7 +433,6 @@ class TestInvites:
 
         assert viewer["user"]["org_id"] == admin["user"]["org_id"]
         assert viewer["user"]["role"] == "Employee"
-        # The emailed link proved the address.
         assert viewer["user"]["is_verified"] is True
 
     async def test_the_role_comes_from_the_invite_not_the_request(self, env):
@@ -560,7 +480,6 @@ class TestInvites:
         ).json()
 
         assert (await env.signup(email, invite_token=invite["token"])).status_code == 201
-        # A second account cannot reuse it, even for another email.
         assert (await env.signup(env.email(), invite_token=invite["token"])).status_code == 400
 
     async def test_a_revoked_invite_cannot_be_used(self, env):
@@ -579,7 +498,7 @@ class TestInvites:
         assert (await env.signup(email, invite_token=invite["token"])).status_code == 400
 
     async def test_an_expired_invite_cannot_be_used(self, env):
-        from app.models.invite import Invite
+        from app.models import Invite
 
         admin = await env.account()
         email = env.email()
@@ -598,11 +517,6 @@ class TestInvites:
         await env.member(admin, "viewer")
         actions = await env.audit_actions(admin["user"]["org_id"])
         assert "invite.create" in actions and "invite.accept" in actions
-
-
-# ======================================================================
-# Roles on real endpoints
-# ======================================================================
 
 
 class TestRoles:
@@ -642,11 +556,6 @@ class TestRoles:
         for path in ("/org/members", "/org/invites", "/org/api-keys", "/org/audit-logs"):
             response = await env.client.get(f"{API}{path}", headers=member["headers"])
             assert response.status_code == 403, path
-
-
-# ======================================================================
-# Members
-# ======================================================================
 
 
 class TestMembers:
@@ -699,12 +608,7 @@ class TestMembers:
         assert response.status_code == 400
 
     async def test_the_last_admin_cannot_be_removed(self, env):
-        """
-        Two admins: one may remove the other, but the one left standing can
-        never be removed -- nobody else can act on them, and acting on
-        yourself is refused. (`_ensure_not_last_admin` in org.py is the
-        second, independent guard behind this.)
-        """
+        """Two admins: one may remove the other, but the one left standing can"""
         first = await env.account()
         second = await env.member(first, "admin")
 
@@ -734,7 +638,6 @@ class TestMembers:
                 await session.execute(select(AuditLog).where(AuditLog.action == "invite.accept",
                                                              AuditLog.org_id == uuid.UUID(admin["user"]["org_id"])))
             ).scalar_one()
-            # The row survives; only the link to the deleted user is cleared.
             assert accept.user_id is None
         assert "member.remove" in await env.audit_actions(admin["user"]["org_id"])
 
@@ -745,11 +648,6 @@ class TestMembers:
             f"{API}/org/members/{other['user']['id']}", headers=admin["headers"], json={"role": "viewer"}
         )
         assert response.status_code == 404
-
-
-# ======================================================================
-# API keys
-# ======================================================================
 
 
 class TestAPIKeys:
@@ -813,11 +711,6 @@ class TestAPIKeys:
         assert "Secret" not in [p["name"] for p in visible.json()]
 
 
-# ======================================================================
-# Audit log endpoint
-# ======================================================================
-
-
 class TestAuditLog:
     async def test_it_pages_and_filters(self, env):
         admin = await env.account()
@@ -847,11 +740,6 @@ class TestAuditLog:
         other = await env.account()
         theirs = (await env.client.get(f"{API}/org/audit-logs", headers=other["headers"])).json()
         assert all(item["user_id"] != admin["user"]["id"] for item in theirs["items"])
-
-
-# ======================================================================
-# Debug task endpoints
-# ======================================================================
 
 
 class TestTaskEndpointsAreLockedDown:

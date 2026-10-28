@@ -1,17 +1,4 @@
-/**
- * I18n.test.tsx
- * =============
- * The translation layer (lib/i18n) and the language switcher:
- *
- *   * translate: placeholders, the English fallback for a key Hindi lacks,
- *     the key itself for a key nobody has
- *   * the dictionaries: every Hindi key also exists in English (no orphans),
- *     every English key has a Hindi translation (no gaps), and both sides
- *     use the same {placeholders}
- *   * rich(): elements in {slots}
- *   * the switcher: picking Hindi re-renders the shell and the auth pages,
- *     sets <html lang>, and is remembered
- */
+// The translation layer (lib/i18n) and the language switcher.
 
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

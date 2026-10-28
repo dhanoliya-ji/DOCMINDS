@@ -1,20 +1,4 @@
-/**
- * Platform.test.tsx
- * =================
- * The pages for the optional platform features (lib/platform.ts):
- *
- *   * Plan and billing: the current plan, Upgrade -> Stripe Checkout or the
- *     Razorpay subscription page, Cancel subscription (Razorpay),
- *     Manage billing -> the portal, the return notices, non-admins get no
- *     buttons, "not enabled" on a 404
- *   * Cloud imports: providers, connect -> the consent URL, browse a
- *     connection (open a folder, select, import, per-item results), the
- *     imported documents table and Sync now, "not enabled" on a 404
- *   * Admin dashboard: totals, a chart per series with its data table, top
- *     questions; axe finds nothing
- *   * Settings: the feature links and the plan badge appear only when the
- *     server has each feature on
- */
+// The pages for the optional platform features (lib/platform.ts).
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -206,7 +190,6 @@ describe("Plan and billing", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Cancel subscription" }));
     expect(platformMocks.cancelSubscription).not.toHaveBeenCalled();
-    // While subscribed, switching plan means cancelling first.
     expect(screen.getByText(/cancel the current subscription first/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Switch to Team" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Manage billing" })).not.toBeInTheDocument();
@@ -263,7 +246,6 @@ describe("Cloud imports", () => {
       auto_sync: true, counts: {}, created_at: null, finished_at: null,
       items: [{ item_id: "f1", name: null, document_id: null, detail: null, ...item }],
     });
-    // 202 with every item pending, then the poll sees it downloading, then done.
     platformMocks.importItems.mockResolvedValue(job("queued", { status: "pending" }));
     platformMocks.getImport
       .mockResolvedValueOnce(job("running", { status: "downloading", name: "Leave policy" }))

@@ -1,16 +1,4 @@
-/**
- * EmbeddingCloud.test.tsx
- * =======================
- * The 3D embedding map on the search page (F17). jsdom has no WebGL, so the
- * three.js scene is replaced by a stub that reports what it was given; what
- * is under test is everything around it:
- *
- *   * nothing is fetched until the map is opened
- *   * the table fallback: filename, snippet, coordinates, search hits
- *   * no WebGL -> the table is the only view
- *   * the truncation note, the error and empty states
- *   * reduced motion reaches the scene
- */
+// The 3D embedding map on the search page (F17).
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -27,7 +15,6 @@ vi.mock("@/lib/api", async () => {
   return { ...actual, api: { ...actual.api, getEmbeddingMap: (...a: unknown[]) => getEmbeddingMap(...a) } };
 });
 
-// next/dynamic -> the stub scene, synchronously.
 vi.mock("next/dynamic", () => ({
   default: () =>
     function SceneStub(props: { points: unknown[]; hits: Set<string>; reduced: boolean; active: boolean }) {

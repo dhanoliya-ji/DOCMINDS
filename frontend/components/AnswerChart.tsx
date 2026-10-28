@@ -1,33 +1,4 @@
-/**
- * AnswerChart.tsx
- * ===============
- * Draws the chart an answer asks for. The model may end a numeric answer
- * with a fenced block (backend services/llm.py, rule 7):
- *
- *     ```chart
- *     {"type": "bar", "title": "Refunds per quarter", "labels": ["Q1", "Q2"],
- *      "series": [{"name": "Refunds", "values": [12, 18]}], "unit": "%"}
- *     ```
- *
- * WHY HAND-DRAWN SVG, NOT A CHART LIBRARY
- * ---------------------------------------
- * Three forms (bar, line, pie), drawn from a spec a language model wrote.
- * The spec is untrusted, so it is parsed strictly (parseChartSpec) and
- * anything malformed falls back to showing the data as a table -- never a
- * crash, never a half-drawn chart. A library would add tens of kilobytes
- * to every chat page to draw what fits in this file.
- *
- * THE RULES IT FOLLOWS
- * --------------------
- *   * one y axis, starting at zero for bars (a bar's length IS its value)
- *   * series colours in a fixed order (--series-1..8 in globals.css), so
- *     series 2 is always the same hue; never more than eight series
- *   * a legend whenever there are two or more series, so identity is never
- *     colour alone; a pie labels every slice with its share
- *   * hover / focus on any mark shows its exact value
- *   * "Show the data" opens the same numbers as a real table -- the
- *     accessible view, and the one that works when colours do not
- */
+// Draws the chart an answer asks for.
 
 "use client";
 
@@ -49,7 +20,6 @@ const MAX_SERIES = 8;
 const MAX_POINTS = 40;
 const MAX_SLICES = 8;
 
-/** A spec the model wrote, checked field by field; null when unusable. */
 export function parseChartSpec(source: string): ChartSpec | null {
   let raw: unknown;
   try {
@@ -95,7 +65,6 @@ function format(value: number, unit?: string): string {
   return unit ? (unit === "%" ? `${text}%` : `${text} ${unit}`) : text;
 }
 
-/** Round an axis maximum up to 1, 2 or 5 times a power of ten. */
 function niceMax(value: number): number {
   if (value <= 0) return 1;
   const power = 10 ** Math.floor(Math.log10(value));
@@ -237,7 +206,6 @@ function Cartesian({ spec, markProps }: { spec: ChartSpec; markProps: MarkProps 
   const y = (v: number) => PAD.top + plotH - ((v - minValue) / (maxValue - minValue || 1)) * plotH;
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => minValue + f * (maxValue - minValue));
   const band = plotW / spec.labels.length;
-  // Long label lists show every other label, so they never collide.
   const labelEvery = spec.labels.length > 12 ? Math.ceil(spec.labels.length / 12) : 1;
 
   return (
@@ -274,7 +242,6 @@ function Cartesian({ spec, markProps }: { spec: ChartSpec; markProps: MarkProps 
               const top = y(Math.max(value, 0));
               const height = Math.max(1, Math.abs(y(value) - y(0)));
               const r = Math.min(4, barW / 2, height);
-              // Rounded at the data end only; square on the baseline.
               const d =
                 value >= 0
                   ? `M${x},${top + height} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${top + height} Z`
@@ -321,7 +288,6 @@ function Cartesian({ spec, markProps }: { spec: ChartSpec; markProps: MarkProps 
 }
 
 function Pie({ spec, markProps }: { spec: ChartSpec; markProps: MarkProps }) {
-  // Past eight slices the rest fold into "Other": a ninth hue is never invented.
   let entries = spec.labels.map((label, i) => ({ label, value: spec.series[0].values[i] }));
   if (entries.length > MAX_SLICES) {
     const sorted = [...entries].sort((a, b) => b.value - a.value);
@@ -333,7 +299,6 @@ function Pie({ spec, markProps }: { spec: ChartSpec; markProps: MarkProps }) {
   const cy = HEIGHT / 2;
   const outer = 100;
   const inner = 58;
-  // Each slice's starting angle, computed up front (no mutation in render).
   const starts = entries.map(
     (_e, i) => -Math.PI / 2 + (entries.slice(0, i).reduce((sum, e) => sum + e.value, 0) / total) * Math.PI * 2
   );

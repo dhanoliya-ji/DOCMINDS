@@ -1,19 +1,4 @@
-/**
- * MeshGradient.tsx  (F1: animated WebGL background)
- * =================================================
- * A full-bleed, slowly flowing colour field behind the hero.
- *
- * WHY A HAND-WRITTEN SHADER, NOT THREE.JS
- * ---------------------------------------
- * The effect is one full-screen triangle and ~20 lines of GLSL. Pulling in a
- * 3D engine for it would cost far more than it draws, and it should be visible
- * on first paint, before the lazy-loaded 3D chunk arrives.
- *
- * Colours come from the CSS variables in globals.css (--bg-base, --accent,
- * --violet, --cyan), so the background follows the theme. The loop stops
- * when the canvas is off screen or the tab is hidden, and never starts under
- * prefers-reduced-motion -- the static CSS gradient underneath shows instead.
- */
+// A full-bleed, slowly flowing colour field behind the hero.
 
 "use client";
 
@@ -23,8 +8,6 @@ import { cappedDpr, useIsActive, usePrefersReducedMotion } from "./hooks";
 
 const VERT = "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}";
 
-// Three colour blobs whose centres drift on slow sine paths, blended by
-// inverse distance over the base colour. Cheap, smooth, never visibly loops.
 const FRAG = `precision mediump float;
 uniform vec2 r;uniform float t;uniform vec3 c0,c1,c2,c3;
 void main(){
@@ -41,7 +24,6 @@ void main(){
 
 type RGB = [number, number, number];
 
-/** Read a `#rrggbb` CSS variable as normalised RGB, or use the fallback. */
 function cssColor(name: string, fallback: RGB): RGB {
   const raw = getComputedStyle(document.documentElement)
     .getPropertyValue(name)
@@ -55,8 +37,6 @@ function cssColor(name: string, fallback: RGB): RGB {
 export default function MeshGradient() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reduced = usePrefersReducedMotion();
-  // Observed on the always-rendered wrapper: the canvas itself only mounts
-  // after hydration, too late for an observer attached on first mount.
   const wrapRef = useRef<HTMLDivElement>(null);
   const active = useIsActive(wrapRef);
 
@@ -64,7 +44,7 @@ export default function MeshGradient() {
     const canvas = canvasRef.current;
     if (reduced || !active || !canvas) return;
     const gl = canvas.getContext("webgl", { antialias: false });
-    if (!gl) return; // No WebGL: the CSS gradient fallback stays visible.
+    if (!gl) return;
 
     const compile = (type: number, src: string) => {
       const s = gl.createShader(type)!;
@@ -78,7 +58,6 @@ export default function MeshGradient() {
     gl.linkProgram(prog);
     gl.useProgram(prog);
 
-    // One oversized triangle covers the screen with fewer vertices than a quad.
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(
       gl.ARRAY_BUFFER,
@@ -96,8 +75,6 @@ export default function MeshGradient() {
     gl.uniform3fv(u("c3"), cssColor("--cyan", [0.13, 0.83, 0.93]));
 
     const resize = () => {
-      // Half resolution: the field is soft, nobody can tell, and it quarters
-      // the fragment cost.
       const scale = cappedDpr(1.5) * 0.5;
       canvas.width = Math.max(1, Math.round(canvas.clientWidth * scale));
       canvas.height = Math.max(1, Math.round(canvas.clientHeight * scale));
@@ -129,7 +106,6 @@ export default function MeshGradient() {
       data-testid="mesh-gradient"
       className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
       style={{
-        // Static fallback; also what shows before the shader's first frame.
         background:
           "radial-gradient(60% 50% at 25% 30%, rgba(99,102,241,0.35), transparent 70%), radial-gradient(50% 45% at 80% 60%, rgba(168,85,247,0.28), transparent 70%), var(--bg-base)",
       }}

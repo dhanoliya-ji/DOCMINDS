@@ -1,18 +1,4 @@
-/**
- * PlatformLinks.tsx
- * =================
- * Two small pieces for the settings page, for the optional features that
- * live on pages of their own:
- *
- *   <PlanBadge />      "Pro plan", linking to /settings/billing -- shown to
- *                      every member, and only when billing is switched on
- *   <PlatformLinks />  links to Cloud imports (editors and admins), Plan and
- *                      billing, and the Admin dashboard (admins), each only
- *                      when the server has that feature on
- *
- * Each feature's endpoint answers 404 while it is off, so one probe per
- * feature decides whether its link appears; nothing renders until then.
- */
+// Two small pieces for the settings page, for the optional features that live on pages...
 
 "use client";
 

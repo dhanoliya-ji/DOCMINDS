@@ -1,22 +1,4 @@
-/**
- * share/[token]/page.tsx  (served at "/share/<token>")
- * ====================================================
- * The PUBLIC, read-only view of a share link -- no account needed.
- *
- *     an answer         the question and the answer, with its sources and
- *                       confidence badge, rendered exactly as in the app
- *                       (tables and charts included)
- *     a conversation    every message, in order
- *     a project         its name and the documents in it
- *
- * The backend decides what a visitor may see (an allow-list in
- * services/sharing.py: no ids, no emails, no organization). This page only
- * renders it, and fetches WITHOUT the signed-in user's token, so someone
- * signed in sees exactly what any visitor sees.
- *
- * A dead link -- unknown, expired, revoked, or its target deleted -- gets
- * one message: the server does not say which, and neither does this page.
- */
+// Page /share/<token> -- the PUBLIC, read-only view of a share link -- no account needed.
 
 "use client";
 

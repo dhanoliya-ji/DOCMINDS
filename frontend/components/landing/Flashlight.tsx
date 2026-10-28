@@ -1,22 +1,4 @@
-/**
- * Flashlight.tsx  (F4: cursor "flashlight" over a blurred document)
- * =================================================================
- * A mock document page is shown blurred. A sharp copy sits on top of it,
- * masked by a radial `mask-image` centred on the cursor -- so moving the
- * mouse reads the page like a torch in the dark, and the cited passage is
- * highlighted when the light finds it.
- *
- * WHY CSS MASKS AND NOT A CANVAS
- * ------------------------------
- * The text stays real text: selectable, crisp at any zoom, and the mask
- * position is just two CSS variables updated on pointermove (no re-render).
- *
- * TOUCH, KEYBOARD AND REDUCED MOTION
- * ----------------------------------
- * There is no cursor to follow on touch screens or for keyboard users, so the
- * static version shows the sharp page with the citation already highlighted.
- * Focusing the figure also reveals it, so keyboard users get the same payoff.
- */
+// A mock document page is shown blurred.
 
 "use client";
 
@@ -30,7 +12,6 @@ const PARAGRAPHS = [
   "4.3 Carry-over. Up to five unused days may be carried into the following year with written approval from a line manager.",
   "4.4 Public holidays. Bank and public holidays are granted in addition to the annual entitlement above.",
 ];
-/** Index of the paragraph the "answer" cites. */
 const CITED = 1;
 
 function DocPage({ highlight }: { highlight: boolean }) {
@@ -71,7 +52,6 @@ export default function Flashlight() {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    // CSS variables, not React state: no re-render per mouse move.
     el.style.setProperty("--mx", `${e.clientX - r.left}px`);
     el.style.setProperty("--my", `${e.clientY - r.top}px`);
   };

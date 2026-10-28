@@ -1,45 +1,4 @@
-"""
-shares.py
-=========
-WHAT THIS FILE DOES
--------------------
-Public, read-only SHARE LINKS for an answer, a conversation or a project.
-
-    POST   /shares                  make a link; the token is in the reply ONCE
-    GET    /shares[?kind=&target_id=]
-                                    the links I may manage (no tokens)
-    DELETE /shares/{id}             revoke one (audited)
-
-    GET    /public/shares/{token}   what an anonymous visitor sees -- no login,
-                                    rate limited per IP address
-
-WHO MAY SHARE WHAT
-------------------
-    an answer or a conversation   the person whose conversation it is.
-                                  Conversations are private to their owner
-                                  everywhere else in the app, so only the
-                                  owner can decide to publish one.
-    a project                     editors and admins -- the people who
-                                  already curate what is in it.
-
-Revoking: whoever made the link, plus admins (any link in the org) and
-editors (project links). Every create and revoke is written to the audit
-log, so an admin can always answer "who published this, and when".
-
-WHAT A VISITOR CAN NEVER REACH
-------------------------------
-The public endpoint resolves the token to exactly one row and renders
-exactly that target through an allow-list (services/sharing.py
-public_view): no ids, no emails, no organization, nothing from another
-conversation or project. A malformed, unknown, revoked or expired token,
-or one whose target has been deleted, all get the same 404 -- so the
-endpoint cannot be used to learn which links exist.
-
-The response also tells caches and crawlers to keep out: no-store,
-X-Robots-Tag: noindex, and Referrer-Policy: no-referrer so a link clicked
-from a shared page does not leak the token in the Referer header.
-"""
-
+"""Public, read-only SHARE LINKS for an answer, a conversation or a project."""
 import datetime
 import uuid
 from typing import List, Optional
@@ -50,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core import roles
-from app.models.chat import ChatMessage, ChatSession
-from app.models.project import Project
-from app.models.share import ShareLink
-from app.models.user import User
-from app.schemas.collab import (
+from app.models import ChatMessage, ChatSession
+from app.models import Project
+from app.models import ShareLink
+from app.models import User
+from app.schemas import (
     PublicShare,
     ShareKind,
     ShareLinkCreate,
@@ -66,8 +25,6 @@ from app.services import audit, sharing
 router = APIRouter()
 public_router = APIRouter()
 
-# Active links per target. Plenty for "one per recipient", and a ceiling on
-# a script minting links in a loop.
 MAX_ACTIVE_LINKS_PER_TARGET = 25
 
 
@@ -96,10 +53,7 @@ async def _owned_session(db: AsyncSession, session_id: uuid.UUID, user: User) ->
 
 
 async def _check_target(db: AsyncSession, kind: str, target_id: uuid.UUID, user: User) -> None:
-    """
-    Raise unless `user` may share (and so manage links to) this target.
-    The same 404 for "does not exist" and "not yours", as everywhere else.
-    """
+    """Raise unless `user` may share (and so manage links to) this target."""
     if kind == "message":
         message = await db.get(ChatMessage, target_id)
         if message is None or message.role != "assistant":
@@ -130,10 +84,7 @@ async def create_share_link(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    Make a public read-only link. The token is returned in THIS response
-    only -- store or copy it now; the server keeps just its HMAC.
-    """
+    """Make a public read-only link. The token is returned in THIS response"""
     await _check_target(db, payload.kind, payload.target_id, current_user)
 
     active = [
@@ -194,13 +145,7 @@ async def list_share_links(
     db: AsyncSession = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_active_user),
 ):
-    """
-    The links the caller may manage, newest first.
-
-    With kind + target_id: every link to that target (the share dialog's
-    list), provided the caller may share it. Without: the links the caller
-    made -- or, for an admin, every link in the organization.
-    """
+    """The links the caller may manage, newest first."""
     statement = (
         select(ShareLink)
         .where(ShareLink.org_id == current_user.org_id)
@@ -238,8 +183,6 @@ async def revoke_share_link(
         or (link.kind == "project" and roles.at_least(role, roles.EDITOR))
     )
     if not allowed:
-        # Inside the org the link's existence is no secret (it is listed to
-        # admins), so a plain 403 is honest here.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Only the person who made this link, or an admin, can revoke it.")
     if link.revoked_at is None:
@@ -253,16 +196,9 @@ async def revoke_share_link(
     return None
 
 
-# ======================================================================
-# THE PUBLIC VIEW -- no authentication
-# ======================================================================
-
-
 @public_router.get(
     "/shares/{token}",
     response_model=PublicShare,
-    # Per IP: a visitor has no account. Generous for people reading, tight
-    # for a script trying tokens (which, at 256 bits, it never finds).
     dependencies=[Depends(deps.rate_limit_by_ip("share_view"))],
 )
 async def view_shared(

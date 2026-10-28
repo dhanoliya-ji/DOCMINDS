@@ -1,22 +1,4 @@
-/**
- * PipelineScroll.tsx  (F3 + F8: scroll-driven "how it works")
- * ===========================================================
- * A tall section whose inner frame is pinned (`position: sticky`) while the
- * visitor scrolls through it. Scroll progress drives a camera "dolly" through
- * four stages laid out in depth -- upload → chunk → embed → answer -- and the
- * callout for each stage is revealed in sequence (F8).
- *
- * WHY framer-motion useScroll, NOT R3F ScrollControls
- * ---------------------------------------------------
- * ScrollControls owns its own scroll container, which fights Lenis and
- * hijacks native scrolling for the whole page. useScroll reads the real
- * document scroll, so the effect costs no WebGL at all: the "depth" is CSS
- * 3D transforms on ordinary, accessible HTML.
- *
- * REDUCED MOTION
- * --------------
- * The pinned theatre is replaced by a plain ordered list of the same stages.
- */
+// F3 + F8: scroll-driven "how it works"
 
 "use client";
 
@@ -58,19 +40,8 @@ export const STAGES = [
   },
 ];
 
-/** Distance between stages along the virtual Z axis, in px. */
 const GAP = 600;
 
-/**
- * Keep a scroll-linked input range inside 0..1 and in non-decreasing order.
- *
- * The first and last stages naturally reach past the ends of the scroll
- * (-0.33, 1.33). framer-motion hands scroll-linked opacity and transforms to
- * the browser's own animation engine as keyframe offsets, and Chrome throws
- * "Offsets must be monotonically non-decreasing" for anything outside 0..1
- * or out of order -- which crashed the whole landing page in production.
- * Each point is nudged a hair past the previous one so ranges stay distinct.
- */
 export function scrollRange(points: number[]): number[] {
   const out: number[] = [];
   for (const point of points) {
@@ -78,7 +49,6 @@ export function scrollRange(points: number[]): number[] {
     const previous = out.length ? out[out.length - 1] : -Infinity;
     out.push(Math.max(clamped, previous === -Infinity ? clamped : previous + 1e-4));
   }
-  // The nudge can push the tail past 1; walk back so everything fits.
   for (let i = out.length - 1; i >= 0; i--) {
     const limit = i === out.length - 1 ? 1 : out[i + 1] - 1e-4;
     out[i] = Math.min(out[i], limit);
@@ -96,19 +66,15 @@ function Stage({
   const stage = STAGES[index];
   const Icon = stage.icon;
   const n = STAGES.length;
-  // Where this stage sits in 0..1 scroll progress.
   const centre = index / (n - 1);
   const span = 1 / (n - 1);
 
-  // The camera moves forward through Z: each stage starts far away, arrives
-  // at the screen plane when the scroll reaches it, then passes the viewer.
   const z = useTransform(progress, scrollRange([centre - span, centre, centre + span]), [-GAP, 0, GAP * 0.6]);
   const opacity = useTransform(
     progress,
     scrollRange([centre - span, centre - span * 0.35, centre + span * 0.35, centre + span * 0.8]),
     [0, 1, 1, 0]
   );
-  // The callout trails its stage slightly, so reveals read in sequence.
   const calloutOpacity = useTransform(progress, scrollRange([centre - span * 0.2, centre]), [0, 1]);
   const calloutY = useTransform(progress, scrollRange([centre - span * 0.2, centre]), [16, 0]);
 
@@ -165,12 +131,10 @@ function StaticPipeline() {
 
 function AnimatedPipeline() {
   const ref = useRef<HTMLDivElement>(null);
-  // 0 when the section's top hits the viewport top, 1 when its bottom does.
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start start", "end end"] });
   const bar = useTransform(scrollYProgress, [0, 1], ["0%", "100%"]);
 
   return (
-    // 400vh of scroll for four stages; the inner frame is pinned throughout.
     <div ref={ref} className="relative" style={{ height: `${STAGES.length * 100}vh` }}>
       <div
         className="sticky top-0 h-screen overflow-hidden"
@@ -181,7 +145,6 @@ function AnimatedPipeline() {
             <Stage key={stage.name} index={i} progress={scrollYProgress} />
           ))}
         </div>
-        {/* Progress rail */}
         <div
           aria-hidden="true"
           className="absolute bottom-10 left-1/2 h-1 w-40 -translate-x-1/2 overflow-hidden rounded-full"

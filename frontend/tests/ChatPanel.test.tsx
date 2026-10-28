@@ -1,34 +1,4 @@
-/**
- * ChatPanel.test.tsx
- * ==================
- * WHAT THIS FILE TESTS
- * --------------------
- * `components/ChatPanel.tsx` -- the component the whole project builds
- * towards. Questions in, streamed answers with citations out, and a history
- * of conversations to come back to.
- *
- * THE ONES THAT MATTER MOST
- * -------------------------
- * 1. THE OPTIMISTIC ROLLBACK. The question (and an empty answer bubble) are
- *    added before anything arrives, so the wait is legible. If the request
- *    then fails -- or is stopped -- BOTH must be removed again. An optimistic
- *    update without its rollback lies to the user the first time a request
- *    fails.
- *
- * 2. STREAMING. Words and research steps must appear AS THEY ARRIVE, not all
- *    at once at the end -- that is the whole point of the streaming endpoint.
- *
- * 3. CITATIONS. The numbered sources under an answer are what make a claim
- *    checkable, and "View" must open the right document at the right place.
- *
- * 4. HISTORY. A conversation is created on its first question (never on
- *    mount, which would litter the sidebar), and can be resumed, renamed and
- *    deleted.
- *
- * `lib/api` and `react-markdown` are mocked -- what is under test is this
- * component's behaviour. The stream is simulated by a fake `streamQuestion`
- * that calls the handlers the way the real SSE reader does.
- */
+// `components/ChatPanel.tsx` -- the component the whole project builds towards.
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -60,8 +30,6 @@ vi.mock("@/lib/api", () => ({
     error instanceof Error && error.message ? error.message : fallback,
 }));
 
-// Downloads and the clipboard are browser services jsdom lacks; the
-// Markdown they would receive is checked through these spies instead.
 const downloadText = vi.fn();
 const copyText = vi.fn();
 vi.mock("@/lib/export", async () => {
@@ -73,8 +41,6 @@ vi.mock("@/lib/export", async () => {
   };
 });
 
-// react-markdown is ESM-only and renders prose we are not testing. A plain
-// passthrough keeps the answer text queryable.
 vi.mock("react-markdown", () => ({
   default: ({ children }: { children: string }) => <div>{children}</div>,
 }));
@@ -99,7 +65,6 @@ function session(id: string, title: string) {
   };
 }
 
-/** The shape the stream's final "done" event carries. */
 function answer(content: string, citations: unknown[] = [], extra: Record<string, unknown> = {}) {
   return {
     session_id: "session-1",
@@ -127,7 +92,6 @@ type Handlers = {
   onReset?: () => void;
 };
 
-/** A streamQuestion fake: sources, then the answer word by word, then done. */
 function streams(content: string, citations: unknown[] = [], extra: Record<string, unknown> = {}) {
   return async (_id: string, _q: string, _options: unknown, handlers: Handlers) => {
     handlers.onCitations?.(citations);
@@ -136,7 +100,6 @@ function streams(content: string, citations: unknown[] = [], extra: Record<strin
   };
 }
 
-/** A stream the TEST drives step by step, for checking what shows mid-answer. */
 function controlledStream() {
   const control: {
     handlers: Handlers;
@@ -164,7 +127,6 @@ async function ask(user: ReturnType<typeof userEvent.setup>, text: string) {
   await user.keyboard("{Enter}");
 }
 
-/** Render, and wait for the history to have loaded. */
 async function renderPanel(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
   const view = render(<ChatPanel projectId="p1" {...props} />);
   await waitFor(() => expect(listProjectChatSessions).toHaveBeenCalled());
@@ -184,9 +146,6 @@ beforeEach(() => {
   copyText.mockReset().mockResolvedValue(true);
 });
 
-// ======================================================================
-// Conversations: history, creation, resume, rename, delete
-// ======================================================================
 
 describe("conversation history", () => {
   it("lists this project's conversations", async () => {
@@ -199,7 +158,6 @@ describe("conversation history", () => {
   });
 
   it("does NOT create a conversation just by opening the tab", async () => {
-    // Creating one on mount would fill the sidebar with empty "New Chat"s.
     await renderPanel();
     await new Promise((r) => setTimeout(r, 20));
     expect(createChatSession).not.toHaveBeenCalled();
@@ -317,9 +275,6 @@ describe("conversation history", () => {
   });
 });
 
-// ======================================================================
-// Asking, and the stream
-// ======================================================================
 
 describe("asking a question", () => {
   it("sends the question, the mode and no document filter by default", async () => {
@@ -429,9 +384,6 @@ describe("asking a question", () => {
   });
 });
 
-// ======================================================================
-// THE ROLLBACK
-// ======================================================================
 
 describe("when the answer fails", () => {
   it("removes the optimistic question and the half-written answer", async () => {
@@ -472,9 +424,6 @@ describe("when the answer fails", () => {
   });
 });
 
-// ======================================================================
-// Citations
-// ======================================================================
 
 describe("citations", () => {
   it("shows how many sources an answer has", async () => {
@@ -594,16 +543,8 @@ describe("citations", () => {
   });
 });
 
-// ======================================================================
-// Rating, copying, exporting
-// ======================================================================
 
 describe("rating, copying and exporting", () => {
-  /**
-   * The thumbs buttons carry only an icon. Located through the lucide SVG
-   * class; THROWS rather than returning nothing, so a markup change cannot
-   * turn these tests into silent passes.
-   */
   function thumbs(): HTMLElement[] {
     const found = screen
       .getAllByRole("button")
@@ -672,9 +613,6 @@ describe("rating, copying and exporting", () => {
   });
 });
 
-// ======================================================================
-// Answering only from selected documents
-// ======================================================================
 
 describe("the document filter", () => {
   const docs = [
@@ -697,9 +635,6 @@ describe("the document filter", () => {
   });
 });
 
-// ======================================================================
-// Answer mode: quick answer (rag) vs deep research (agent)
-// ======================================================================
 
 describe("answer mode", () => {
   const step = (tool: string, summary: string, args: Record<string, unknown> = {}) => ({
@@ -840,9 +775,6 @@ describe("answer mode", () => {
   });
 });
 
-// ======================================================================
-// F10: the live step indicator during deep research
-// ======================================================================
 
 const agentStep = (tool: string, summary: string) => ({ tool, summary, args: {} });
 
@@ -856,7 +788,6 @@ describe("live step indicator", () => {
     await waitFor(() => expect(streamQuestion).toHaveBeenCalled());
 
     const indicator = () => screen.getByTestId("agent-step-indicator");
-    // Before any step: searching, announced politely.
     expect(indicator()).toHaveAttribute("data-phase", "search");
     expect(indicator()).toHaveAttribute("role", "status");
     expect(indicator()).toHaveTextContent("Searching your documents");
@@ -947,7 +878,6 @@ describe("collaboration in the chat", () => {
     await ask(user, "Leave?");
     expect(await screen.findByRole("button", { name: /high confidence/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Share this answer" })).toBeInTheDocument();
-    // The whole conversation can be shared from the toolbar once it exists.
     expect(screen.getByRole("button", { name: /^share$/i })).toBeEnabled();
   });
 });

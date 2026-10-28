@@ -1,14 +1,4 @@
-/**
- * share/layout.tsx
- * ================
- * Server-side metadata for the public share pages, which are client
- * components and cannot export it themselves:
- *
- *   * robots noindex/nofollow -- a shared link is for the people it was sent
- *     to, not for search engines;
- *   * referrer no-referrer -- a link clicked on a shared page must not hand
- *     the page's URL (which IS the token) to the next site.
- */
+// Server-side metadata for the public share pages, which are client components and...
 
 import type { Metadata } from "next";
 import type { ReactNode } from "react";

@@ -1,36 +1,4 @@
-"""
-export.py
-=========
-WHAT THIS FILE DOES
--------------------
-Turns a conversation into a Markdown document, for
-GET /chat/sessions/{id}/export.
-
-    # Leave policy questions
-
-    _Exported from DocMinds on 2026-10-23 14:02 UTC_
-
-    ## Question
-    How many days of annual leave do I get?
-
-    ## Answer  (Quick answer · openai/gpt-oss-120b)
-    Full-time staff get 25 days [1].
-
-    **Sources**
-    1. handbook.pdf, page 12 -- "Employees accrue 1.75 days..."
-
-WHY MARKDOWN
-------------
-It is readable as plain text, renders nicely almost everywhere (GitHub, Notion,
-Confluence, Obsidian, most chat tools), and it is what the model already
-writes its answers in -- so the answers keep their lists and bold text with no
-conversion at all.
-
-The browser has its own copy of this logic (frontend/lib/export.ts) so it can
-export without a round trip; this one is for API clients and scripts. The two
-produce the same layout.
-"""
-
+"""Turns a conversation into a Markdown document, for GET /chat/sessions/{id}/export."""
 import datetime
 from typing import Any, Dict, Iterable, List, Optional
 

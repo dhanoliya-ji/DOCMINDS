@@ -1,12 +1,4 @@
-/**
- * Developers.test.tsx
- * ===================
- *   * /developers: the API docs page -- every section, the language tabs on
- *     the examples, copy buttons, and that it follows the language switcher
- *   * PwaSupport: the "Install app" card appears only when the browser
- *     offers installation, and dismissing it is remembered
- *   * the TypeScript SDK (sdk/typescript): headers, paths, errors
- */
+// * /developers: the API docs page -- every section, the language tabs on the examples...
 
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,13 +8,11 @@ import DevelopersPage from "@/app/developers/page";
 import PwaSupport from "@/components/PwaSupport";
 import { setLocale } from "@/lib/i18n";
 
-import { DocMinds, DocMindsError } from "../../sdk/typescript/src";
-
 describe("/developers", () => {
-  it("documents keys, auth, limits, endpoints, examples, SDKs and errors", () => {
+  it("documents keys, auth, limits, endpoints, examples and errors", () => {
     render(<DevelopersPage />);
     expect(screen.getByRole("heading", { level: 1, name: "DocMinds API" })).toBeInTheDocument();
-    for (const name of [/Create an API key/, /Authenticate/, /Rate limits/, /Endpoints/, /Examples/, /SDKs/, /Errors/]) {
+    for (const name of [/Create an API key/, /Authenticate/, /Rate limits/, /Endpoints/, /Examples/, /Errors/]) {
       expect(screen.getByRole("heading", { level: 2, name })).toBeInTheDocument();
     }
     expect(screen.getByText("POST /api/v1/search/")).toBeInTheDocument();
@@ -35,10 +25,10 @@ describe("/developers", () => {
     render(<DevelopersPage />);
     expect(screen.getAllByText(/curl http/).length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Python" }));
-    expect(screen.getByText(/from docminds import DocMinds/)).toBeInTheDocument();
+    expect(screen.getByText(/import os, requests/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "TypeScript" }));
     expect(screen.getByRole("button", { name: "TypeScript" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/new DocMinds\(/)).toBeInTheDocument();
+    expect(screen.getByText(/const api = /)).toBeInTheDocument();
   });
 
   it("copies an example", async () => {
@@ -98,32 +88,3 @@ describe("PwaSupport", () => {
   });
 });
 
-describe("TypeScript SDK", () => {
-  function client(response: Response) {
-    const fetchMock = vi.fn().mockResolvedValue(response);
-    return { fetchMock, sdk: new DocMinds("https://api.example.com/", { apiKey: "dm_x", fetch: fetchMock }) };
-  }
-
-  it("sends the key to the v1 path", async () => {
-    const { fetchMock, sdk } = client(new Response("[]", { status: 200 }));
-    await sdk.listProjects();
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://api.example.com/api/v1/projects/");
-    expect(init.headers["X-API-Key"]).toBe("dm_x");
-  });
-
-  it("sends search options in the API's field names", async () => {
-    const { fetchMock, sdk } = client(new Response('{"results": []}', { status: 200 }));
-    await sdk.search("leave", { projectId: "p1", topK: 3 });
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ query: "leave", project_id: "p1", top_k: 3 });
-  });
-
-  it("throws the detail, status and Retry-After", async () => {
-    const { sdk } = client(
-      new Response('{"detail": "Slow down"}', { status: 429, headers: { "Retry-After": "7" } })
-    );
-    const error = await sdk.ask("s1", "hi").catch((e) => e);
-    expect(error).toBeInstanceOf(DocMindsError);
-    expect([error.message, error.status, error.retryAfter]).toEqual(["Slow down", 429, 7]);
-  });
-});

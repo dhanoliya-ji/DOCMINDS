@@ -1,30 +1,4 @@
 # ruff: noqa: F811 -- the fixtures imported from test_upload_hardening are re-used as test arguments
-"""
-test_billing.py
-===============
-WHAT THIS FILE TESTS
---------------------
-Stripe and Razorpay billing (services/billing.py, api/v1/billing.py) and the admin
-dashboard aggregates (services/analytics.py, api/v1/analytics.py):
-
-    * Stripe-Signature verification: good, wrong secret, stale, malformed
-    * plans map onto the existing quotas; free clears the overrides
-    * the webhook: checkout completed -> pro and its limits, enforced by
-      services/usage.py; a redelivered event changes nothing twice;
-      subscription deleted -> free; unsigned -> 400
-    * Checkout and the Customer Portal against a faked Stripe, admins only
-    * Razorpay: X-Razorpay-Signature good / wrong / missing, the event ->
-      plan mapping, activated -> pro, a replayed delivery is a duplicate,
-      cancel at cycle end, cancelled / halted -> free, a stale event for an
-      ended or older subscription changes nothing
-    * switching BILLING_PROVIDER: an existing Stripe customer keeps its
-      portal and its webhooks
-    * everything 404s while switched off
-    * the dashboard: daily series with zeros filled, top questions grouped,
-      tenant isolation, admins only
-
-Runs on in-memory SQLite always, and on Postgres too when one is reachable.
-"""
 
 import datetime
 import json
@@ -36,11 +10,11 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.audit import AuditLog
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.organization import Organization
-from app.models.usage import UsageEvent
-from app.models.user import User
+from app.models import AuditLog
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Organization
+from app.models import UsageEvent
+from app.models import User
 from app.services import analytics, billing, usage
 from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
     env,
@@ -62,11 +36,6 @@ async def _set_role(env, role: str) -> None:
         user = await db.get(User, uuid.UUID(me["id"]))
         user.role = role
         await db.commit()
-
-
-# ======================================================================
-# Pure functions
-# ======================================================================
 
 
 class TestSignature:
@@ -112,11 +81,6 @@ class TestPlans:
         assert billing.plan_for_price("price_team") == "team"
         assert billing.plan_for_price("price_unknown") is None
         assert billing.plan_for_price(None) is None
-
-
-# ======================================================================
-# Through the API
-# ======================================================================
 
 
 @pytest.fixture
@@ -186,7 +150,6 @@ class TestBillingApi:
         assert sent["line_items[0][price]"] == "price_pro" and sent["metadata[org_id]"] == str(org.id)
         assert sent["success_url"] == "http://front.test/settings/billing?checkout=success"
         assert org.stripe_customer_id == "cus_123"
-        # The plan does NOT change until Stripe says so.
         assert org.plan == "free"
 
         portal = await env.client.post(f"{API}/billing/portal", headers=env.headers)
@@ -246,10 +209,6 @@ class TestBillingApi:
         assert (await _org(env)).plan == "free"
 
 
-# ======================================================================
-# Razorpay
-# ======================================================================
-
 RZP_SECRET = "rzp_webhook_secret"
 
 
@@ -275,7 +234,6 @@ class TestRazorpaySignature:
         update = billing.razorpay_update(event, b"x", "evt_9")
         assert (update.action, update.plan, update.status, update.event_id) == (
             "end", "team", "cancelled", "razorpay:evt_9")
-        # No event-id header: the body's hash is the id, the same on a retry.
         assert billing.razorpay_update(event, b"x").event_id == billing.razorpay_update(event, b"x").event_id
         assert billing.razorpay_update({"event": "payment.captured"}, b"y").action == "ignore"
 
@@ -356,7 +314,6 @@ class TestRazorpayApi:
         assert org.max_documents == settings.BILLING_PLAN_LIMITS["pro"]["max_documents"]
         assert org.plan_renews_at is not None
 
-        # Replay: the same delivery again changes nothing.
         assert (await _post_rzp(env, activated, "evt_A")).json()["outcome"] == "duplicate"
         charged = await _post_rzp(env, _rzp_event("subscription.charged", org_id, "active"), "evt_B")
         assert charged.json()["outcome"] == "applied"
@@ -364,7 +321,6 @@ class TestRazorpayApi:
         status_body = (await env.client.get(f"{API}/billing", headers=env.headers)).json()
         assert status_body["can_cancel"] is True and status_body["has_customer"] is True
 
-        # A second subscription while one is active would charge twice.
         again = await env.client.post(f"{API}/billing/checkout", headers=env.headers, json={"plan": "team"})
         assert again.status_code == 409
 
@@ -379,7 +335,6 @@ class TestRazorpayApi:
         org = await _org(env)
         assert (org.plan, org.max_documents, org.subscription_status) == ("free", None, "cancelled")
 
-        # A late, re-sent "charged" for the ended subscription must not revive it.
         await _post_rzp(env, _rzp_event("subscription.charged", org_id, "active"), "evt_D")
         assert (await _org(env)).plan == "free"
 
@@ -392,7 +347,6 @@ class TestRazorpayApi:
         org_id = str((await _org(env)).id)
         await _post_rzp(env, _rzp_event("subscription.activated", org_id, "active", plan_id="plan_team"), "evt_1")
         assert (await _org(env)).plan == "team"
-        # The end of some OTHER (older) subscription changes nothing.
         await _post_rzp(env, _rzp_event("subscription.cancelled", org_id, "cancelled", sub="sub_OLD"), "evt_2")
         assert (await _org(env)).plan == "team"
         await _post_rzp(env, _rzp_event("subscription.halted", org_id, "halted", plan_id="plan_team"), "evt_3")
@@ -426,10 +380,7 @@ class TestProviderSwitch:
         monkeypatch.setattr(settings, "RAZORPAY_KEY_ID", "")
         body = (await env.client.get(f"{API}/billing", headers=env.headers)).json()
         assert body["provider"] == "razorpay" and body["can_manage"] is True and body["can_cancel"] is False
-        # Razorpay keys are not set, so nothing is purchasable through it...
         assert not any(p["purchasable"] for p in body["plans"])
-        # ...but the existing Stripe customer still reaches Stripe's portal,
-        # and Stripe's signed webhooks are still applied.
         portal = await env.client.post(f"{API}/billing/portal", headers=env.headers)
         assert portal.json()["url"] == "https://billing.stripe.com/p/1"
         deleted = {"id": "evt_s2", "type": "customer.subscription.deleted",
@@ -446,17 +397,11 @@ class TestProviderSwitch:
                                 "items": {"data": [{"price": {"id": "price_pro"}}]}}},
         })
         assert (await _org(env)).plan == "pro"
-        # Stripe customers use the portal; the cancel endpoint works too.
         response = await env.client.post(f"{API}/billing/cancel", headers=env.headers)
         assert response.status_code == 200, response.text
         assert fake_stripe[-1].url.path == "/v1/subscriptions/sub_7"
         assert dict(httpx.QueryParams(fake_stripe[-1].content.decode())) == {"cancel_at_period_end": "true"}
         assert response.json()["plan"] == "pro"
-
-
-# ======================================================================
-# Admin dashboard
-# ======================================================================
 
 
 class TestAnalytics:

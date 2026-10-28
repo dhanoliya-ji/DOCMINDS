@@ -1,13 +1,5 @@
-/*
- * globals.css
- * ===========
- * The design system for the whole application: colours, fonts, reusable
- * component classes and keyframe animations. Every page pulls from here, so
- * changing a value in one place restyles the entire app consistently.
- */
+/* The design system for the whole application: colours, fonts, reusable component... */
 
-/* Tailwind scans only the folders the v3 config listed. `source(none)` turns
-   off v4's automatic detection, which would also scan tests and docs. */
 @import "tailwindcss" source(none);
 @source "./";
 @source "../components";
@@ -18,10 +10,6 @@
 }
 
 @layer base {
-  /* v3 compatibility. v4 changed two defaults this UI relies on:
-
-     - A bare `border` is now `currentcolor`, not gray-200.
-     - Buttons now get the default arrow cursor, not a pointer. */
   *,
   ::after,
   ::before,
@@ -35,15 +23,7 @@
     cursor: pointer;
   }
 
-  /* ====================================================================
-     DESIGN TOKENS
-     --------------------------------------------------------------------
-     CSS custom properties (variables). Defining the palette once means the
-     whole app can be re-themed by editing this single block.
-     ==================================================================== */
   :root {
-    /* Deep navy rather than pure black -- softer on the eyes, and it lets the
-     accent colours glow against it instead of vibrating. */
     --bg-base: #070b18;
     --bg-elevated: #0d1426;
     --bg-card: rgba(19, 28, 51, 0.72);
@@ -51,17 +31,10 @@
     --border-subtle: rgba(255, 255, 255, 0.07);
     --border-strong: rgba(255, 255, 255, 0.14);
 
-    /* Every text token keeps at least 4.5:1 on the page, a panel, a card and
-       a hovered input -- checked by scripts/contrast.mjs and its unit test.
-       (--text-muted was #64738f: 3.1:1 on a hovered input.) */
     --text-primary: #eef2ff;
     --text-secondary: #9aa8c7;
     --text-muted: #8190b0;
 
-    /* Indigo -> violet -> cyan. Used for buttons, focus rings and glows.
-       --accent and --violet are the two ends of the primary button, so both
-       keep 4.5:1 under its white label (they were #6366f1 at 4.47:1 and
-       #a855f7 at 3.96:1); --accent still clears 3:1 as a focus ring. */
     --accent: #5b5ff0;
     --accent-hover: #818cf8;
     --accent-glow: rgba(99, 102, 241, 0.4);
@@ -72,8 +45,6 @@
     --warning: #fbbf24;
     --danger: #f87171;
 
-    /* Translucent fills layered on cards and inputs. Variables (rather than
-     literal white-at-4%) so the light theme can flip them to ink-at-4%. */
     --surface-1: rgba(255, 255, 255, 0.04);
     --surface-2: rgba(255, 255, 255, 0.07);
     --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.35);
@@ -85,14 +56,6 @@
     --scrollbar: rgba(255, 255, 255, 0.1);
   }
 
-  /* ====================================================================
-     LIGHT THEME
-     --------------------------------------------------------------------
-     Set by lib/theme.ts (and its inline no-flash script in layout.tsx) as
-     `data-theme="light"` on <html>. Only the tokens change; every component
-     reads tokens, so nothing else needs a light variant. Text colours keep
-     at least 4.5:1 on every light surface (scripts/contrast.mjs).
-     ==================================================================== */
   :root[data-theme="light"] {
     --bg-base: #f5f7fc;
     --bg-elevated: #ffffff;
@@ -112,7 +75,6 @@
     --cyan: #0e7490;
 
     --success: #047857;
-    /* #a16207 fell to 4.2:1 on a hovered input; one step darker clears it. */
     --warning: #92580a;
     --danger: #b91c1c;
 
@@ -126,7 +88,6 @@
     --overlay: rgba(15, 23, 42, 0.45);
     --scrollbar: rgba(15, 23, 42, 0.18);
 
-    /* Chart series, light steps of the same eight hues (AnswerChart.tsx). */
     --series-1: #2a78d6;
     --series-2: #eb6834;
     --series-3: #1baf7a;
@@ -139,14 +100,6 @@
     --chart-grid: rgba(15, 23, 42, 0.1);
   }
 
-  /* ====================================================================
-     CHART SERIES (dark, the default theme)
-     --------------------------------------------------------------------
-     A fixed categorical order, never cycled: series N is always hue N. The
-     dark steps are the same hues re-stepped for the dark surface and
-     validated against it (adjacent CVD separation >= 8). Charts drawn
-     from answers use no more than eight series.
-     ==================================================================== */
   :root:not([data-theme="light"]) {
     --series-1: #3987e5;
     --series-2: #d95926;
@@ -160,13 +113,7 @@
     --chart-grid: rgba(255, 255, 255, 0.08);
   }
 
-  /* ====================================================================
-     BASE
-     ==================================================================== */
   * {
-    /* Include padding and border in an element's stated width. Without this,
-     adding padding makes boxes overflow their containers -- the single most
-     common source of broken layouts. */
     box-sizing: border-box;
   }
 
@@ -185,13 +132,9 @@
       'Helvetica Neue',
       Arial,
       sans-serif;
-    /* Slightly thinner glyph rendering, which reads better on dark backgrounds. */
     -webkit-font-smoothing: antialiased;
   }
 
-  /* The ambient background: two large, soft colour washes fixed behind all
-     content. `fixed` keeps them still while the page scrolls, so they read as
-     lighting rather than as objects on the page. */
   body::before {
     content: '';
     position: fixed;
@@ -207,12 +150,10 @@
         var(--wash-2),
         transparent
       );
-    /* Sits behind everything, and ignores clicks so it never blocks a button. */
     z-index: -1;
     pointer-events: none;
   }
 
-  /* ---- Scrollbars: styled so they do not break the dark theme ---- */
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -229,24 +170,10 @@
   }
 }
 
-/* ====================================================================
-   REUSABLE COMPONENT CLASSES
-   --------------------------------------------------------------------
-   Declared with @utility, v4's replacement for `@layer components`
-   classes: they can be freely combined with utility classes, @apply'd into
-   each other (.btn-primary builds on .btn), and are correctly ordered in
-   the output.
-   ==================================================================== */
 @utility glass {
-  /* ---- Glass card ---------------------------------------------------
-     The frosted-glass panel used for almost every surface in the app.
-     `backdrop-blur` blurs whatever sits BEHIND the element, which is what
-     makes the background gradients bleed softly through it. */
   @apply rounded-2xl border backdrop-blur-xl;
   background: var(--bg-card);
   border-color: var(--border-subtle);
-  /* Two shadows: a soft drop shadow for depth, plus a 1px inset highlight
-       along the top edge that mimics light catching a real glass surface. */
   box-shadow:
     var(--shadow-card),
     inset 0 1px 0 var(--highlight);
@@ -256,8 +183,6 @@
   @apply transition-all duration-300;
   &:hover {
     border-color: var(--border-strong);
-    /* Lift the card 2px on hover. A small movement reads as responsive
-       without being distracting. */
     transform: translateY(-2px);
     box-shadow:
       var(--shadow-card-hover),
@@ -267,7 +192,6 @@
 }
 
 @utility btn {
-  /* ---- Buttons ------------------------------------------------------ */
   @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
            text-sm font-medium transition-all duration-200
            disabled:opacity-40 disabled:cursor-not-allowed;
@@ -278,7 +202,6 @@
   background: linear-gradient(135deg, var(--accent), var(--violet));
   box-shadow: 0 4px 16px var(--accent-glow);
   &:hover:not(:disabled) {
-    /* Scale up by 2%. Subtle enough to feel physical rather than cartoonish. */
     transform: translateY(-1px) scale(1.02);
     box-shadow: 0 6px 24px var(--accent-glow);
   }
@@ -300,7 +223,6 @@
 }
 
 @utility input {
-  /* ---- Form inputs -------------------------------------------------- */
   @apply w-full rounded-xl border px-4 py-3 text-sm outline-hidden
            transition-all duration-200;
   background: var(--surface-1);
@@ -311,16 +233,12 @@
   }
   &:focus {
     border-color: var(--accent);
-    /* A glow ring instead of the browser's default outline. Crucially this is
-       still a VISIBLE focus indicator, which keyboard users depend on -- we
-       are restyling it, not removing it. */
     box-shadow: 0 0 0 3px var(--accent-glow);
     background: var(--surface-2);
   }
 }
 
 @utility pill {
-  /* ---- Status pills ------------------------------------------------- */
   @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1
            text-xs font-medium;
 }
@@ -350,10 +268,6 @@
 }
 
 @utility text-gradient {
-  /* ---- Gradient text, for headings ---------------------------------- */
-  /* The trick: paint a gradient across the element, then clip it to the
-       shape of the glyphs and make the text itself transparent so the
-       gradient shows through. */
   background: linear-gradient(
     120deg,
     var(--text-primary),
@@ -363,18 +277,10 @@
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  /* `background-clip: text` clips to the LINE BOX, not to the glyphs, so the
-       descenders of letters like g, y and p get cut off whenever line-height
-       is tight. This small bottom padding gives them room to render. */
   padding-bottom: 0.14em;
 }
 
-/* ====================================================================
-   KEYFRAME ANIMATIONS
-   ==================================================================== */
 
-/* A slow drift of the gradient position, used on the landing hero so the
-   background feels alive rather than static. */
 @keyframes gradient-drift {
   0%,
   100% {
@@ -389,7 +295,6 @@
   animation: gradient-drift 8s ease infinite;
 }
 
-/* The three bouncing dots shown while the AI is composing an answer. */
 @keyframes typing-bounce {
   0%,
   60%,
@@ -405,7 +310,6 @@
 .typing-dot {
   animation: typing-bounce 1.4s infinite;
 }
-/* Staggered delays turn three identical dots into a travelling wave. */
 .typing-dot:nth-child(2) {
   animation-delay: 0.2s;
 }
@@ -413,7 +317,6 @@
   animation-delay: 0.4s;
 }
 
-/* A sweep of light across a placeholder while data loads. */
 @keyframes shimmer {
   100% {
     transform: translateX(100%);
@@ -437,7 +340,6 @@
   animation: shimmer 1.6s infinite;
 }
 
-/* A soft pulsing halo, used on the "processing" indicator. */
 @keyframes pulse-glow {
   0%,
   100% {
@@ -451,20 +353,12 @@
   animation: pulse-glow 2s infinite;
 }
 
-/* ====================================================================
-   SIGNED-IN APP  (components/app/*)
-   ==================================================================== */
 
-/* Visible keyboard focus everywhere in the app shell. */
 .app-shell :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* ---- F12: cards that scale and reveal a preview on hover --------------
-   The preview strip is collapsed with grid-template-rows 0fr -> 1fr, which
-   animates height without measuring it in JavaScript. :focus-within gives
-   keyboard users the same preview a mouse gets. */
 .lift-card {
   transition:
     transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
@@ -495,7 +389,6 @@
   grid-template-rows: 1fr;
   opacity: 1;
 }
-/* Touch screens cannot hover, so show the preview outright. */
 @media (hover: none) {
   .card-preview {
     grid-template-rows: 1fr;
@@ -503,7 +396,6 @@
   }
 }
 
-/* ---- F14: blur-to-sharp reveal for card thumbnails/icons ------------- */
 @keyframes blur-reveal {
   from {
     filter: blur(10px);
@@ -518,11 +410,9 @@
 }
 .blur-reveal {
   animation: blur-reveal 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  /* Staggered by an inline --reveal-delay so a grid sharpens in sequence. */
   animation-delay: var(--reveal-delay, 0ms);
 }
 
-/* ---- F18: logo-morph loader ------------------------------------------- */
 @keyframes logo-morph {
   0%,
   100% {
@@ -551,11 +441,9 @@
   animation: logo-core 1.6s ease-in-out infinite;
 }
 
-/* ---- F9: hold-to-confirm fill ----------------------------------------- */
 .hold-confirm {
   position: relative;
   overflow: hidden;
-  /* A long press must not select text or open the iOS callout. */
   user-select: none;
   -webkit-touch-callout: none;
   touch-action: manipulation;
@@ -577,13 +465,6 @@
   border-color: var(--danger);
 }
 
-/* ====================================================================
-   ACCESSIBILITY
-   --------------------------------------------------------------------
-   Some people experience motion sickness from animation, and set a system
-   preference to reduce it. Honouring that preference is not optional -- this
-   block collapses every animation and transition to near-instant for them.
-   ==================================================================== */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -592,8 +473,6 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  /* Nothing scales or morphs; the hold button shows a solid outline and
-     its label carries the meaning instead of a moving bar. */
   .hold-confirm[data-holding] .hold-confirm-fill {
     transform: scaleX(0);
   }
@@ -603,9 +482,6 @@
   }
 }
 
-/* ======================================================================
-   ANSWER MARKDOWN: tables (remark-gfm) inside assistant answers
-   ====================================================================== */
 .answer-table-wrap {
   overflow-x: auto;
   margin: 0.5rem 0;

@@ -1,24 +1,4 @@
-"""
-connectors/scheduler.py
-=======================
-WHAT THIS FILE DOES
--------------------
-Runs the connector sync sweep (service.sync_due) on a timer INSIDE the API
-process, for INGESTION_MODE=inline -- the free demo has no Celery beat to
-send it. With INGESTION_MODE=celery, beat sends tasks/connectors.py
-instead, and this loop is never started.
-
-    start()   from main.py's lifespan, when CONNECTOR_SYNC_ENABLED
-    stop()    on shutdown
-
-One loop per API PROCESS. Running several processes is safe -- each link is
-claimed with a conditional UPDATE before it is synced, so two loops never
-sync the same document -- it just means several processes take turns.
-
-The first sweep waits one minute after startup, so a deploy's health checks
-and the ingestion recovery sweep go first.
-"""
-
+"""Runs the connector sync sweep (service.sync_due) on a timer INSIDE the API process, for..."""
 import asyncio
 import contextlib
 import logging

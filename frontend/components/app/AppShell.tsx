@@ -1,32 +1,4 @@
-/**
- * AppShell.tsx
- * ============
- * The chrome around every signed-in page: a sidebar on desktop, a topbar
- * with a slide-in drawer on phones, the theme toggle, sign-out, and the
- * animated page transition (F13).
- *
- * LAYOUT
- * ------
- *   >= md (768px)   [ sidebar 15rem ][ topbar / content ]
- *   <  md           [ topbar with menu button ]
- *                   [ content                 ]
- *
- * Everything inside uses `min-w-0` so a long project name or a wide table
- * cannot push the page sideways -- at 375px there must be no horizontal
- * scroll, which a single over-wide child is enough to cause.
- *
- * PAGE TRANSITIONS (F13)
- * ----------------------
- * The content area fades and rises 8px over 220ms, keyed on the path, so
- * every navigation between dashboard, project and settings feels continuous.
- * Short on purpose (<300ms): a transition the user waits on is a delay.
- * Under prefers-reduced-motion it is skipped entirely.
- *
- * LANGUAGE
- * --------
- * Every label comes from lib/i18n (English or Hindi), and the language
- * switcher sits beside the theme toggle in the sidebar and the drawer.
- */
+// The chrome around every signed-in page: a sidebar on desktop, a topbar with a slide-in...
 
 "use client";
 
@@ -43,7 +15,6 @@ import { api } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 const NAV = [
-  // `label` is an i18n key, translated at render.
   { href: "/dashboard", label: "shell.nav.projects", icon: FolderOpen },
   { href: "/settings", label: "shell.nav.settings", icon: Settings },
 ] as const;
@@ -55,7 +26,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { t } = useT();
 
-  // Escape closes the drawer, as it would any overlay.
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDrawerOpen(false);
@@ -68,7 +38,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
     router.push("/login");
   }
 
-  // The project page is "under" Projects, so that item stays highlighted there.
   const isActive = (href: string) =>
     pathname === href || (href === "/dashboard" && pathname.startsWith("/project"));
 
@@ -120,7 +89,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
         {t("shell.skip")}
       </a>
 
-      {/* ---- Desktop sidebar ---- */}
       <aside
         className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r p-4 md:flex"
         style={{ borderColor: "var(--border-subtle)", background: "var(--bg-card)" }}
@@ -140,7 +108,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* ---- Mobile topbar ---- */}
         <header
           className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b px-4 py-3 backdrop-blur-xl md:hidden"
           style={{ borderColor: "var(--border-subtle)", background: "var(--bg-card)" }}
@@ -159,7 +126,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <ThemeToggle />
         </header>
 
-        {/* ---- Mobile drawer ---- */}
         {drawerOpen && (
           <div className="fixed inset-0 z-40 md:hidden">
             <div
@@ -183,7 +149,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   className="btn-ghost px-2.5"
                   aria-label={t("shell.closeMenu")}
                   onClick={() => setDrawerOpen(false)}
-                  // Move focus into the drawer when it opens.
                   autoFocus
                 >
                   <X size={18} aria-hidden="true" />
@@ -201,7 +166,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
         )}
 
-        {/* ---- Page content, with the F13 transition ---- */}
         <motion.main
           id="main"
           key={pathname}

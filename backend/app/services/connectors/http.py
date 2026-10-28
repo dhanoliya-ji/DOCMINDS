@@ -1,38 +1,4 @@
-"""
-connectors/http.py
-==================
-WHAT THIS FILE DOES
--------------------
-The ONLY way connector code talks to the network. Every request goes through
-`request()` or `download()` here, which refuse anything but:
-
-    * https://
-    * a host on the provider's ALLOWLIST (www.googleapis.com,
-      graph.microsoft.com, api.notion.com, api.atlassian.com ...)
-    * a host whose every DNS address is PUBLIC -- the same check webhooks use
-      (services/webhooks.py), so 169.254.169.254 and 10.0.0.0/8 stay out of
-      reach even if a provider's DNS were poisoned
-
-WHY THIS IS AN SSRF CONCERN AT ALL
-----------------------------------
-Connectors make OUR server fetch things. The URLs are built by our code from
-fixed provider hosts, and the only user-supplied parts -- file and page ids --
-are percent-encoded into the PATH, never the host. The one place a host comes
-from outside is a REDIRECT: Microsoft Graph answers a download with a 302 to
-a pre-signed SharePoint URL. Redirects are therefore never followed
-automatically; `download()` follows at most three, each checked against the
-redirect allowlist, and drops the Authorization header when the host changes
-(the pre-signed URL carries its own permission, and our bearer token must not
-leak to another host).
-
-ERRORS
-------
-    ConnectorAuthError    401 -- the token is no longer valid (reconnect)
-    SourceNotFound        403 / 404 -- gone, or we no longer have access
-    ConnectorUnavailable  429 / 5xx / timeout / connection error -- try later
-    ConnectorError        anything else, and every refusal of this module
-"""
-
+"""The ONLY way connector code talks to the network."""
 import asyncio
 import contextlib
 import ipaddress
@@ -71,8 +37,6 @@ class TooLarge(ConnectorError):
     """The file is bigger than MAX_UPLOAD_SIZE_BYTES."""
 
 
-# Tests swap in an httpx.MockTransport here (and replace _resolves_publicly,
-# since the fake hosts never reach DNS); None means the real network.
 _transport: Optional[httpx.AsyncBaseTransport] = None
 
 _MAX_REDIRECTS = 3
@@ -188,11 +152,7 @@ async def download(
     max_bytes: Optional[int] = None,
     what: str = "Download",
 ) -> int:
-    """
-    Stream `url` into `dest_path`, following at most three checked
-    redirects. Returns the number of bytes written; raises TooLarge the
-    moment the file passes `max_bytes` (and removes the partial file).
-    """
+    """Stream `url` into `dest_path`, following at most three checked"""
     limit = max_bytes if max_bytes is not None else settings.MAX_UPLOAD_SIZE_BYTES
     hosts = list(allowed)
     current_headers = dict(headers or {})
@@ -209,7 +169,6 @@ async def download(
                         hosts = list(allowed) + list(redirect_allowed)
                         current_params = None
                         if urlsplit(url).hostname != first_host:
-                            # A pre-signed URL on another host: our token stays home.
                             current_headers.pop("Authorization", None)
                         continue
                     raise_for_status(response, what)

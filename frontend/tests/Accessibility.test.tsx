@@ -1,19 +1,4 @@
-/**
- * Accessibility.test.tsx
- * ======================
- * Runs axe-core (via vitest-axe) over the three signed-in pages -- dashboard,
- * project and settings -- in the states a user actually meets: first run
- * (empty, with the guided tour), populated, and admin settings.
- *
- * WHAT AXE CAN AND CANNOT SEE HERE
- * --------------------------------
- * jsdom has no layout or paint, so `color-contrast` cannot be computed and
- * is switched off; the light and dark palettes in globals.css were chosen
- * for 4.5:1 by hand. Everything structural -- names on buttons and links,
- * valid ARIA, heading order inside a region, label/control pairing,
- * duplicate ids -- is checked for real, and any violation fails the test
- * with axe's own description of it.
- */
+// Runs axe-core (via vitest-axe) over the three signed-in pages -- dashboard, project...
 
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,7 +35,6 @@ const ADMIN = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-/** A resolved promise React's `use()` can read synchronously. */
 function params(id: string) {
   const p = Promise.resolve({ id }) as Promise<{ id: string }> & { status?: string; value?: unknown };
   p.status = "fulfilled";
@@ -58,12 +42,7 @@ function params(id: string) {
   return p;
 }
 
-/** Fail with a readable list of rule ids and the offending markup. */
 async function expectNoViolations(container: Element) {
-  // No stylesheet is loaded in jsdom, so Tailwind's `.hidden` does not
-  // apply and axe would audit elements no user can reach (UploadZone's
-  // native file input, which its labelled drop zone stands in for).
-  // Re-create that one rule inline so axe sees what a browser shows.
   container.querySelectorAll<HTMLElement>(".hidden").forEach((el) => {
     el.style.display = "none";
   });
