@@ -1,3 +1,4 @@
+from urllib.parse import urlparse
 import os
 import uuid
 
@@ -266,7 +267,7 @@ class TestS3ClientConfiguration:
 
         client = S3Storage._make_client()
 
-        assert "amazonaws.com" in client.meta.endpoint_url
+        assert urlparse(client.meta.endpoint_url).hostname.endswith(".amazonaws.com")
         assert client.meta.config.request_checksum_calculation == "when_supported"
 
     def test_boto3_retries_throttling_itself(self, s3_settings):

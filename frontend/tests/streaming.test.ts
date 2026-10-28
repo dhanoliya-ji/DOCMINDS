@@ -182,7 +182,7 @@ describe("project and document management", () => {
     await call();
 
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toMatch(new RegExp(`/api/v1${path.replace(/[?]/g, "\\?")}$`));
+    expect(url).toMatch(new RegExp(`/api/v1${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
     expect(options.method).toBe(method);
     if (body) expect(JSON.parse(options.body)).toEqual(body);
   });
