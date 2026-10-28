@@ -234,7 +234,7 @@ class TestQuestionSentOnce:
     async def test_chat_loads_history_before_saving_the_question(self, monkeypatch):
         """The endpoint itself: history is read before the new row exists."""
         from app.api.v1 import chat as chat_module
-        from app.models.chat import ChatMessage
+        from app.models import ChatMessage
 
         order = []
 

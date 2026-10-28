@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.organization import Organization
-from app.models.usage import UsageEvent
+from app.models import Organization
+from app.models import UsageEvent
 from app.services import usage
 from app.services.retrieval import RetrievalService
 from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures

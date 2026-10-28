@@ -8,9 +8,9 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
-from app.models.project import Project
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
+from app.models import Project
 from app.services import reranker
 from app.services.embedding import EmbeddingService
 
@@ -126,7 +126,7 @@ class RetrievalService:
         db: AsyncSession, session_id: uuid.UUID, limit: int = 6
     ) -> List[Dict[str, str]]:
         """Load the recent back-and-forth of a chat session, for follow-up questions."""
-        from app.models.chat import ChatMessage
+        from app.models import ChatMessage
 
         statement = (
             select(ChatMessage)

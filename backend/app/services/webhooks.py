@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.webhook import FAILED, PENDING, SUCCEEDED, WebhookDelivery, WebhookEndpoint
+from app.models import FAILED, PENDING, SUCCEEDED, WebhookDelivery, WebhookEndpoint
 
 logger = logging.getLogger(__name__)
 

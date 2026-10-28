@@ -81,9 +81,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.chunk import Chunk
-from app.models.document import Document
-from app.models.project import Project
+from app.models import Chunk
+from app.models import Document
+from app.models import Project
 from app.services.llm import (
     TABLES_AND_CHARTS_RULE,
     UNTRUSTED_CONTENT_RULE,

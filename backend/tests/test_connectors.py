@@ -10,10 +10,10 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.audit import AuditLog
-from app.models.connector import ConnectorConnection, ConnectorItem
-from app.models.document import Document
-from app.models.user import User
+from app.models import AuditLog
+from app.models import ConnectorConnection, ConnectorItem
+from app.models import Document
+from app.models import User
 from app.services import connectors
 from app.services.connectors import crypto, http, service
 from app.services.connectors.base import Provider, RemoteItem, TokenSet, check_id

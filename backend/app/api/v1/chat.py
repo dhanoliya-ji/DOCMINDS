@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core import observability
 from app.db.session import SessionLocal
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.rag import (
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Project
+from app.models import User
+from app.schemas import (
     AgentStep,
     ChatMessageOut,
     ChatRequest,

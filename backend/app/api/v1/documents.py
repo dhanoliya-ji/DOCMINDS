@@ -24,11 +24,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
-from app.models.chunk import Chunk
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.document import ChunkContextOut, DocumentOut, DocumentReindex, DocumentUpdate
+from app.models import Chunk
+from app.models import Document
+from app.models import Project
+from app.models import User
+from app.schemas import ChunkContextOut, DocumentOut, DocumentReindex, DocumentUpdate
 from app.core.config import settings
 from app.services import audit, uploads, usage
 from app.services.storage import (

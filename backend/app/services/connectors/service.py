@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import roles
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.connector import (
+from app.models import (
     ACTIVE,
     DISCONNECTED,
     ERROR,
@@ -42,9 +42,9 @@ from app.models.connector import (
     ConnectorImport,
     ConnectorItem,
 )
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
+from app.models import Document
+from app.models import Project
+from app.models import User
 from app.services import audit, uploads, usage
 from app.services.connectors import get_provider
 from app.services.connectors.base import Provider, RemoteItem, TokenSet

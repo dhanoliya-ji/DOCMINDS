@@ -19,9 +19,9 @@ from app.api import deps
 from app.api.v1.auth import find_usable_invite
 from app.core import roles, security
 from app.core.config import settings
-from app.models.organization import Organization
-from app.models.user import User
-from app.schemas.token import Token
+from app.models import Organization
+from app.models import User
+from app.schemas import Token
 from app.services import audit, sessions
 
 logger = logging.getLogger(__name__)

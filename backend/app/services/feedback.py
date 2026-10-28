@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.project import Project
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Project
 
 RECENT_NEGATIVE_LIMIT = 20
 

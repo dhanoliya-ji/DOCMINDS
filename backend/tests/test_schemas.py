@@ -4,8 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.db.base_class import Base
-from app.schemas.rag import SearchRequest
-from app.schemas.user import UserCreate, UserOut
+from app.schemas import SearchRequest
+from app.schemas import UserCreate, UserOut
 
 
 class TestUserOutExposesNoSecrets:
@@ -151,7 +151,7 @@ class TestTableNameDerivation:
         assert self.make("APIKey") == "a_p_i_keies"
 
     def test_the_real_model_opted_out(self):
-        from app.models.api_key import APIKey
+        from app.models import APIKey
 
         assert APIKey.__tablename__ == "api_keys"
 

@@ -17,9 +17,9 @@ from app.core import security
 from app.core.config import settings
 from app.main import app
 from app.models import Base
-from app.models.audit import AuditLog
-from app.models.organization import Organization
-from app.models.user import User
+from app.models import AuditLog
+from app.models import Organization
+from app.models import User
 from app.services import email as email_service
 from tests.conftest import database_available
 
@@ -498,7 +498,7 @@ class TestInvites:
         assert (await env.signup(email, invite_token=invite["token"])).status_code == 400
 
     async def test_an_expired_invite_cannot_be_used(self, env):
-        from app.models.invite import Invite
+        from app.models import Invite
 
         admin = await env.account()
         email = env.email()

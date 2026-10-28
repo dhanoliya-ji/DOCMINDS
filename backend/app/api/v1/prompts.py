@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core import roles
-from app.models.prompt import PromptTemplate
-from app.models.user import User
-from app.schemas.collab import PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate
+from app.models import PromptTemplate
+from app.models import User
+from app.schemas import PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate
 from app.services.prompt_library import BUILTIN_TEMPLATES, builtin_id
 
 router = APIRouter()

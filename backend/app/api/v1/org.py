@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core import roles, security
 from app.core.config import settings
-from app.models.api_key import APIKey
-from app.models.audit import AuditLog
-from app.models.invite import Invite
-from app.models.organization import Organization
-from app.models.user import User
-from app.schemas.account import (
+from app.models import APIKey
+from app.models import AuditLog
+from app.models import Invite
+from app.models import Organization
+from app.models import User
+from app.schemas import (
     APIKeyCreate,
     APIKeyCreated,
     APIKeyOut,
@@ -27,8 +27,8 @@ from app.schemas.account import (
     MemberOut,
     MemberUpdate,
 )
-from app.schemas.rag import FeedbackSummary
-from app.schemas.usage import UsageSummary
+from app.schemas import FeedbackSummary
+from app.schemas import UsageSummary
 from app.services import audit, email, feedback, sessions, usage
 
 router = APIRouter(dependencies=[Depends(deps.require_admin)])

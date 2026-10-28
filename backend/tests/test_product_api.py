@@ -14,12 +14,12 @@ from app.api.v1 import chat as chat_module
 from app.core import security
 from app.core.config import settings
 from app.main import app
-from app.models.audit import AuditLog
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
-from app.models.organization import Organization
-from app.models.user import User
+from app.models import AuditLog
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
+from app.models import Organization
+from app.models import User
 from app.services import embedding_map
 from app.services import storage as storage_module
 from app.services.embedding import EmbeddingService

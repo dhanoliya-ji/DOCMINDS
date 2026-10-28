@@ -8,10 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
 from app.core.config import settings
-from app.models.refresh_token import RefreshToken
-from app.models.revoked_token import RevokedToken
-from app.models.user import User
-from app.models.user_token import UserToken
+from app.models import RefreshToken
+from app.models import RevokedToken
+from app.models import User
+from app.models import UserToken
 
 
 def utcnow() -> datetime.datetime:

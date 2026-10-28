@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.organization import Organization
-from app.models.user import User
-from app.schemas.integrations import BillingStatus, CheckoutRequest, RedirectOut
+from app.models import Organization
+from app.models import User
+from app.schemas import BillingStatus, CheckoutRequest, RedirectOut
 from app.services import audit, billing
 
 

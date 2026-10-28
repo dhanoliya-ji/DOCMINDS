@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.webhook import FAILED, PENDING, SUCCEEDED, WebhookDelivery
+from app.models import FAILED, PENDING, SUCCEEDED, WebhookDelivery
 from app.services import webhooks
 from tests import test_auth_flows as _flows
 

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.client_ip import client_ip as resolve_client_ip
 from app.core.config import settings
-from app.models.audit import AuditLog
+from app.models import AuditLog
 
 
 def client_ip(request: Optional[Request]) -> Optional[str]:

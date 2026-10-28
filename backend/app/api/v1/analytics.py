@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.user import User
-from app.schemas.integrations import (
+from app.models import User
+from app.schemas import (
     AnalyticsOverview,
     DailyDocuments,
     DailyFeedback,

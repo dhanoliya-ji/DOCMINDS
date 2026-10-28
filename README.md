@@ -22,7 +22,7 @@ backend/app/
   main.py                 FastAPI app, mounts every router
   core/config.py          every setting (env var or backend/.env)
   api/v1/*.py             HTTP endpoints (auth, projects, documents, chat, search, billing …)
-  models/ , schemas/      database tables / request+response shapes
+  models.py, schemas.py   database tables / request+response shapes
   services/
     extractor.py ocr.py   step 1: file -> text
     chunker.py            step 2: text -> chunks

@@ -60,7 +60,7 @@ class TestRequireRole:
     def test_an_api_key_role_caps_the_user(self):
         """An Admin's viewer-scoped key acts as a viewer."""
         from app.api import deps
-        from app.models.user import User
+        from app.models import User
 
         user = User(role="Admin")
         assert deps.effective_role(user) == "Admin"
@@ -68,7 +68,7 @@ class TestRequireRole:
         assert deps.effective_role(user) == "Employee"
 
     def test_api_key_role_is_not_a_column(self):
-        from app.models.user import User
+        from app.models import User
 
         assert "api_key_role" not in User.__table__.columns
 
@@ -153,7 +153,7 @@ class TestSecretKeyGuard:
 
 class TestInviteStatus:
     def _invite(self, **overrides):
-        from app.models.invite import Invite
+        from app.models import Invite
 
         fields = {
             "org_id": uuid.uuid4(),

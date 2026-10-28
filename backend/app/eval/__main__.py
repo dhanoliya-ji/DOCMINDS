@@ -40,7 +40,7 @@ async def main(argv: List[str]) -> int:
 
     from app.core.config import settings
     from app.db.session import SessionLocal
-    from app.models.project import Project
+    from app.models import Project
     from app.services.llm import LLMService
     from app.services.retrieval import RetrievalService
 

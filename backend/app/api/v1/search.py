@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
-from app.models.user import User
-from app.schemas.rag import SearchRequest, SearchResponse, SearchResult
+from app.models import User
+from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.services.retrieval import RetrievalService
 
 router = APIRouter()

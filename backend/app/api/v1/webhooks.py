@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.user import User
-from app.models.webhook import PENDING, WebhookDelivery, WebhookEndpoint
-from app.schemas.webhook import (
+from app.models import User
+from app.models import PENDING, WebhookDelivery, WebhookEndpoint
+from app.schemas import (
     WebhookCreate,
     WebhookCreated,
     WebhookDeliveryOut,

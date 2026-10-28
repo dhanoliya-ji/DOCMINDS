@@ -10,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.config import settings
-from app.models.connector import DISCONNECTED, ConnectorConnection, ConnectorImport, ConnectorItem
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.integrations import (
+from app.models import DISCONNECTED, ConnectorConnection, ConnectorImport, ConnectorItem
+from app.models import Document
+from app.models import Project
+from app.models import User
+from app.schemas import (
     AuthorizeOut,
     ConnectionOut,
     DisconnectOut,

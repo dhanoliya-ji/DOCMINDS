@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core import roles
-from app.models.chat import ChatMessage, ChatSession
-from app.models.project import Project
-from app.models.share import ShareLink
-from app.models.user import User
-from app.schemas.collab import (
+from app.models import ChatMessage, ChatSession
+from app.models import Project
+from app.models import ShareLink
+from app.models import User
+from app.schemas import (
     PublicShare,
     ShareKind,
     ShareLinkCreate,

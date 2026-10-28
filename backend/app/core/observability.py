@@ -39,11 +39,6 @@ def bind(**fields: Any) -> None:
     _sentry_bind(clean)
 
 
-def current_context() -> Dict[str, Any]:
-    """A copy of the fields bound so far (empty outside a request)."""
-    return dict(_context.get() or {})
-
-
 def current_request_id() -> Optional[str]:
     """The id of the request being served, if any. Stored on usage events."""
     return (_context.get() or {}).get("request_id")
@@ -193,10 +188,6 @@ def init_sentry(component: str) -> bool:
     _sentry_enabled = True
     logger.info("Sentry error reporting is on", extra={"component": component})
     return True
-
-
-def sentry_enabled() -> bool:
-    return _sentry_enabled
 
 
 def _sentry_bind(fields: Dict[str, str]) -> None:

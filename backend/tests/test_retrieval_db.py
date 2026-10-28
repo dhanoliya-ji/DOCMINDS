@@ -6,10 +6,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import SessionLocal
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
-from app.models.organization import Organization
-from app.models.project import Project
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
+from app.models import Organization
+from app.models import Project
 from app.services.embedding import EmbeddingService
 from app.services.retrieval import RetrievalService
 from tests.conftest import database_available

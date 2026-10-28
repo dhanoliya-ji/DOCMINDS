@@ -6,11 +6,11 @@ from typing import Any, Dict, List
 from sqlalchemy import case, distinct, func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.audit import AuditLog
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.document import Document
-from app.models.project import Project
-from app.models.usage import UsageEvent
+from app.models import AuditLog
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Document
+from app.models import Project
+from app.models import UsageEvent
 
 TOP_QUESTIONS = 10
 

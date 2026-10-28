@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
 from app.services.embedding import EmbeddingService
 from app.services.llm import UNTRUSTED_CONTENT_RULE, LLMService, clean_label, wrap_excerpt
 from app.services.retrieval import RetrievalService

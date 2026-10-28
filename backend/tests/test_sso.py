@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.api.v1 import sso
 from app.core.config import settings
-from app.models.user import User
+from app.models import User
 from tests import test_auth_flows as _flows
 
 API = _flows.API

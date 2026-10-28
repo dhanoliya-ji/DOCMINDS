@@ -10,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.chat import ChatMessage, ChatSession
-from app.models.document import Document
-from app.models.project import Project
-from app.models.share import ShareLink
+from app.models import ChatMessage, ChatSession
+from app.models import Document
+from app.models import Project
+from app.models import ShareLink
 
 TOKEN_PREFIX = "dms_"
 DISPLAY_PREFIX_LENGTH = 10

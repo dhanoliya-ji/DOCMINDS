@@ -15,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.billing import BillingEvent
-from app.models.organization import Organization
+from app.models import BillingEvent
+from app.models import Organization
 from app.services import audit
 
 logger = logging.getLogger(__name__)
@@ -612,8 +612,3 @@ async def apply_update(db: AsyncSession, update: BillingUpdate) -> str:
     db.add(BillingEvent(id=event_id, event_type=update.event_type[:128], org_id=org.id if org else None))
     await db.commit()
     return outcome
-
-
-async def handle_event(db: AsyncSession, event: Dict[str, Any]) -> str:
-    """Apply one verified STRIPE event (kept for callers and tests)."""
-    return await apply_update(db, stripe_update(event))

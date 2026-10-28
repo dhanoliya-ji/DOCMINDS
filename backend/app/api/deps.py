@@ -2,7 +2,7 @@
 import datetime
 import logging
 import uuid
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, Optional
 
 import jwt  # PyJWT
 from fastapi import Depends, HTTPException, Request, Response, status
@@ -14,9 +14,9 @@ from app.core import observability, rate_limit, roles, security
 from app.core.client_ip import client_ip
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.api_key import APIKey
-from app.models.user import User
-from app.schemas.token import TokenPayload
+from app.models import APIKey
+from app.models import User
+from app.schemas import TokenPayload
 from app.services import sessions
 
 logger = logging.getLogger(__name__)
@@ -166,22 +166,6 @@ def require_role(minimum: str):
 require_viewer = require_role(roles.VIEWER)
 require_editor = require_role(roles.EDITOR)
 require_admin = require_role(roles.ADMIN)
-
-
-class RoleChecker:
-    """A dependency that also requires the user to hold one of several roles."""
-
-    def __init__(self, allowed_roles: List[str]):
-        self.allowed_roles = allowed_roles
-
-    def __call__(self, current_user: User = Depends(get_current_active_user)) -> User:
-        """`__call__` makes an instance behave like a function, so FastAPI can"""
-        if effective_role(current_user) not in self.allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="The user does not have enough privileges.",
-            )
-        return current_user
 
 
 async def _enforce_rate_limit(name: str, identity: str, response: Response) -> None:

@@ -2,8 +2,8 @@
 from fastapi import APIRouter, Depends
 
 from app.api import deps
-from app.models.user import User
-from app.schemas.user import UserOut
+from app.models import User
+from app.schemas import UserOut
 
 router = APIRouter()
 

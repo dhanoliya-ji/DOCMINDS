@@ -8,10 +8,10 @@ from sqlalchemy import delete, func, select, update
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
-from app.models.chunk import Chunk
-from app.models.document import Document
-from app.models.organization import Organization
-from app.models.project import Project
+from app.models import Chunk
+from app.models import Document
+from app.models import Organization
+from app.models import Project
 from app.services import malware, storage as storage_module
 from app.services.embedding import EmbeddingService
 from app.services.storage import get_storage, new_key

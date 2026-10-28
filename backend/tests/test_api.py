@@ -8,7 +8,7 @@ from sqlalchemy import delete
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.main import app
-from app.models.organization import Organization
+from app.models import Organization
 from tests.conftest import database_available
 
 _available, _reason = database_available()

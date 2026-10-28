@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.chat import ChatMessage, ChatSession
-from app.models.share import ShareLink
+from app.models import ChatMessage, ChatSession
+from app.models import ShareLink
 from app.services import compare as compare_module
 from app.services import confidence, sharing
 from app.services.agent import run_agent
@@ -210,7 +210,7 @@ async def _ready_documents(env, *texts):
         document = await env.upload(name=f"doc{index}.txt", data=text.encode() * 3)
         await env.set_document(document["id"], status="completed")
         async with env.factory() as session:
-            from app.models.chunk import Chunk
+            from app.models import Chunk
 
             session.add(Chunk(document_id=uuid.UUID(document["id"]), content=text,
                               chunk_index=0, page_number=1, meta_data={}))
@@ -251,7 +251,7 @@ class TestCompareApi:
                                           json={"document_a": a, "document_b": b})
         assert response.status_code == 200, response.text
         assert response.json()["summary"] == "Price rose."
-        from app.models.usage import UsageEvent
+        from app.models import UsageEvent
 
         assert await env.count(UsageEvent, UsageEvent.mode == "compare") == 1
 

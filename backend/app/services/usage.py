@@ -10,10 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.document import Document
-from app.models.organization import Organization
-from app.models.project import Project
-from app.models.usage import UsageEvent
+from app.models import Document
+from app.models import Organization
+from app.models import Project
+from app.models import UsageEvent
 
 logger = logging.getLogger(__name__)
 

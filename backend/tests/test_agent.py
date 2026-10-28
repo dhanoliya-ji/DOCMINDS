@@ -4,8 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.models.chat import ChatMessage
-from app.schemas.rag import AgentStep, ChatRequest
+from app.models import ChatMessage
+from app.schemas import AgentStep, ChatRequest
 from app.services import agent as agent_module
 from app.services.agent import (
     NOT_FOUND_ANSWER,

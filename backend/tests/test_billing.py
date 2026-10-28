@@ -10,11 +10,11 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.audit import AuditLog
-from app.models.chat import ChatMessage, ChatSession, Feedback
-from app.models.organization import Organization
-from app.models.usage import UsageEvent
-from app.models.user import User
+from app.models import AuditLog
+from app.models import ChatMessage, ChatSession, Feedback
+from app.models import Organization
+from app.models import UsageEvent
+from app.models import User
 from app.services import analytics, billing, usage
 from tests.test_upload_hardening import (  # noqa: F401 -- pytest fixtures
     env,

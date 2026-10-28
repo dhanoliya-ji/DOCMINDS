@@ -20,20 +20,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core import roles, security
 from app.core.config import settings
-from app.models.invite import Invite
-from app.models.organization import Organization
-from app.models.refresh_token import RefreshToken
-from app.models.user import User
-from app.models.user_token import EMAIL_VERIFY, PASSWORD_RESET
-from app.schemas.account import (
+from app.models import Invite
+from app.models import Organization
+from app.models import RefreshToken
+from app.models import User
+from app.models import EMAIL_VERIFY, PASSWORD_RESET
+from app.schemas import (
     EmailVerifyRequest,
     InvitePreview,
     Message,
     PasswordResetConfirm,
     PasswordResetRequest,
 )
-from app.schemas.token import LogoutRequest, Token, TokenPayload, TokenRefreshRequest
-from app.schemas.user import UserCreate, UserOut
+from app.schemas import LogoutRequest, Token, TokenPayload, TokenRefreshRequest
+from app.schemas import UserCreate, UserOut
 from app.services import audit, email, sessions
 
 router = APIRouter()

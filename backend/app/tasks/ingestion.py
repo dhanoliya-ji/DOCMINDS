@@ -16,8 +16,8 @@ from app.core.celery_app import celery_app
 from app.core import observability
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
 from app.services import malware
 from app.services.chunker import StreamingChunker
 from app.services.embedding import EmbeddingRateLimited, EmbeddingService, wait_listener
@@ -618,7 +618,7 @@ async def _emit_document_event(db, document: Document, event_type: str, extra: d
     if not settings.WEBHOOKS_ENABLED:
         return
     try:
-        from app.models.project import Project
+        from app.models import Project
         from app.services import webhooks
 
         project = await db.get(Project, document.project_id)

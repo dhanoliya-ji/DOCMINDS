@@ -11,8 +11,8 @@ from app.api import deps
 from app.core import security
 from app.core.config import settings
 from app.main import app
-from app.models.document import Document
-from app.models.organization import Organization
+from app.models import Document
+from app.models import Organization
 from app.services import storage as storage_module
 from app.tasks import ingestion
 from tests.conftest import database_available

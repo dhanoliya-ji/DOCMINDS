@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.models.chunk import Chunk, ChunkEmbedding
+from app.models import Chunk, ChunkEmbedding
 from app.services import vision
 from app.services.chunker import ChunkerService, StreamingChunker
 from app.services.embedding import EmbeddingRateLimited, EmbeddingService

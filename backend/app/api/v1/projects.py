@@ -9,11 +9,11 @@ from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
-from app.models.chunk import Chunk, ChunkEmbedding
-from app.models.document import Document
-from app.models.project import Project
-from app.models.user import User
-from app.schemas.project import (
+from app.models import Chunk, ChunkEmbedding
+from app.models import Document
+from app.models import Project
+from app.models import User
+from app.schemas import (
     EmbeddingMap,
     EmbeddingPoint,
     ProjectCreate,
